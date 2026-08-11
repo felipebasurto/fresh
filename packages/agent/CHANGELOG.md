@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replaced the unfinished harness runtime and record-log session model with the shared entry/register/usage, operation-state, session, search, and public harness contracts specified for the durable harness.
+
 ### Fixed
 
 - Fixed `streamProxy()` dropping finalized tool-call metadata such as OpenAI Responses namespaces ([#7709](https://github.com/earendil-works/pi/issues/7709)).

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the incompatible work-in-progress session backend while the one-file-per-session backend is rebuilt against the durable storage contract; the Node SQLite adapter and SQL helpers remain available.
+
 ## [0.84.1] - 2026-08-07
 
 ### Added

@@ -18,7 +18,7 @@
 	],
 	"scripts": {
 		"clean": "node -e \"import('node:fs/promises').then(fs=>fs.rm('dist',{recursive:true,force:true}))\"",
-		"build": "tsgo -p tsconfig.build.json && node ./scripts/prepare-dist.mjs copy-sqlite-migrations",
+		"build": "tsgo -p tsconfig.build.json",
 		"test": "vitest --run",
 		"coverage": "vitest --run --coverage",
 		"prepublishOnly": "npm run clean && npm run build"
