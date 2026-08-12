@@ -25,7 +25,7 @@ export class StorageDecorator implements Storage {
 		return this.delegate.commit(transaction);
 	}
 
-	getEntries(ids: string[]): Promise<ReadonlyMap<string, Entry>> {
+	getEntries(ids: string[]): Promise<Map<string, Entry>> {
 		return this.delegate.getEntries(ids);
 	}
 
