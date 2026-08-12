@@ -1,3 +1,4 @@
+export * from "./repo.ts";
 export * from "./sql.ts";
 export type {
 	SqliteDatabase,
