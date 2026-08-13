@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -69,6 +69,22 @@ describe("SqliteSessionRepo", () => {
 		});
 	});
 
+	it("rejects duplicate create without deleting the existing database", async () => {
+		await withTempDir(async (directory) => {
+			const repo = new SqliteSessionRepo({
+				directory,
+				databaseFactory: createNodeSqliteFactory(),
+				now: () => 1,
+			});
+			const metadata = (await repo.create({ id: "session" })) as TestMetadata;
+
+			await expect(repo.create({ id: "session" })).rejects.toThrow();
+			await withDb(metadata.path, (db) => {
+				expect(sql`SELECT COUNT(*) AS count FROM session`.get<{ count: number }>(db)).toEqual({ count: 1 });
+			});
+		});
+	});
+
 	it("lists sessions without taking the writer lease", async () => {
 		await withTempDir(async (directory) => {
 			const repo = new SqliteSessionRepo({
@@ -82,6 +98,21 @@ describe("SqliteSessionRepo", () => {
 			await withDb(metadata.path, (db) => {
 				expect(sql`SELECT owner_id, fence FROM writer_lease`.all(db)).toEqual([]);
 			});
+		});
+	});
+
+	it("does not remove a pre-existing non-database file when create fails", async () => {
+		await withTempDir(async (directory) => {
+			const repo = new SqliteSessionRepo({
+				directory,
+				databaseFactory: createNodeSqliteFactory(),
+				now: () => 1,
+			});
+			const path = join(directory, "session.sqlite");
+			await writeFile(path, "not a sqlite database");
+
+			await expect(repo.create({ id: "session" })).rejects.toThrow();
+			await expect(access(path)).resolves.toBeUndefined();
 		});
 	});
 

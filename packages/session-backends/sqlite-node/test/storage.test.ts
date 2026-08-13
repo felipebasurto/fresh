@@ -277,12 +277,15 @@ describe("SqliteStorage", () => {
 				VALUES
 					(${"fact.custom"}, ${"app:one"}, ${1}, ${JSON.stringify(1)}),
 					(${"fact.custom"}, ${"app:two"}, ${2}, ${JSON.stringify(2)}),
-					(${"fact.custom"}, ${"other"}, ${3}, ${JSON.stringify(3)}),
-					(${"fact.name"}, ${""}, ${4}, ${JSON.stringify("name")})`.run(db);
+					(${"fact.custom"}, ${"app:\ufffftail"}, ${3}, ${JSON.stringify(3)}),
+					(${"fact.custom"}, ${"app;other"}, ${4}, ${JSON.stringify(4)}),
+					(${"fact.custom"}, ${"other"}, ${5}, ${JSON.stringify(5)}),
+					(${"fact.name"}, ${""}, ${6}, ${JSON.stringify("name")})`.run(db);
 
 			expect(await storage.listRegisters("fact.custom", "app:")).toEqual([
 				{ namespace: "fact.custom", key: "app:one", seq: 1, value: 1 },
 				{ namespace: "fact.custom", key: "app:two", seq: 2, value: 2 },
+				{ namespace: "fact.custom", key: "app:\ufffftail", seq: 3, value: 3 },
 			]);
 		});
 	});

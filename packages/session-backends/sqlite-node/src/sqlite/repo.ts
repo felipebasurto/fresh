@@ -1,4 +1,4 @@
-import { access, mkdir, readdir, rm } from "node:fs/promises";
+import { access, mkdir, open as openFile, readdir, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { SessionCreateOptions } from "@earendil-works/pi-agent-core";
 import { uuidv7 } from "@earendil-works/pi-ai";
@@ -37,6 +37,12 @@ function sessionIdFromPath(path: string): string {
 	return name.endsWith(SQLITE_SESSION_EXTENSION) ? name.slice(0, -SQLITE_SESSION_EXTENSION.length) : name;
 }
 
+async function removeSessionFiles(path: string, options: { force: boolean }): Promise<void> {
+	await rm(path, { force: options.force });
+	await rm(`${path}-wal`, { force: true });
+	await rm(`${path}-shm`, { force: true });
+}
+
 function configureConnection(db: SqliteDatabase): void {
 	db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
 }
@@ -62,8 +68,12 @@ export class SqliteSessionRepo {
 		this.reserveId(id);
 		const path = sessionPath(this.directory, id);
 		let db: SqliteDatabase | undefined;
+		let reservedFile = false;
 		let initialized = false;
 		try {
+			const file = await openFile(path, "wx");
+			await file.close();
+			reservedFile = true;
 			const activeDb = await this.databaseFactory.open(path);
 			db = activeDb;
 			configureConnection(activeDb);
@@ -86,7 +96,7 @@ export class SqliteSessionRepo {
 			initialized = true;
 			return metadata;
 		} catch (error) {
-			if (!initialized) await rm(path, { force: true });
+			if (reservedFile && !initialized) await removeSessionFiles(path, { force: true });
 			throw error;
 		} finally {
 			db?.close();
@@ -126,6 +136,7 @@ export class SqliteSessionRepo {
 	}
 
 	async list(): Promise<SqliteSessionMetadata[]> {
+		// TODO: Decide whether incompatible/corrupt session files should be skipped or reported instead of failing the whole list.
 		await mkdir(this.directory, { recursive: true });
 		const names = await readdir(this.directory);
 		const sessions: SqliteSessionMetadata[] = [];
@@ -146,6 +157,7 @@ export class SqliteSessionRepo {
 	}
 
 	async delete(metadata: SqliteSessionMetadata): Promise<void> {
+		// TODO: Reject missing files and live external writer leases before unlinking once repo/session ownership is wired.
 		if (this.pendingIds.has(metadata.id)) throw new Error(`Session is open: ${metadata.id}`);
 		await rm(metadata.path, { force: true });
 	}
