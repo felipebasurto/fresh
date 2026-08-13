@@ -18,6 +18,11 @@ export class Deferred<T> {
 	}
 }
 
+interface OpenGate {
+	entered: Deferred<void>;
+	release: Deferred<void>;
+}
+
 export class TestHarness {
 	readonly session: Session;
 	readonly closed = new Deferred<void>();
@@ -43,6 +48,9 @@ export class TestServerService implements PiServerService {
 	readonly repo = new MemorySessionRepo({ now: () => 1 });
 	readonly harnesses = new Map<string, TestHarness[]>();
 	readonly locked = new Set<string>();
+	openCount = 0;
+	failNextOpen?: Error;
+	failNextHarness?: Error;
 	readonly sessions: PiServerService["sessions"] = {
 		list: async () => {
 			const delay = this.nextListDelay;
@@ -54,13 +62,31 @@ export class TestServerService implements PiServerService {
 			return this.repo.list();
 		},
 		open: async (metadata) => {
+			this.openCount += 1;
+			const gate = this.nextOpenGate;
+			if (gate) {
+				this.nextOpenGate = undefined;
+				gate.entered.resolve(undefined);
+				await gate.release.promise;
+			}
+			if (this.failNextOpen) {
+				const error = this.failNextOpen;
+				this.failNextOpen = undefined;
+				throw error;
+			}
 			if (this.locked.has(metadata.id)) throw new SessionLockedError(`Session is locked: ${metadata.id}`);
 			return this.repo.open(metadata);
 		},
 	};
 	private nextListDelay?: ListDelay;
+	private nextOpenGate?: OpenGate;
 
 	async createHarness(session: Session): Promise<Pick<AgentHarness, "close">> {
+		if (this.failNextHarness) {
+			const error = this.failNextHarness;
+			this.failNextHarness = undefined;
+			throw error;
+		}
 		const harness = new TestHarness(session);
 		const harnesses = this.harnesses.get(session.metadata.id) ?? [];
 		harnesses.push(harness);
@@ -79,6 +105,12 @@ export class TestServerService implements PiServerService {
 		const delay = { entered: new Deferred<void>(), release: new Deferred<void>() };
 		this.nextListDelay = delay;
 		return delay;
+	}
+
+	gateNextOpen(): OpenGate {
+		const gate = { entered: new Deferred<void>(), release: new Deferred<void>() };
+		this.nextOpenGate = gate;
+		return gate;
 	}
 
 	latestHarness(id: string): TestHarness {

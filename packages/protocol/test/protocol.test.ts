@@ -6,6 +6,7 @@ import {
 	createRpcClient,
 	createRpcDispatcher,
 	decodeCbor,
+	defineRpc,
 	encodeCbor,
 	encodeClientMessage,
 	encodeFrame,
@@ -64,6 +65,21 @@ describe("RPC manifest", () => {
 			sessionId: "session-1",
 		});
 		await expect(dispatch({ method: "attach", args: [] } as never, undefined)).rejects.toThrow(/Invalid arguments/);
+	});
+
+	test("rejects invalid results on both client and dispatcher boundaries", async () => {
+		const client = createRpcClient(ServiceRpc, async () => ({ sessionId: 1 }));
+		await expect(client.attach("session-1")).rejects.toThrow(/Invalid result.*attach/);
+
+		const dispatch = createRpcDispatcher(ServiceRpc, {
+			list: () => [{ id: "session-1" }],
+			attach: (_context: undefined, sessionId: string) => ({ sessionId }),
+		} as never);
+		await expect(dispatch({ method: "list", args: [] }, undefined)).rejects.toThrow(/Invalid result.*list/);
+	});
+
+	test("rejects empty manifests instead of creating unusable RPC clients", () => {
+		expect(() => defineRpc({})).toThrow(/at least one method/);
 	});
 });
 
@@ -149,6 +165,42 @@ describe("protocol validation", () => {
 	});
 
 	test.each([
+		[
+			"empty request id",
+			{ type: "request", id: "", serviceId: "00000000000000000000000000000001", call: { method: "list", args: [] } },
+		],
+		[
+			"empty session id",
+			{
+				type: "request",
+				id: "request-1",
+				serviceId: "00000000000000000000000000000001",
+				call: { method: "attach", args: [""] },
+			},
+		],
+		[
+			"extra call field",
+			{
+				type: "request",
+				id: "request-1",
+				serviceId: "00000000000000000000000000000001",
+				call: { method: "list", args: [], extra: true },
+			},
+		],
+	] as const)("rejects malformed request boundaries: %s", (_label, message) => {
+		expect(() => parseClientMessage(message)).toThrow(ProtocolValidationError);
+	});
+
+	test.each([
+		["empty connection id", { ...serverHello, connectionId: "" }],
+		["invalid service id", { ...serverHello, serviceId: "service-1" }],
+		["missing response result", { type: "response", id: "request-1", ok: true }],
+		["extra response field", { type: "response", id: "request-1", ok: true, result: [], extra: true }],
+	] as const)("rejects malformed server boundaries: %s", (_label, message) => {
+		expect(() => parseServerMessage(message)).toThrow(ProtocolValidationError);
+	});
+
+	test.each([
 		"wrong_service",
 		"session_not_found",
 		"session_locked",
@@ -226,6 +278,37 @@ describe("validated framed protocol APIs", () => {
 			decoder.end();
 			expect(messages).toEqual([clientHello, request]);
 		}
+	});
+
+	test("incrementally decodes fragmented and coalesced server messages", () => {
+		const response: ServerMessage = { type: "response", id: "request-1", ok: true, result: [] };
+		const first = encodeServerMessage(serverHello);
+		const second = encodeServerMessage(response);
+		const wire = new Uint8Array(first.byteLength + second.byteLength);
+		wire.set(first);
+		wire.set(second, first.byteLength);
+
+		const split = first.byteLength + Math.floor(second.byteLength / 2);
+		const decoder = new ServerMessageDecoder();
+		expect(decoder.push(wire.subarray(0, split))).toEqual([serverHello]);
+		expect(decoder.push(wire.subarray(split))).toEqual([response]);
+		decoder.end();
+	});
+
+	test("rejects non-JSON CBOR values in nested protocol details", () => {
+		const wire = encodeFrame(
+			encodeCbor({
+				type: "response",
+				id: "request-1",
+				ok: false,
+				error: {
+					code: "invalid_request",
+					message: "invalid",
+					details: { bytes: new Uint8Array([1, 2, 3]) },
+				},
+			}),
+		);
+		expect(() => new ServerMessageDecoder().push(wire)).toThrow(ProtocolValidationError);
 	});
 
 	test.each([

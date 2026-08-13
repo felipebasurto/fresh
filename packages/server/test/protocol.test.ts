@@ -1,4 +1,4 @@
-import { encodeClientMessage } from "@earendil-works/pi-protocol";
+import { encodeCbor, encodeClientMessage, encodeFrame } from "@earendil-works/pi-protocol";
 import { afterEach, expect, test } from "vitest";
 import type { ByteConnection, ByteConnectionHandler } from "../src/connection.ts";
 import { PiServer } from "../src/server.ts";
@@ -86,4 +86,77 @@ test("accepts fragmented hello and request frames", async () => {
 	const frame = encodeClientMessage(request);
 	await client.sendFragmentedMessage(request, Math.floor(frame.byteLength / 2));
 	await expect(response).resolves.toMatchObject({ ok: true, result: [] });
+});
+
+test.each([
+	["malformed CBOR", encodeFrame(Uint8Array.of(0xff))],
+	["schema-invalid CBOR", encodeFrame(encodeCbor({ type: "hello", version: 1, extra: true }))],
+	["oversized frame", new Uint8Array([1, 0, 0, 1])],
+] as const)("rejects hostile framed input: %s", async (_label, bytes) => {
+	const client = connect();
+	await client.sendBytes(bytes);
+	await expect(client.next((message) => message.type === "hello_error")).resolves.toMatchObject({
+		type: "hello_error",
+		error: { code: "invalid_request" },
+	});
+	await client.waitForClose();
+});
+
+test("rejects a second hello after completing the handshake", async () => {
+	const client = connect();
+	await client.hello();
+	await client.sendMessage({ type: "hello", version: 1 });
+	await expect(client.next((message) => message.type === "hello_error")).resolves.toMatchObject({
+		type: "hello_error",
+		error: { code: "invalid_request", message: expect.stringMatching(/first message/) },
+	});
+	await client.waitForClose();
+});
+
+test("processes a hello and request coalesced in one byte chunk", async () => {
+	const client = connect();
+	const hello = encodeClientMessage({ type: "hello", version: 1 });
+	const request = encodeClientMessage({
+		type: "request",
+		id: "request-1",
+		serviceId: "00000000000000000000000000000001",
+		call: { method: "list", args: [] },
+	});
+	const wire = new Uint8Array(hello.byteLength + request.byteLength);
+	wire.set(hello);
+	wire.set(request, hello.byteLength);
+
+	await client.sendBytes(wire);
+	await expect(client.next((message) => message.type === "hello")).resolves.toMatchObject({ type: "hello" });
+	await expect(client.next((message) => message.type === "response")).resolves.toMatchObject({
+		type: "response",
+		id: "request-1",
+		ok: true,
+		result: [],
+	});
+});
+
+test("reports a truncated final frame when the peer closes", async () => {
+	const errors: Error[] = [];
+	server = new PiServer(new TestServerService(), {
+		listeners: [],
+		serviceId: "00000000000000000000000000000001",
+		onError: (error) => errors.push(error),
+	});
+	let closed = false;
+	const connection: ByteConnection = {
+		get closed() {
+			return closed;
+		},
+		async send() {},
+		close() {
+			closed = true;
+		},
+	};
+	const handler: ByteConnectionHandler = server.accept(connection);
+	handler.onData(new Uint8Array([0, 0, 0, 2, 1]));
+	handler.onClose();
+
+	expect(closed).toBe(false);
+	expect(errors).toEqual([expect.objectContaining({ message: expect.stringMatching(/truncated/i) })]);
 });
