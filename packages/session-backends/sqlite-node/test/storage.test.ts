@@ -1,6 +1,8 @@
+import { prepareStorageCommit } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { createNodeSqliteFactory, type SqliteDatabase, SqliteStorage, sql } from "../src/index.ts";
 import { applyInitialSchema } from "../src/sqlite/migrations.ts";
+import { advanceNextSeq, readNextSeq } from "../src/sqlite/session/session-sequences.ts";
 
 async function withStorage<T>(run: (storage: SqliteStorage, db: SqliteDatabase) => Promise<T>): Promise<T> {
 	const db = await createNodeSqliteFactory().open(":memory:");
@@ -235,6 +237,63 @@ describe("SqliteStorage", () => {
 				{ id: "u2", seq: 2, usage, adjustment: true, details: { reason: "adjust" } },
 			]);
 			expect((await storage.scanUsage({ toSeq: 2, order: "desc" })).map((row) => row.id)).toEqual(["u2", "u1"]);
+		});
+	});
+
+	it("prepares committed writes with assigned sequences and timestamp", () => {
+		const prepared = prepareStorageCommit(
+			{
+				writes: [
+					{
+						kind: "entry",
+						entry: {
+							id: "entry",
+							parentId: null,
+							type: "message",
+							message: { role: "user", content: "hi", timestamp: 1 },
+						},
+					},
+					{
+						kind: "usage",
+						row: {
+							id: "usage",
+							usage: {
+								input: 1,
+								output: 2,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 3,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							},
+							adjustment: false,
+						},
+					},
+					{ kind: "register", op: "set", namespace: "fact.name", key: "", value: "name" },
+					{ kind: "register", op: "delete", namespace: "fact.label", key: "entry" },
+				],
+			},
+			7,
+			1_700_000_000_000,
+		);
+
+		expect(prepared.result).toEqual({ firstSeq: 7, seqs: [7, 8, 9, 10], timestamp: 1_700_000_000_000 });
+		expect(prepared.writes).toMatchObject([
+			{ kind: "entry", id: "entry", seq: 7, timestamp: 1_700_000_000_000 },
+			{ kind: "usage", id: "usage", seq: 8 },
+			{ kind: "register", op: "set", namespace: "fact.name", key: "", seq: 9, value: "name" },
+			{ kind: "register", op: "delete", namespace: "fact.label", key: "entry", seq: 10 },
+		]);
+	});
+
+	it("reads and advances the next commit sequence", async () => {
+		await withStorage(async (_storage, db) => {
+			sql`INSERT INTO session
+				(created_at, parent_session_id, storage_version, metadata, message_count, usage_payload, next_seq)
+				VALUES (${1}, ${null}, ${1}, ${null}, ${0}, ${JSON.stringify({})}, ${7})`.run(db);
+
+			expect(readNextSeq(db)).toBe(7);
+			advanceNextSeq(db, 10);
+			expect(readNextSeq(db)).toBe(10);
 		});
 	});
 
