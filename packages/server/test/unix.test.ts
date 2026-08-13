@@ -1,12 +1,12 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { once } from "node:events";
 import { lstat, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import type { PiServer } from "../src/index.ts";
+import { generateServiceId, type PiServer } from "../src/index.ts";
 import { connectUnixTestClient, type ProtocolTestClient, TestServerService } from "../src/testing/index.ts";
-import { createUnixServer } from "../src/transports/unix/index.ts";
+import { createUnixServer, getUnixSocketPath } from "../src/transports/unix/index.ts";
 
 const servers = new Set<PiServer>();
 const clients = new Set<ProtocolTestClient>();
@@ -37,6 +37,44 @@ afterEach(async () => {
 	servers.clear();
 	await Promise.all([...tempDirectories].map((directory) => rm(directory, { recursive: true, force: true })));
 	tempDirectories.clear();
+});
+
+test("generates unique service IDs", () => {
+	const first = generateServiceId();
+	const second = generateServiceId();
+
+	expect(first).toMatch(/^[0-9a-f]{32}$/);
+	expect(second).toMatch(/^[0-9a-f]{32}$/);
+	expect(second).not.toBe(first);
+});
+
+test("creates an in-memory service ID and derives its Unix socket path", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-server-"));
+	tempDirectories.add(directory);
+	const serviceId = generateServiceId();
+	const path = getUnixSocketPath(serviceId, directory);
+
+	expect(serviceId).toMatch(/^[0-9a-f]{32}$/);
+	expect(path).toBe(join(directory, `${serviceId}.sock`));
+	expect(getUnixSocketPath(serviceId)).toBe(join(homedir(), ".pi", "server", `${serviceId}.sock`));
+
+	const first = createUnixServer(new TestServerService(), { serviceId, path });
+	servers.add(first);
+	await first.start();
+	const firstClient = await connectUnixTestClient(path);
+	clients.add(firstClient);
+	expect(await firstClient.hello()).toMatchObject({ serviceId });
+	await firstClient.close();
+	clients.delete(firstClient);
+	await first.close();
+	servers.delete(first);
+
+	const replacement = createUnixServer(new TestServerService(), { serviceId, path });
+	servers.add(replacement);
+	await replacement.start();
+	const replacementClient = await connectUnixTestClient(path);
+	clients.add(replacementClient);
+	expect(await replacementClient.hello()).toMatchObject({ serviceId });
 });
 
 describe("Unix listener filesystem lifecycle", () => {

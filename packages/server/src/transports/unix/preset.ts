@@ -1,12 +1,13 @@
 import { PiServer } from "../../server.ts";
 import type { PiServerService } from "../../types.ts";
+import { getUnixSocketPath } from "./address.ts";
 import { createUnixListener } from "./listener.ts";
 import type { UnixServerOptions } from "./types.ts";
 
 /** Compose PiServer with one Unix-domain socket listener. */
 export function createUnixServer(service: PiServerService, options: UnixServerOptions): PiServer {
 	const listener = createUnixListener({
-		path: options.path,
+		path: options.path ?? getUnixSocketPath(options.serviceId),
 		mode: options.mode,
 		maxFrameLength: options.maxFrameLength,
 		maxPendingBytes: options.maxPendingBytes,

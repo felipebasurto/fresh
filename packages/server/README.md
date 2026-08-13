@@ -11,7 +11,7 @@ Concurrent attachments to one session reuse one hosted Harness. Losing a client 
 
 ```ts
 import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
-import type { PiServerService } from "@earendil-works/pi-server";
+import { generateServiceId, type PiServerService } from "@earendil-works/pi-server";
 import { createUnixServer } from "@earendil-works/pi-server/unix";
 
 const sessions = new MemorySessionRepo();
@@ -23,12 +23,11 @@ const service: PiServerService = {
 };
 
 const server = createUnixServer(service, {
-  path: "/tmp/pi/server.sock",
-  serviceId: loadStableServiceId(),
+  serviceId: generateServiceId(),
 });
 await server.start();
 ```
 
-Applications supply the repository and Harness factory. `serviceId` is a logical identity supplied by the installation or server profile, not a socket address.
+Applications supply the repository and Harness factory. `serviceId` is a logical identity supplied by the launcher, not a socket address. `generateServiceId()` creates an in-memory 128-bit identity. The Unix preset defaults to `~/.pi/server/<serviceId>.sock`; pass `path` to override it. A long-lived launcher can reuse the same ID and path when replacing a server process.
 
 `PiServer` composes authenticated transports through `PiServerListener`. The Unix submodule provides `createUnixListener()` and `createUnixServer()`. Low-level CBOR framing and validation come from `@earendil-works/pi-protocol`.
