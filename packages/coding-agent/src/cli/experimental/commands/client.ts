@@ -1,5 +1,5 @@
 import type { AuthInput } from "../auth.ts";
-import { Command } from "../command.ts";
+import { Command, stringOption } from "../command.ts";
 import {
 	authTokenFileOption,
 	authTokenOption,
@@ -14,6 +14,7 @@ export interface ClientCommand {
 	readonly command: "client";
 	readonly auth?: AuthInput;
 	readonly connect?: TransportAddress;
+	readonly sessionId?: string;
 }
 
 export interface ClientCommandContext {
@@ -21,14 +22,17 @@ export interface ClientCommandContext {
 }
 
 const connectOption = transportOption("--connect");
+const sessionIdOption = stringOption("--session-id");
 
 export const clientCommand = new Command<ClientCommand, ClientCommandContext>("client")
 	.option(connectOption)
+	.option(sessionIdOption)
 	.option(authTokenOption)
 	.option(authTokenFileOption)
 	.build((input) => {
 		const { auth, errors: authErrors } = parseAuth(input);
 		const connect = input.value(connectOption);
+		const sessionId = input.value(sessionIdOption);
 		const { errors: optionErrors } = parseLegacyOptions(input);
 		const errors = [...authErrors, ...optionErrors, ...unsupportedLegacyOptions("client", input)];
 		if (errors.length > 0) return { ok: false, errors };
@@ -38,6 +42,7 @@ export const clientCommand = new Command<ClientCommand, ClientCommandContext>("c
 				command: "client",
 				...(auth === undefined ? {} : { auth }),
 				...(connect === undefined ? {} : { connect }),
+				...(sessionId === undefined ? {} : { sessionId }),
 			},
 		};
 	})

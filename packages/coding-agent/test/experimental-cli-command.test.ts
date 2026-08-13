@@ -69,6 +69,16 @@ describe("experimental CLI commands", () => {
 		});
 	});
 
+	test("parses a client session ID", () => {
+		expect(experimentalCli.parse(["client", "--session-id", "demo-1"])).toEqual({
+			ok: true,
+			command: {
+				command: "client",
+				sessionId: "demo-1",
+			},
+		});
+	});
+
 	test.each([
 		[["--auth-token", "secret"], { type: "token", token: "secret" }],
 		[["--auth-token-file", "/tmp/token"], { type: "file", path: "/tmp/token" }],
