@@ -12,11 +12,13 @@ import type {
 	UsageRow,
 	UsageScan,
 } from "@earendil-works/pi-agent-core";
+import { prepareStorageCommit } from "@earendil-works/pi-agent-core";
 import { scanBranchEntries, scanBranchEntryStructures } from "./session/branch-entries.ts";
-import { decodeEntryRow, readEntryRows, scanEntryRows } from "./session/entries.ts";
-import { listRegisterRows, readRegisterRow } from "./session/registers.ts";
-import { readSessionStats } from "./session/session-stats.ts";
-import { decodeUsageLedgerRow, scanUsageLedgerRows } from "./session/usage-ledger.ts";
+import { decodeEntryRow, insertEntryRow, readEntryRows, scanEntryRows } from "./session/entries.ts";
+import { deleteRegisterRow, listRegisterRows, readRegisterRow, setRegisterRow } from "./session/registers.ts";
+import { advanceNextSeq, readNextSeq } from "./session/session-sequences.ts";
+import { addUsageToSessionStats, incrementMessageCount, readSessionStats } from "./session/session-stats.ts";
+import { decodeUsageLedgerRow, insertUsageLedgerRow, scanUsageLedgerRows } from "./session/usage-ledger.ts";
 import type { SqliteDatabase } from "./types.ts";
 
 export interface SqliteStorageOptions {
@@ -35,11 +37,14 @@ export class SqliteStorage implements Storage {
 		this.now = options.now ?? Date.now;
 	}
 
-	commit(_transaction: Transaction): Promise<CommitResult> {
+	commit(transaction: Transaction): Promise<CommitResult> {
 		if (this.state !== "open") throw new Error("SqliteStorage is closed");
-		// TODO: Implement atomic SQLite commits in one BEGIN IMMEDIATE transaction.
-		void this.now;
-		return Promise.reject(new Error("SqliteStorage.commit is not implemented"));
+		const result = this.commitQueue.then(() => this.applyCommit(transaction));
+		this.commitQueue = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		return result;
 	}
 
 	getEntries(ids: string[]): Promise<Map<string, Entry>> {
@@ -92,6 +97,40 @@ export class SqliteStorage implements Storage {
 	getStats(): Promise<SessionStats> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
 		return Promise.resolve(readSessionStats(this.db));
+	}
+
+	private applyCommit(transaction: Transaction): CommitResult {
+		return this.db.transaction(() => {
+			const firstSeq = readNextSeq(this.db);
+			const prepared = prepareStorageCommit(transaction, firstSeq, this.now());
+			// TODO: Add SQLite-backed validation for duplicate ids and missing entry parents before applying writes.
+			for (const write of prepared.writes) {
+				switch (write.kind) {
+					case "entry": {
+						const { kind: _kind, ...entry } = write;
+						insertEntryRow(this.db, entry);
+						// TODO: Maintain branch_entries/branch_meta for every inserted entry.
+						if (entry.type === "message") incrementMessageCount(this.db);
+						break;
+					}
+					case "usage": {
+						const { kind: _kind, ...row } = write;
+						insertUsageLedgerRow(this.db, row);
+						addUsageToSessionStats(this.db, row.usage);
+						break;
+					}
+					case "register":
+						if (write.op === "delete") {
+							deleteRegisterRow(this.db, write.namespace, write.key);
+						} else {
+							setRegisterRow(this.db, write.namespace, write.key, write.seq, write.value);
+						}
+						break;
+				}
+			}
+			advanceNextSeq(this.db, firstSeq + prepared.writes.length);
+			return prepared.result;
+		});
 	}
 
 	close(): Promise<void> {
