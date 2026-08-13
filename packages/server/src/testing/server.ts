@@ -2,8 +2,9 @@ import { PiServer } from "../server.ts";
 import type { PiServerOptions, PiServerService } from "../types.ts";
 import { TestServerService } from "./service.ts";
 
-export interface TestServerOptions extends PiServerOptions {
+export interface TestServerOptions extends Omit<PiServerOptions, "serviceId"> {
 	service?: PiServerService;
+	serviceId?: string;
 }
 
 export interface TestServer {
@@ -19,7 +20,7 @@ export function createTestServer(options: TestServerOptions): TestServer {
 			listeners: options.listeners,
 			maxFrameLength: options.maxFrameLength,
 			handshakeTimeoutMs: options.handshakeTimeoutMs,
-			serverId: options.serverId,
+			serviceId: options.serviceId ?? "test-service",
 			onError: options.onError,
 		}),
 		service,

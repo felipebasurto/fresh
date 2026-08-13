@@ -26,26 +26,6 @@ export class PiClientDisposedError extends Error {
 	}
 }
 
-export class PiSessionOwnershipError extends Error {
-	readonly sessionId: string;
-
-	constructor(sessionId: string, message: string) {
-		super(message);
-		this.name = "PiSessionOwnershipError";
-		this.sessionId = sessionId;
-	}
-}
-
-export class PiSessionDetachedError extends Error {
-	readonly sessionId: string;
-
-	constructor(sessionId: string) {
-		super(`Session ${sessionId} is not attached`);
-		this.name = "PiSessionDetachedError";
-		this.sessionId = sessionId;
-	}
-}
-
 export function toError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
 }

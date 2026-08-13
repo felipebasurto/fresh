@@ -3,9 +3,9 @@ import {
 	encodeClientMessage,
 	PROTOCOL_VERSION,
 	ProtocolValidationError,
+	type ServerHello,
 	type ServerMessage,
 	ServerMessageDecoder,
-	type ServerSnapshot,
 } from "@earendil-works/pi-protocol";
 import { PiDisconnectedError, PiServerError, toDisconnectedError, toError } from "./errors.ts";
 import { createPromiseResolvers, type PromiseResolvers } from "./promise.ts";
@@ -22,17 +22,18 @@ type ActiveConnection = {
 
 type ConnectionLifecycle =
 	| { state: "disconnected" }
-	| ({ state: "connecting"; handshake: PromiseResolvers<ServerSnapshot> } & ActiveConnection)
+	| ({ state: "connecting"; handshake: PromiseResolvers<ServerHello> } & ActiveConnection)
 	| ({
 			state: "connected";
 			transport: ByteTransport;
-			handshake: PromiseResolvers<ServerSnapshot> | undefined;
+			handshake: PromiseResolvers<ServerHello> | undefined;
 	  } & ActiveConnection);
 
 interface ConnectionOptions {
 	transportFactory: ByteTransportFactory;
+	serviceId: string;
 	maxFrameLength?: number;
-	onHandshake(snapshot: ServerSnapshot): void;
+	onHandshake(hello: ServerHello): void;
 	onMessage(message: Exclude<ServerMessage, { type: "hello" | "hello_error" }>): void;
 	onStateChange(change: ConnectionStateChange): void;
 }
@@ -63,12 +64,12 @@ export class Connection {
 		return this.#maxFrameLength;
 	}
 
-	connect(): Promise<ServerSnapshot> {
+	connect(): Promise<ServerHello> {
 		if (this.#lifecycle.state !== "disconnected") {
 			return Promise.reject(new PiDisconnectedError(`PiClient is already ${this.#lifecycle.state}`));
 		}
 		const id = ++this.#sequence;
-		const handshake = createPromiseResolvers<ServerSnapshot>();
+		const handshake = createPromiseResolvers<ServerHello>();
 		this.#lifecycle = {
 			state: "connecting",
 			id,
@@ -170,6 +171,14 @@ export class Connection {
 				this.#failAndClose(new ProtocolValidationError("Expected server hello as first message"));
 				return;
 			}
+			if (message.serviceId !== this.#options.serviceId) {
+				this.#failAndClose(
+					new ProtocolValidationError(
+						`Connected service ${JSON.stringify(message.serviceId)} does not match ${JSON.stringify(this.#options.serviceId)}`,
+					),
+				);
+				return;
+			}
 			if (!lifecycle.transport) {
 				this.#failAndClose(new ProtocolValidationError("Received server hello before the client hello was sent"));
 				return;
@@ -183,7 +192,7 @@ export class Connection {
 			} satisfies Extract<ConnectionLifecycle, { state: "connected" }>;
 			this.#lifecycle = connected;
 			try {
-				this.#options.onHandshake(message.snapshot);
+				this.#options.onHandshake(message);
 			} catch (error) {
 				if (this.#lifecycle === connected) this.#failAndClose(toError(error));
 				return;
@@ -192,7 +201,7 @@ export class Connection {
 			this.#options.onStateChange({ state: "connected" });
 			if (this.#lifecycle !== connected) return;
 			this.#lifecycle = { ...connected, handshake: undefined };
-			lifecycle.handshake.resolve(message.snapshot);
+			lifecycle.handshake.resolve(message);
 			return;
 		}
 		if (lifecycle.state !== "connected") return;
