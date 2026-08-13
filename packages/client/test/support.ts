@@ -13,7 +13,7 @@ export class MemoryByteServer {
 	private handlers?: ByteTransportHandlers;
 	private decoder = new ClientMessageDecoder();
 
-	constructor(serviceId = "service-1") {
+	constructor(serviceId = "00000000000000000000000000000001") {
 		this.serviceId = serviceId;
 	}
 

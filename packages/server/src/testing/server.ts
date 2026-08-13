@@ -20,7 +20,7 @@ export function createTestServer(options: TestServerOptions): TestServer {
 			listeners: options.listeners,
 			maxFrameLength: options.maxFrameLength,
 			handshakeTimeoutMs: options.handshakeTimeoutMs,
-			serviceId: options.serviceId ?? "test-service",
+			serviceId: options.serviceId ?? "00000000000000000000000000000001",
 			onError: options.onError,
 		}),
 		service,

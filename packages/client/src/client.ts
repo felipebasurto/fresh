@@ -1,6 +1,7 @@
 import {
 	createRpcClient,
 	encodeClientMessage,
+	isServiceId,
 	ProtocolValidationError,
 	type ResponseEnvelope,
 	type ServerHello,
@@ -33,7 +34,9 @@ export class PiClient {
 	#disposePromise: Promise<void> | undefined;
 
 	constructor(options: PiClientOptions) {
-		if (!options.serviceId) throw new TypeError("PiClient serviceId must not be empty");
+		if (!isServiceId(options.serviceId)) {
+			throw new TypeError("PiClient serviceId must be 32 lowercase hexadecimal characters");
+		}
 		this.#options = options;
 		this.#connection = new Connection({
 			transportFactory: options.transportFactory,

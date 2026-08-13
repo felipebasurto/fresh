@@ -16,7 +16,7 @@ const transportFactory: ByteTransportFactory = async (handlers) => {
 };
 
 const client = await PiClient.connect({
-  serviceId: "expected-logical-service-id",
+  serviceId: "0123456789abcdef0123456789abcdef",
   transportFactory,
 });
 const sessions = await client.listSessions();
@@ -44,10 +44,21 @@ import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 
 const client = new PiClient({
-  serviceId: "expected-logical-service-id",
+  serviceId: "0123456789abcdef0123456789abcdef",
   transportFactory: createUnixTransportFactory({ path: "/tmp/pi.sock" }),
 });
 await client.connect();
 ```
+
+Unix discovery scans `~/.pi/server/*.sock`, derives each expected service ID from its filename, and verifies it through the existing handshake:
+
+```ts
+import { discoverUnixServices } from "@earendil-works/pi-client/unix";
+
+const routes = await discoverUnixServices();
+// [{ serviceId: "...", path: "/home/me/.pi/server/<serviceId>.sock" }]
+```
+
+Malformed entries, non-sockets, stale or unresponsive endpoints, and service-ID mismatches are ignored. Discovery is read-only and probes at most 16 sockets concurrently. Unexpected filesystem and socket errors reject discovery. Pass `directory` or `timeoutMs` to override the defaults.
 
 `PiClientOptions.maxFrameLength` bounds protocol payloads. `maxPendingBytes` bounds queued Unix transport output. Configure matching limits on both peers.

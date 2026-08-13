@@ -7,7 +7,7 @@ import { ProtocolTestClient, TestServerService, type WireChannel } from "../src/
 let server: PiServer | undefined;
 
 function connect(): ProtocolTestClient {
-	server = new PiServer(new TestServerService(), { listeners: [], serviceId: "service-1" });
+	server = new PiServer(new TestServerService(), { listeners: [], serviceId: "00000000000000000000000000000001" });
 	let handler: ByteConnectionHandler;
 	let client: ProtocolTestClient;
 	let closed = false;
@@ -53,7 +53,7 @@ test("requires hello as the first message", async () => {
 	await client.sendMessage({
 		type: "request",
 		id: "request-1",
-		serviceId: "service-1",
+		serviceId: "00000000000000000000000000000001",
 		call: { method: "list", args: [] },
 	});
 	await expect(client.next((message) => message.type === "hello_error")).resolves.toMatchObject({
@@ -74,13 +74,13 @@ test("accepts fragmented hello and request frames", async () => {
 	const hello = encodeClientMessage({ type: "hello", version: 1 });
 	const helloResponse = client.next((message) => message.type === "hello");
 	await client.sendFragmentedMessage({ type: "hello", version: 1 }, Math.floor(hello.byteLength / 2));
-	await expect(helloResponse).resolves.toMatchObject({ type: "hello", serviceId: "service-1" });
+	await expect(helloResponse).resolves.toMatchObject({ type: "hello", serviceId: "00000000000000000000000000000001" });
 
 	const response = client.next((message) => message.type === "response");
 	const request = {
 		type: "request" as const,
 		id: "request-1",
-		serviceId: "service-1",
+		serviceId: "00000000000000000000000000000001",
 		call: { method: "list" as const, args: [] as [] },
 	};
 	const frame = encodeClientMessage(request);

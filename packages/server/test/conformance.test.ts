@@ -5,7 +5,7 @@ import { ProtocolTestClient, TestServerService, type WireChannel } from "../src/
 
 const servers = new Set<PiServer>();
 
-function createServer(service: TestServerService, serviceId = "service-1"): PiServer {
+function createServer(service: TestServerService, serviceId = "00000000000000000000000000000001"): PiServer {
 	const server = new PiServer(service, { listeners: [], serviceId });
 	servers.add(server);
 	return server;
@@ -59,7 +59,7 @@ describe("list and attach protocol", () => {
 		await service.seed();
 		const client = connect(createServer(service));
 
-		expect(await client.hello()).toMatchObject({ type: "hello", serviceId: "service-1" });
+		expect(await client.hello()).toMatchObject({ type: "hello", serviceId: "00000000000000000000000000000001" });
 		expect(service.harnesses.size).toBe(0);
 	});
 
@@ -69,7 +69,7 @@ describe("list and attach protocol", () => {
 		const client = connect(createServer(service));
 		await client.hello();
 
-		await expect(client.request("service-1", { method: "list", args: [] })).resolves.toEqual({
+		await expect(client.request("00000000000000000000000000000001", { method: "list", args: [] })).resolves.toEqual({
 			type: "response",
 			id: "request-1",
 			ok: true,
@@ -87,9 +87,12 @@ describe("list and attach protocol", () => {
 		await Promise.all([first.hello(), second.hello()]);
 
 		const delay = service.delayNextList();
-		const firstAttach = first.request("service-1", { method: "attach", args: ["session-1"] });
+		const firstAttach = first.request("00000000000000000000000000000001", { method: "attach", args: ["session-1"] });
 		await delay.entered.promise;
-		const secondAttach = second.request("service-1", { method: "attach", args: ["session-1"] });
+		const secondAttach = second.request("00000000000000000000000000000001", {
+			method: "attach",
+			args: ["session-1"],
+		});
 		delay.release.resolve(undefined);
 
 		await expect(Promise.all([firstAttach, secondAttach])).resolves.toMatchObject([
@@ -106,7 +109,9 @@ describe("list and attach protocol", () => {
 		const client = connect(createServer(service));
 		await client.hello();
 
-		await expect(client.request("other", { method: "attach", args: ["session-1"] })).resolves.toMatchObject({
+		await expect(
+			client.request("00000000000000000000000000000002", { method: "attach", args: ["session-1"] }),
+		).resolves.toMatchObject({
 			ok: false,
 			error: { code: "wrong_service" },
 		});
@@ -118,7 +123,9 @@ describe("list and attach protocol", () => {
 		const client = connect(createServer(service));
 		await client.hello();
 
-		await expect(client.request("service-1", { method: "attach", args: ["missing"] })).resolves.toMatchObject({
+		await expect(
+			client.request("00000000000000000000000000000001", { method: "attach", args: ["missing"] }),
+		).resolves.toMatchObject({
 			ok: false,
 			error: { code: "session_not_found" },
 		});
@@ -131,7 +138,7 @@ describe("list and attach protocol", () => {
 		const server = createServer(service);
 		const client = connect(server);
 		await client.hello();
-		await client.request("service-1", { method: "attach", args: ["session-1"] });
+		await client.request("00000000000000000000000000000001", { method: "attach", args: ["session-1"] });
 		const harness = service.latestHarness("session-1");
 
 		await client.close();

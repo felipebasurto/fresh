@@ -25,29 +25,30 @@ afterEach(async () => {
 	tempDirectory = undefined;
 });
 
-test("requires explicit listeners and service identity", () => {
+test("requires explicit listeners and a 128-bit service identity", () => {
 	expect(() => Reflect.construct(PiServer, [service, {}])).toThrow(/listeners/);
 	expect(() => new PiServer(service, { listeners: [], serviceId: "" })).toThrow(/serviceId/);
+	expect(() => new PiServer(service, { listeners: [], serviceId: "invalid-service" })).toThrow(/serviceId/);
 });
 
 test("rejects Unix socket paths that cannot fit in sockaddr_un", () => {
-	expect(() => createUnixServer(service, { path: `/tmp/${"x".repeat(512)}`, serviceId: "service-1" })).toThrow(
-		/too long/,
-	);
+	expect(() =>
+		createUnixServer(service, { path: `/tmp/${"x".repeat(512)}`, serviceId: "00000000000000000000000000000001" }),
+	).toThrow(/too long/);
 });
 
 test("rejects an overlong derived private Unix bind path", async () => {
 	const maxLength = process.platform === "linux" ? 107 : 103;
 	const suffixLength = Buffer.byteLength("/tmp//s");
 	const path = `/tmp/${"x".repeat(maxLength - suffixLength)}/s`;
-	server = createUnixServer(service, { path, serviceId: "service-1" });
+	server = createUnixServer(service, { path, serviceId: "00000000000000000000000000000001" });
 
 	await expect(server.start()).rejects.toThrow(/private Unix bind path.*too long/);
 });
 
 test("rejects concurrent start calls without leaking the Unix listener", async () => {
 	const path = await makeSocketPath();
-	server = createUnixServer(service, { path, serviceId: "service-1" });
+	server = createUnixServer(service, { path, serviceId: "00000000000000000000000000000001" });
 	const starting = server.start();
 	await expect(server.start()).rejects.toThrow(/starting/);
 	await starting;
@@ -72,7 +73,7 @@ test("handshake timeout cleanup does not wait for a blocked output queue", async
 	}
 	const core = new PiServer(service, {
 		listeners: [],
-		serviceId: "service-1",
+		serviceId: "00000000000000000000000000000001",
 		maxFrameLength: 1024,
 		handshakeTimeoutMs: 10,
 	});
@@ -88,17 +89,30 @@ test("handshake timeout cleanup does not wait for a blocked output queue", async
 
 test("rejects timeout values above Node's maximum timer delay", () => {
 	const path = "/tmp/pi-server-timeout-test.sock";
-	expect(() => createUnixServer(service, { path, serviceId: "service-1", handshakeTimeoutMs: 2_147_483_648 })).toThrow(
-		/handshakeTimeoutMs/,
-	);
 	expect(() =>
-		createUnixServer(service, { path, serviceId: "service-1", gracefulCloseTimeoutMs: 2_147_483_648 }),
+		createUnixServer(service, {
+			path,
+			serviceId: "00000000000000000000000000000001",
+			handshakeTimeoutMs: 2_147_483_648,
+		}),
+	).toThrow(/handshakeTimeoutMs/);
+	expect(() =>
+		createUnixServer(service, {
+			path,
+			serviceId: "00000000000000000000000000000001",
+			gracefulCloseTimeoutMs: 2_147_483_648,
+		}),
 	).toThrow(/gracefulCloseTimeoutMs/);
 });
 
 test("rejects pending-byte limits smaller than one maximum frame", async () => {
 	const path = await makeSocketPath();
 	expect(() =>
-		createUnixServer(service, { path, serviceId: "service-1", maxFrameLength: 128, maxPendingBytes: 131 }),
+		createUnixServer(service, {
+			path,
+			serviceId: "00000000000000000000000000000001",
+			maxFrameLength: 128,
+			maxPendingBytes: 131,
+		}),
 	).toThrow(/maxPendingBytes/);
 });

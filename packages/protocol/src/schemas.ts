@@ -1,5 +1,6 @@
 import type { SessionMetadata as AgentSessionMetadata } from "@earendil-works/pi-agent-core";
 import Type, { type Static } from "typebox";
+import { Check } from "typebox/value";
 import {
 	createRpcCallSchema,
 	createRpcResultSchema,
@@ -34,10 +35,14 @@ const JsonValueRecursiveSchema = Type.Cyclic(
 );
 export const JsonValueSchema = Type.Unsafe<JsonValue>(JsonValueRecursiveSchema);
 
-export const ServiceIdSchema = IdSchema;
+export const ServiceIdSchema = Type.String({ pattern: "^[0-9a-f]{32}$" });
 export const SessionIdSchema = IdSchema;
 export type ServiceId = Static<typeof ServiceIdSchema>;
 export type SessionId = Static<typeof SessionIdSchema>;
+
+export function isServiceId(value: unknown): value is ServiceId {
+	return Check(ServiceIdSchema, value);
+}
 
 /** The durable metadata returned directly by SessionRepo.list(). */
 export type SessionMetadata = AgentSessionMetadata;

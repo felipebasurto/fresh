@@ -3,18 +3,30 @@ import { describe, expect, test, vi } from "vitest";
 import { PiClient, PiClientDisposedError, PiDisconnectedError } from "../src/index.ts";
 import { MemoryByteServer } from "./support.ts";
 
-async function connectClient(server: MemoryByteServer, serviceId = "service-1"): Promise<PiClient> {
+async function connectClient(
+	server: MemoryByteServer,
+	serviceId = "00000000000000000000000000000001",
+): Promise<PiClient> {
 	return PiClient.connect({ serviceId, transportFactory: (handlers) => server.connect(handlers) });
 }
+
+test("requires a 128-bit service identity", () => {
+	expect(() => new PiClient({ serviceId: "invalid-service", transportFactory: () => Promise.reject() })).toThrow(
+		/serviceId/,
+	);
+});
 
 describe("PiClient list and attach", () => {
 	test("connects only to the expected logical service", async () => {
 		const matching = new MemoryByteServer();
 		const client = await connectClient(matching);
-		expect(client.hello).toMatchObject({ serviceId: "service-1", connectionId: "connection-1" });
+		expect(client.hello).toMatchObject({
+			serviceId: "00000000000000000000000000000001",
+			connectionId: "connection-1",
+		});
 		await client.dispose();
 
-		const wrong = new MemoryByteServer("other-service");
+		const wrong = new MemoryByteServer("00000000000000000000000000000002");
 		await expect(connectClient(wrong)).rejects.toBeInstanceOf(ProtocolValidationError);
 	});
 
@@ -26,7 +38,7 @@ describe("PiClient list and attach", () => {
 		expect(server.messages[1]).toEqual({
 			type: "request",
 			id: "request-1",
-			serviceId: "service-1",
+			serviceId: "00000000000000000000000000000001",
 			call: { method: "list", args: [] },
 		});
 		server.send({
@@ -41,7 +53,7 @@ describe("PiClient list and attach", () => {
 		await vi.waitFor(() => expect(server.messages).toHaveLength(3));
 		expect(server.messages[2]).toMatchObject({
 			type: "request",
-			serviceId: "service-1",
+			serviceId: "00000000000000000000000000000001",
 			call: { method: "attach", args: ["session-1"] },
 		});
 		server.send({

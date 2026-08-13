@@ -13,8 +13,8 @@ export class PiServerError extends Error {
 }
 
 export class PiDisconnectedError extends Error {
-	constructor(message = "Pi client is disconnected") {
-		super(message);
+	constructor(message = "Pi client is disconnected", cause?: Error) {
+		super(message, cause === undefined ? undefined : { cause });
 		this.name = "PiDisconnectedError";
 	}
 }
@@ -32,5 +32,5 @@ export function toError(error: unknown): Error {
 
 export function toDisconnectedError(error: unknown): PiDisconnectedError {
 	const cause = toError(error);
-	return cause instanceof PiDisconnectedError ? cause : new PiDisconnectedError(cause.message);
+	return cause instanceof PiDisconnectedError ? cause : new PiDisconnectedError(cause.message, cause);
 }

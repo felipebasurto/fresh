@@ -27,7 +27,7 @@ const serverHello: ServerHello = {
 	type: "hello",
 	version: PROTOCOL_VERSION,
 	connectionId: "connection-1",
-	serviceId: "service-1",
+	serviceId: "00000000000000000000000000000001",
 };
 
 const metadata = {
@@ -88,17 +88,31 @@ describe("protocol validation", () => {
 		expect(() => parseClientMessage(message)).toThrow(ProtocolValidationError);
 	});
 
+	test.each(["", "service-1", "0".repeat(31), "0".repeat(33), "A".repeat(32)])(
+		"rejects non-128-bit service ID %j",
+		(serviceId) => {
+			expect(() =>
+				parseClientMessage({
+					type: "request",
+					id: "request-1",
+					serviceId,
+					call: { method: "list", args: [] },
+				}),
+			).toThrow(ProtocolValidationError);
+		},
+	);
+
 	test("validates list and attach RPC calls with logical targets", () => {
 		const list: ClientMessage = {
 			type: "request",
 			id: "request-1",
-			serviceId: "service-1",
+			serviceId: "00000000000000000000000000000001",
 			call: { method: "list", args: [] },
 		};
 		const attach: ClientMessage = {
 			type: "request",
 			id: "request-2",
-			serviceId: "service-1",
+			serviceId: "00000000000000000000000000000001",
 			call: { method: "attach", args: ["session-1"] },
 		};
 		expect(parseClientMessage(list)).toEqual(list);
@@ -197,7 +211,7 @@ describe("validated framed protocol APIs", () => {
 		const request: ClientMessage = {
 			type: "request",
 			id: "request-1",
-			serviceId: "service-1",
+			serviceId: "00000000000000000000000000000001",
 			call: { method: "list", args: [] },
 		};
 		const first = encodeClientMessage(clientHello);

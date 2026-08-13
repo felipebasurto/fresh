@@ -20,7 +20,7 @@ async function makeSocketPath(nested = false): Promise<string> {
 }
 
 function makeServer(path: string): PiServer {
-	const server = createUnixServer(new TestServerService(), { path, serviceId: "service-1" });
+	const server = createUnixServer(new TestServerService(), { path, serviceId: "00000000000000000000000000000001" });
 	servers.add(server);
 	return server;
 }
