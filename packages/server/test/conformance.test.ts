@@ -100,7 +100,6 @@ describe("list and attach protocol", () => {
 			{ ok: true, result: { sessionId: "session-1" } },
 		]);
 		expect(host.harnesses.get("session-1")).toHaveLength(1);
-		expect(server.hostedSessions.map(({ sessionId }) => sessionId)).toEqual(["session-1"]);
 	});
 
 	test("rejects requests addressed to another service before repository access", async () => {
@@ -143,7 +142,6 @@ describe("list and attach protocol", () => {
 
 		await firstHarness.terminate(new Error("worker crashed"));
 		await firstHarness.terminated;
-		expect(server.hostedSessions).toEqual([]);
 
 		await expect(
 			client.request("00000000000000000000000000000001", { method: "attach", args: ["session-1"] }),
@@ -187,7 +185,6 @@ describe("server draining", () => {
 		await server.closed;
 
 		expect(harness.closeCount).toBe(1);
-		expect(server.hostedSessions).toEqual([]);
 	});
 
 	test("rejects a drain addressed to another service", async () => {
@@ -206,7 +203,6 @@ describe("server draining", () => {
 		).resolves.toMatchObject({ ok: false, error: { code: "wrong_service" } });
 
 		expect(host.latestHarness("session-1").closeCount).toBe(0);
-		expect(server.hostedSessions.map(({ sessionId }) => sessionId)).toEqual(["session-1"]);
 	});
 
 	test("only the drain owner schedules shutdown", async () => {
@@ -253,7 +249,6 @@ describe("server draining", () => {
 		await expect(server.closed).rejects.toThrow(/Failed to close hosted Harnesses/);
 		expect(failedHarness.closeCount).toBe(1);
 		expect(closedHarness.closeCount).toBe(1);
-		expect(server.hostedSessions.map(({ sessionId }) => sessionId)).toEqual(["session-1"]);
 
 		servers.delete(server);
 		await failedHarness.close();
@@ -287,7 +282,6 @@ describe("hosted Harness acquisition failures", () => {
 			{ ok: false, error: { code: "internal_error" } },
 		]);
 		expect(host.openCount).toBe(1);
-		expect(server.hostedSessions).toEqual([]);
 
 		await expect(
 			first.request("00000000000000000000000000000001", { method: "attach", args: ["session-1"] }),
@@ -307,7 +301,6 @@ describe("hosted Harness acquisition failures", () => {
 		await expect(
 			client.request("00000000000000000000000000000001", { method: "attach", args: ["session-1"] }),
 		).resolves.toMatchObject({ ok: false, error: { code: "internal_error" } });
-		expect(server.hostedSessions).toEqual([]);
 
 		await expect(
 			client.request("00000000000000000000000000000001", { method: "attach", args: ["session-1"] }),
@@ -334,6 +327,5 @@ describe("hosted Harness acquisition failures", () => {
 		await closing;
 		await expect(attach).rejects.toThrow(/closed/i);
 		expect(host.latestHarness("session-1").closeCount).toBe(1);
-		expect(server.hostedSessions).toEqual([]);
 	});
 });

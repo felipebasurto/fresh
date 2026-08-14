@@ -16,7 +16,7 @@ import {
 } from "./schemas.ts";
 
 export class ProtocolValidationError extends Error {
-	constructor(message: string, _value?: unknown) {
+	constructor(message: string) {
 		super(message);
 		this.name = "ProtocolValidationError";
 	}
@@ -157,14 +157,6 @@ export class ServerMessageDecoder {
 	end(): void {
 		this.decoder.end();
 	}
-}
-
-export function createClientMessageDecoder(options?: FrameDecoderOptions): ClientMessageDecoder {
-	return new ClientMessageDecoder(options);
-}
-
-export function createServerMessageDecoder(options?: FrameDecoderOptions): ServerMessageDecoder {
-	return new ServerMessageDecoder(options);
 }
 
 export function isSupportedProtocolVersion(version: number): version is typeof PROTOCOL_VERSION {

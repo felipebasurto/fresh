@@ -1,6 +1,5 @@
 import type { Session, SessionMetadata } from "@earendil-works/pi-agent-core";
 import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
-import { SessionLockedError } from "../errors.ts";
 import type { HostedHarnessHandle, PiServerHost } from "../types.ts";
 
 export class Deferred<T> {
@@ -74,7 +73,6 @@ interface ListDelay {
 export class TestServerHost implements PiServerHost {
 	readonly repo = new MemorySessionRepo({ now: () => 1 });
 	readonly harnesses = new Map<string, TestHarness[]>();
-	readonly locked = new Set<string>();
 	openCount = 0;
 	failNextOpen?: Error;
 	failNextHarness?: Error;
@@ -101,7 +99,6 @@ export class TestServerHost implements PiServerHost {
 				this.failNextOpen = undefined;
 				throw error;
 			}
-			if (this.locked.has(metadata.id)) throw new SessionLockedError(`Session is locked: ${metadata.id}`);
 			return this.repo.open(metadata);
 		},
 	};

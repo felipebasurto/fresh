@@ -20,13 +20,10 @@ export type ByteConnectionAcceptor = (connection: ByteConnection) => ByteConnect
 export type ConnectionStage = "awaitingHello" | "handshaking" | "ready" | "closing" | "closed";
 
 export interface ConnectionState {
-	id: string;
 	connection: ByteConnection;
 	decoder: ClientMessageDecoder;
-	sessionIds: Set<string>;
 	stage: ConnectionStage;
 	disconnected: boolean;
-	handshakeComplete: boolean;
 	handshake?: Promise<void>;
 	handshakeTimeout: NodeJS.Timeout;
 }

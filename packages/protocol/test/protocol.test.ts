@@ -28,7 +28,6 @@ const clientHello: ClientHello = { type: "hello", version: PROTOCOL_VERSION };
 const serverHello: ServerHello = {
 	type: "hello",
 	version: PROTOCOL_VERSION,
-	connectionId: "connection-1",
 	serviceId: "00000000000000000000000000000001",
 };
 
@@ -228,7 +227,6 @@ describe("protocol validation", () => {
 	});
 
 	test.each([
-		["empty connection id", { ...serverHello, connectionId: "" }],
 		["invalid service id", { ...serverHello, serviceId: "service-1" }],
 		["missing response result", { type: "response", id: "request-1", ok: true }],
 		["extra response field", { type: "response", id: "request-1", ok: true, result: [], extra: true }],
@@ -236,22 +234,18 @@ describe("protocol validation", () => {
 		expect(() => parseServerMessage(message)).toThrow(ProtocolValidationError);
 	});
 
-	test.each([
-		"wrong_service",
-		"session_not_found",
-		"session_locked",
-		"server_busy",
-		"server_draining",
-		"internal_error",
-	] as const)("accepts the %s error code", (code) => {
-		const message: ServerMessage = {
-			type: "response",
-			id: "request-1",
-			ok: false,
-			error: { code, message: "safe" },
-		};
-		expect(parseServerMessage(message)).toEqual(message);
-	});
+	test.each(["wrong_service", "session_not_found", "server_draining", "internal_error"] as const)(
+		"accepts the %s error code",
+		(code) => {
+			const message: ServerMessage = {
+				type: "response",
+				id: "request-1",
+				ok: false,
+				error: { code, message: "safe" },
+			};
+			expect(parseServerMessage(message)).toEqual(message);
+		},
+	);
 
 	test("rejects unknown messages and fields", () => {
 		expect(() => parseServerMessage({ ...serverHello, snapshot: {} })).toThrow(ProtocolValidationError);
@@ -261,24 +255,6 @@ describe("protocol validation", () => {
 	test("does not parse JSON strings as messages", () => {
 		expect(() => parseClientMessage(JSON.stringify(clientHello))).toThrow(ProtocolValidationError);
 		expect(() => parseServerMessage(JSON.stringify(serverHello))).toThrow(ProtocolValidationError);
-	});
-
-	test("rejects cyclic JSON error details without retaining the payload", () => {
-		const details: Record<string, unknown> = {};
-		details.self = details;
-		let thrown: unknown;
-		try {
-			parseServerMessage({
-				type: "response",
-				id: "request-1",
-				ok: false,
-				error: { code: "invalid_request", message: "invalid", details },
-			});
-		} catch (error) {
-			thrown = error;
-		}
-		expect(thrown).toBeInstanceOf(ProtocolValidationError);
-		expect(Object.hasOwn(thrown as object, "value")).toBe(false);
 	});
 });
 
@@ -329,22 +305,6 @@ describe("validated framed protocol APIs", () => {
 		expect(decoder.push(wire.subarray(0, split))).toEqual([serverHello]);
 		expect(decoder.push(wire.subarray(split))).toEqual([response]);
 		decoder.end();
-	});
-
-	test("rejects non-JSON CBOR values in nested protocol details", () => {
-		const wire = encodeFrame(
-			encodeCbor({
-				type: "response",
-				id: "request-1",
-				ok: false,
-				error: {
-					code: "invalid_request",
-					message: "invalid",
-					details: { bytes: new Uint8Array([1, 2, 3]) },
-				},
-			}),
-		);
-		expect(() => new ServerMessageDecoder().push(wire)).toThrow(ProtocolValidationError);
 	});
 
 	test.each([

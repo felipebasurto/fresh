@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
@@ -91,22 +92,35 @@ afterEach(async () => {
 
 describe.skipIf(process.platform === "win32")("experimental CLI server replacement", () => {
 	test("a second CLI generation starts clean and accepts explicit reattachment", async () => {
-		const home = await mkdtemp(join("/tmp", "pcs-"));
-		directories.add(home);
-		const directory = join(home, ".pi", "server");
+		const root = await mkdtemp(join(tmpdir(), "pcs-"));
+		directories.add(root);
+		const home = join(root, "long-home-segment".repeat(8));
+		await mkdir(home);
 		const first = await startServer(home);
 		const firstIdentity = await waitForOutput(first, /Service: ([0-9a-f]{32})/);
-		await waitForOutput(first, /Socket: .+\.sock/);
-		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
+		const firstSocket = await waitForOutput(first, /Socket: (.+\.sock)/);
+		expect(firstSocket[1]).not.toContain(home);
+		expect(Buffer.byteLength(firstSocket[1]!)).toBeLessThanOrEqual(103);
+		await runExperimentalClient({
+			command: "client",
+			sessionId: "demo-1",
+			connect: { transport: "unix", path: firstSocket[1]! },
+		});
 
 		const replacement = await startServer(home);
 		const replacementIdentity = await waitForOutput(replacement, /Service: ([0-9a-f]{32})/);
-		await waitForOutput(replacement, /Socket: .+\.sock/);
+		const replacementSocket = await waitForOutput(replacement, /Socket: (.+\.sock)/);
 		await waitForExit(first.child);
 
 		expect(replacementIdentity[1]).toBe(firstIdentity[1]);
+		expect(replacementSocket[1]).toBe(firstSocket[1]);
 		expect(replacement.child.pid).not.toBe(first.child.pid);
-		await expect(runExperimentalClient({ command: "client" }, { directory })).resolves.toMatchObject({
+		await expect(
+			runExperimentalClient({
+				command: "client",
+				connect: { transport: "unix", path: replacementSocket[1]! },
+			}),
+		).resolves.toMatchObject({
 			kind: "list",
 			sessions: [
 				{ serviceId: firstIdentity[1], sessionId: "demo-1" },
@@ -114,7 +128,11 @@ describe.skipIf(process.platform === "win32")("experimental CLI server replaceme
 			],
 		});
 		await expect(
-			runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory }),
+			runExperimentalClient({
+				command: "client",
+				sessionId: "demo-1",
+				connect: { transport: "unix", path: replacementSocket[1]! },
+			}),
 		).resolves.toMatchObject({ kind: "attached", sessionId: "demo-1" });
 	});
 });

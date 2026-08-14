@@ -12,7 +12,4 @@ export interface UnixListenerOptions {
 	onError?: (error: Error) => void;
 }
 
-export interface UnixServerOptions extends Omit<PiServerOptions, "listeners">, Omit<UnixListenerOptions, "path"> {
-	/** Defaults to ~/.pi/server/<serviceId>.sock. */
-	path?: string;
-}
+export interface UnixServerOptions extends Omit<PiServerOptions, "listeners">, UnixListenerOptions {}

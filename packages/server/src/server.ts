@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
 	type ClientHello,
 	type ClientMessage,
@@ -24,16 +23,10 @@ import {
 	type ConnectionState,
 	isTerminalConnection,
 } from "./connection.ts";
-import {
-	INTERNAL_SERVER_ERROR_MESSAGE,
-	InternalServerError,
-	PiServerError,
-	ServerDrainingError,
-	WrongServiceError,
-} from "./errors.ts";
+import { INTERNAL_SERVER_ERROR_MESSAGE, PiServerError, ServerDrainingError, WrongServiceError } from "./errors.ts";
 import { HostedHarnessManager } from "./hosted-harness-manager.ts";
 import type { PiServerListener } from "./listener.ts";
-import type { HostedSessionInfo, PiServerHost, PiServerOptions } from "./types.ts";
+import type { PiServerHost, PiServerOptions } from "./types.ts";
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
 const MAX_UINT32 = 0xffff_ffff;
@@ -75,14 +68,6 @@ export class PiServer {
 			this.rejectClosed = reject;
 		});
 		void this.closed.catch(() => {});
-	}
-
-	get addresses(): readonly string[] {
-		return this.listeners.flatMap((listener) => (listener.address === undefined ? [] : [listener.address]));
-	}
-
-	get hostedSessions(): readonly HostedSessionInfo[] {
-		return this.sessions.hosted;
 	}
 
 	start(): Promise<this> {
@@ -145,13 +130,10 @@ export class PiServer {
 		}, this.handshakeTimeoutMs);
 		handshakeTimeout.unref();
 		state = {
-			id: randomUUID(),
 			connection,
 			decoder: new ClientMessageDecoder({ maxFrameLength: this.maxFrameLength }),
-			sessionIds: new Set(),
 			stage: "awaitingHello",
 			disconnected: false,
-			handshakeComplete: false,
 			handshakeTimeout,
 		};
 		this.connections.add(state);
@@ -262,11 +244,9 @@ export class PiServer {
 		const sent = await this.sendMessage(state, {
 			type: "hello",
 			version: PROTOCOL_VERSION,
-			connectionId: state.id,
 			serviceId: this.serviceId,
 		} satisfies ServerHello);
 		if (sent && !state.disconnected && state.stage === "handshaking") {
-			state.handshakeComplete = true;
 			state.stage = "ready";
 			clearTimeout(state.handshakeTimeout);
 		}
@@ -284,7 +264,7 @@ export class PiServer {
 				ownsDrain = true;
 				result = await this.drain();
 			} else {
-				result = await this.sessions.executeCall(state, envelope.call);
+				result = await this.sessions.executeCall(envelope.call);
 			}
 			await this.sendMessage(state, {
 				type: "response",
@@ -330,7 +310,6 @@ export class PiServer {
 		connection.stage = "closed";
 		clearTimeout(connection.handshakeTimeout);
 		this.connections.delete(connection);
-		this.sessions.disconnect(connection);
 	}
 
 	private async sendMessage(connection: ConnectionState, message: ServerMessage): Promise<boolean> {
@@ -391,14 +370,8 @@ export class PiServer {
 	}
 
 	private toProtocolError(error: unknown): ProtocolError {
-		if (error instanceof InternalServerError) {
-			this.reportError(error.cause);
-			return { code: "internal_error", message: INTERNAL_SERVER_ERROR_MESSAGE };
-		}
 		if (error instanceof PiServerError) {
-			return error.details === undefined
-				? { code: error.code, message: error.message }
-				: { code: error.code, message: error.message, details: error.details };
+			return { code: error.code, message: error.message };
 		}
 		if (error instanceof ProtocolValidationError) {
 			return { code: "invalid_request", message: error.message };

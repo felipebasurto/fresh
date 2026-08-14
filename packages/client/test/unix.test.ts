@@ -2,7 +2,6 @@ import { type ChildProcess, fork } from "node:child_process";
 import { once } from "node:events";
 import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { PiServer } from "../../server/src/server.ts";
@@ -16,7 +15,7 @@ const rawSockets = new Set<Socket>();
 const children = new Set<ChildProcess>();
 
 async function makeDirectory(): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "pc-"));
+	const directory = await mkdtemp(join("/tmp", "pc-"));
 	tempDirectories.add(directory);
 	return directory;
 }
