@@ -1,14 +1,14 @@
-# Session storage benchmarks
+# Session benchmarks
 
 Run these commands from `packages/agent`.
 
-These benchmarks use deterministic synthetic data. The scale datasets are linear branches of user-message entries with fixed 256-byte text payloads, deterministic IDs, and 250-entry seed transactions. They exercise explicit storage structures and make no claim to reproduce production traffic.
+These benchmarks use deterministic synthetic data and make no claim to reproduce production traffic. Storage and repository fork datasets are linear branches of user-message entries with fixed 256-byte text payloads, deterministic IDs, and 250-entry seed transactions. Repository catalog datasets contain deterministic closed sessions.
 
 ## Timing
 
-The timing suite runs steady-state scenarios against every target in `storage-targets.ts`. Read scenarios reuse one immutable fixture per backend/dataset and validate their result once before timing. Every warmup and measured write runs once against an independently prepared fixture, so entry counts, sequence numbers, and durable artifacts start in equivalent states. Implementations are registered under the same Vitest suite so additional backends are directly comparable.
+The timing suite runs scenarios against every target in `storage-targets.ts` and `session-repo-targets.ts`. Read scenarios reuse one immutable fixture per backend/dataset and validate their result once before timing. Every warmup and measured write runs once against an independently prepared fixture, so entry counts, sequence numbers, and durable artifacts start in equivalent states. Implementations are registered under the same Vitest suite so additional backends are directly comparable.
 
-Initial write scenarios cover a single message, a 100-message transaction, and a mixed message/register/usage append to a 1k-entry synthetic branch. Fixture preparation, transaction generation, and validation happen outside the measured callback.
+Storage writes cover a single message, a 100-message transaction, and a mixed message/register/usage append to a 1k-entry synthetic branch. Repository scenarios cover listing 100, 1k, and 10k closed sessions and forking the current branch of open 1k- and 10k-entry source sessions. Fixture preparation, transaction generation, and validation happen outside the measured callback.
 
 ```sh
 npm run bench:session:timing
