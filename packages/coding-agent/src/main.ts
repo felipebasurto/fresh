@@ -589,9 +589,9 @@ async function waitForTermination(serverClosed: Promise<void>): Promise<void> {
 
 async function runExperimentalServerCommand(command: ServerCommand): Promise<void> {
 	if (command.auth !== undefined) throw new Error("Authentication is not supported by the local demo server");
-	if (command.listen !== undefined) throw new Error("The local demo server uses its service-addressed Unix socket");
+	if (command.listen !== undefined) throw new Error("The local demo server uses its server-addressed Unix socket");
 	const runtime = await startExperimentalServerGeneration();
-	console.log(`Service: ${runtime.serviceId}`);
+	console.log(`Server: ${runtime.serverId}`);
 	console.log(`Socket: ${runtime.socketPath}`);
 	try {
 		await waitForTermination(runtime.closed);
@@ -603,10 +603,10 @@ async function runExperimentalServerCommand(command: ServerCommand): Promise<voi
 async function runExperimentalClientCommand(command: ClientCommand): Promise<void> {
 	const result = await runExperimentalClient(command);
 	if (result.kind === "attached") {
-		console.log(`${result.serviceId}\t${result.sessionId}\tattached`);
+		console.log(`${result.serverId}\t${result.sessionId}\tattached`);
 		return;
 	}
-	for (const session of result.sessions) console.log(`${session.serviceId}\t${session.sessionId}`);
+	for (const session of result.sessions) console.log(`${session.serverId}\t${session.sessionId}`);
 }
 
 async function runExperimentalCommand(args: string[]): Promise<boolean> {

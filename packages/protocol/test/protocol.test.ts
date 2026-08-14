@@ -28,7 +28,7 @@ const clientHello: ClientHello = { type: "hello", version: PROTOCOL_VERSION };
 const serverHello: ServerHello = {
 	type: "hello",
 	version: PROTOCOL_VERSION,
-	serviceId: "00000000000000000000000000000001",
+	serverId: "00000000-0000-4000-8000-000000000001",
 };
 
 const metadata = {
@@ -121,37 +121,40 @@ describe("protocol validation", () => {
 		expect(() => parseClientMessage(message)).toThrow(ProtocolValidationError);
 	});
 
-	test.each(["", "service-1", "0".repeat(31), "0".repeat(33), "A".repeat(32)])(
-		"rejects non-128-bit service ID %j",
-		(serviceId) => {
-			expect(() =>
-				parseClientMessage({
-					type: "request",
-					id: "request-1",
-					serviceId,
-					call: { method: "list", args: [] },
-				}),
-			).toThrow(ProtocolValidationError);
-		},
-	);
+	test.each([
+		"",
+		"server-1",
+		"00000000-0000-7000-8000-000000000001",
+		"00000000-0000-4000-7000-000000000001",
+		"00000000-0000-4000-8000-00000000000A",
+	])("rejects non-canonical UUIDv4 server ID %j", (serverId) => {
+		expect(() =>
+			parseClientMessage({
+				type: "request",
+				id: "request-1",
+				serverId,
+				call: { method: "list", args: [] },
+			}),
+		).toThrow(ProtocolValidationError);
+	});
 
 	test("validates service and launcher-control RPC calls with logical targets", () => {
 		const list: ClientMessage = {
 			type: "request",
 			id: "request-1",
-			serviceId: "00000000000000000000000000000001",
+			serverId: "00000000-0000-4000-8000-000000000001",
 			call: { method: "list", args: [] },
 		};
 		const attach: ClientMessage = {
 			type: "request",
 			id: "request-2",
-			serviceId: "00000000000000000000000000000001",
+			serverId: "00000000-0000-4000-8000-000000000001",
 			call: { method: "attach", args: ["session-1"] },
 		};
 		const drain: ClientMessage = {
 			type: "request",
 			id: "request-3",
-			serviceId: "00000000000000000000000000000001",
+			serverId: "00000000-0000-4000-8000-000000000001",
 			call: { method: "drain", args: [] },
 		};
 		expect(parseClientMessage(list)).toEqual(list);
@@ -202,14 +205,19 @@ describe("protocol validation", () => {
 	test.each([
 		[
 			"empty request id",
-			{ type: "request", id: "", serviceId: "00000000000000000000000000000001", call: { method: "list", args: [] } },
+			{
+				type: "request",
+				id: "",
+				serverId: "00000000-0000-4000-8000-000000000001",
+				call: { method: "list", args: [] },
+			},
 		],
 		[
 			"empty session id",
 			{
 				type: "request",
 				id: "request-1",
-				serviceId: "00000000000000000000000000000001",
+				serverId: "00000000-0000-4000-8000-000000000001",
 				call: { method: "attach", args: [""] },
 			},
 		],
@@ -218,7 +226,7 @@ describe("protocol validation", () => {
 			{
 				type: "request",
 				id: "request-1",
-				serviceId: "00000000000000000000000000000001",
+				serverId: "00000000-0000-4000-8000-000000000001",
 				call: { method: "list", args: [], extra: true },
 			},
 		],
@@ -227,14 +235,14 @@ describe("protocol validation", () => {
 	});
 
 	test.each([
-		["invalid service id", { ...serverHello, serviceId: "service-1" }],
+		["invalid server id", { ...serverHello, serverId: "server-1" }],
 		["missing response result", { type: "response", id: "request-1", ok: true }],
 		["extra response field", { type: "response", id: "request-1", ok: true, result: [], extra: true }],
 	] as const)("rejects malformed server boundaries: %s", (_label, message) => {
 		expect(() => parseServerMessage(message)).toThrow(ProtocolValidationError);
 	});
 
-	test.each(["wrong_service", "session_not_found", "server_draining", "internal_error"] as const)(
+	test.each(["wrong_server", "session_not_found", "server_draining", "internal_error"] as const)(
 		"accepts the %s error code",
 		(code) => {
 			const message: ServerMessage = {
@@ -275,7 +283,7 @@ describe("validated framed protocol APIs", () => {
 		const request: ClientMessage = {
 			type: "request",
 			id: "request-1",
-			serviceId: "00000000000000000000000000000001",
+			serverId: "00000000-0000-4000-8000-000000000001",
 			call: { method: "list", args: [] },
 		};
 		const first = encodeClientMessage(clientHello);

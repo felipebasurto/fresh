@@ -31,7 +31,7 @@ type ConnectionLifecycle =
 
 interface ConnectionOptions {
 	transportFactory: ByteTransportFactory;
-	serviceId: string;
+	serverId: string;
 	maxFrameLength?: number;
 	onHandshake(hello: ServerHello): void;
 	onMessage(message: Exclude<ServerMessage, { type: "hello" | "hello_error" }>): void;
@@ -171,10 +171,10 @@ export class Connection {
 				this.#failAndClose(new ProtocolValidationError("Expected server hello as first message"));
 				return;
 			}
-			if (message.serviceId !== this.#options.serviceId) {
+			if (message.serverId !== this.#options.serverId) {
 				this.#failAndClose(
 					new ProtocolValidationError(
-						`Connected service ${JSON.stringify(message.serviceId)} does not match ${JSON.stringify(this.#options.serviceId)}`,
+						`Connected server ${JSON.stringify(message.serverId)} does not match ${JSON.stringify(this.#options.serverId)}`,
 					),
 				);
 				return;

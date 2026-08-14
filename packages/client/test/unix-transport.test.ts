@@ -6,7 +6,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { PiClient } from "../src/index.ts";
 import { createUnixTransportFactory } from "../src/unix.ts";
 
-const serviceId = "00000000000000000000000000000001";
+const serverId = "00000000-0000-4000-8000-000000000001";
 const tempDirectories = new Set<string>();
 const servers = new Set<Server>();
 const sockets = new Set<Socket>();
@@ -63,7 +63,7 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 						const frame = encodeServerMessage({
 							type: "hello",
 							version: PROTOCOL_VERSION,
-							serviceId,
+							serverId,
 						});
 						for (const byte of frame) socket.write(Uint8Array.of(byte));
 						continue;
@@ -82,10 +82,10 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 			});
 		});
 		await listen(server, path);
-		const client = new PiClient({ serviceId, transportFactory: createUnixTransportFactory({ path }) });
+		const client = new PiClient({ serverId, transportFactory: createUnixTransportFactory({ path }) });
 
 		try {
-			await expect(client.connect()).resolves.toMatchObject({ serviceId });
+			await expect(client.connect()).resolves.toMatchObject({ serverId });
 			await expect(client.listSessions()).resolves.toEqual([]);
 			expect(receivedMethods).toEqual(["list"]);
 		} finally {
@@ -104,7 +104,7 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 							encodeServerMessage({
 								type: "hello",
 								version: PROTOCOL_VERSION,
-								serviceId,
+								serverId,
 							}),
 						);
 					} else {
@@ -114,7 +114,7 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 			});
 		});
 		await listen(server, path);
-		const client = new PiClient({ serviceId, transportFactory: createUnixTransportFactory({ path }) });
+		const client = new PiClient({ serverId, transportFactory: createUnixTransportFactory({ path }) });
 
 		try {
 			await client.connect();

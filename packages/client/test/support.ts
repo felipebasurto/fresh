@@ -9,14 +9,14 @@ import type { ByteTransport, ByteTransportHandlers } from "../src/index.ts";
 
 export class MemoryByteServer {
 	readonly messages: ClientMessage[] = [];
-	readonly serviceId: string;
+	readonly serverId: string;
 	clientCloseCount = 0;
 	private handlers?: ByteTransportHandlers;
 	private decoder = new ClientMessageDecoder();
 	private readonly messageWaiters: Array<{ count: number; resolve: () => void }> = [];
 
-	constructor(serviceId = "00000000000000000000000000000001") {
-		this.serviceId = serviceId;
+	constructor(serverId = "00000000-0000-4000-8000-000000000001") {
+		this.serverId = serverId;
 	}
 
 	connect(handlers: ByteTransportHandlers): ByteTransport {
@@ -32,7 +32,7 @@ export class MemoryByteServer {
 						this.send({
 							type: "hello",
 							version: PROTOCOL_VERSION,
-							serviceId: this.serviceId,
+							serverId: this.serverId,
 						});
 					}
 				}

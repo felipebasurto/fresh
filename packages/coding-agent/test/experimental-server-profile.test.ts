@@ -2,7 +2,7 @@ import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { acquireExperimentalServiceProfile } from "../src/cli/experimental/service-profile.ts";
+import { acquireExperimentalServerProfile } from "../src/cli/experimental/server-profile.ts";
 
 const directories = new Set<string>();
 
@@ -17,12 +17,12 @@ afterEach(async () => {
 	directories.clear();
 });
 
-describe("experimental service profile", () => {
-	test("serializes launchers and preserves the service identity", async () => {
+describe("experimental server profile", () => {
+	test("serializes launchers and preserves the server identity", async () => {
 		const directory = await makeDirectory();
-		const first = await acquireExperimentalServiceProfile(directory);
+		const first = await acquireExperimentalServerProfile(directory);
 		let secondAcquired = false;
-		const pendingSecond = acquireExperimentalServiceProfile(directory).then((profile) => {
+		const pendingSecond = acquireExperimentalServerProfile(directory).then((profile) => {
 			secondAcquired = true;
 			return profile;
 		});
@@ -33,29 +33,27 @@ describe("experimental service profile", () => {
 
 		const second = await pendingSecond;
 		expect(secondAcquired).toBe(true);
-		expect(second.serviceId).toBe(first.serviceId);
+		expect(second.serverId).toBe(first.serverId);
 		await second.release();
 	});
 
-	test("does not serialize or share identity across service directories", async () => {
+	test("does not serialize or share identity across server profiles", async () => {
 		const firstDirectory = await makeDirectory();
 		const secondDirectory = await makeDirectory();
 
 		const [first, second] = await Promise.all([
-			acquireExperimentalServiceProfile(firstDirectory),
-			acquireExperimentalServiceProfile(secondDirectory),
+			acquireExperimentalServerProfile(firstDirectory),
+			acquireExperimentalServerProfile(secondDirectory),
 		]);
-		expect(first.serviceId).not.toBe(second.serviceId);
+		expect(first.serverId).not.toBe(second.serverId);
 		await Promise.all([first.release(), second.release()]);
 	});
 
 	test("rejects corrupt identity and releases the launcher lock", async () => {
 		const directory = await makeDirectory();
-		await writeFile(join(directory, "service-id"), "invalid\n");
+		await writeFile(join(directory, "server-id"), "invalid\n");
 
-		await expect(acquireExperimentalServiceProfile(directory)).rejects.toThrow(
-			/Invalid experimental service identity/,
-		);
+		await expect(acquireExperimentalServerProfile(directory)).rejects.toThrow(/Invalid experimental server identity/);
 		await expect(access(join(directory, ".launcher.lock"))).rejects.toMatchObject({ code: "ENOENT" });
 	});
 });

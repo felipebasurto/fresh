@@ -16,14 +16,14 @@ const transportFactory: ByteTransportFactory = async (handlers) => {
 };
 
 const client = await PiClient.connect({
-  serviceId: "0123456789abcdef0123456789abcdef",
+  serverId: "01234567-89ab-4def-8123-456789abcdef",
   transportFactory,
 });
 const sessions = await client.listSessions();
 const attachment = await client.attachSession(sessions[0].id);
 ```
 
-The client verifies that the physical endpoint reports the expected logical `serviceId`. Every list and attach request carries that ID again so the final server can reject misdelivery.
+The client verifies that the physical endpoint reports the expected logical `serverId`. Every list and attach request carries that ID again so the final server can reject misdelivery.
 
 `attachSession()` currently returns only `{ sessionId }`. Remote Session and Harness methods will be added directly from the new shared interfaces in a later slice. The client does not reconnect or replay requests automatically. After disconnection, call `reconnect()` and explicitly repeat safe control-plane actions.
 
@@ -32,7 +32,7 @@ Server lifecycle control is not part of `PiClient`. Launchers use the separate `
 ```ts
 import { requestServerDrain } from "@earendil-works/pi-client/control";
 
-await requestServerDrain({ serviceId, transportFactory });
+await requestServerDrain({ serverId, transportFactory });
 // Drain was acknowledged. Verifying endpoint release and starting a successor are launcher policy.
 ```
 
@@ -57,22 +57,22 @@ import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 
 const client = new PiClient({
-  serviceId: "0123456789abcdef0123456789abcdef",
+  serverId: "01234567-89ab-4def-8123-456789abcdef",
   transportFactory: createUnixTransportFactory({ path: "/tmp/pi.sock" }),
 });
 await client.connect();
 ```
 
-Unix discovery scans an explicit physical-route directory, derives each expected service ID from its filename, and verifies it through the existing handshake:
+Unix discovery scans an explicit physical-route directory, derives each expected server ID from its filename, and verifies it through the existing handshake:
 
 ```ts
-import { discoverUnixServices } from "@earendil-works/pi-client/unix";
+import { discoverUnixServers } from "@earendil-works/pi-client/unix";
 
-const routes = await discoverUnixServices({ directory: "/run/user/1000/pi" });
-// [{ serviceId: "...", path: "/run/user/1000/pi/<serviceId>.sock" }]
+const routes = await discoverUnixServers({ directory: "/run/user/1000/pi" });
+// [{ serverId: "...", path: "/run/user/1000/pi/<serverId>.sock" }]
 ```
 
-Malformed entries, non-sockets, stale or unresponsive endpoints, and service-ID mismatches are ignored. Discovery is read-only and probes at most 16 sockets concurrently. Unexpected filesystem and socket errors reject discovery. The caller must choose a short, private directory because Unix socket path limits are substantially lower than normal filesystem path limits.
+Malformed entries, non-sockets, stale or unresponsive endpoints, and server-ID mismatches are ignored. Discovery is read-only and probes at most 16 sockets concurrently. Unexpected filesystem and socket errors reject discovery. The caller must choose a short, private directory because Unix socket path limits are substantially lower than normal filesystem path limits.
 Pass `timeoutMs` to override the default probe timeout.
 
 `PiClientOptions.maxFrameLength` bounds protocol payloads. `maxPendingBytes` bounds queued Unix transport output. Configure matching limits on both peers.

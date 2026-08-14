@@ -19,13 +19,15 @@ const TimestampSchema = Type.Integer({ minimum: 0 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 	Type.Object(properties, { additionalProperties: false });
 
-export const ServiceIdSchema = Type.String({ pattern: "^[0-9a-f]{32}$" });
+export const ServerIdSchema = Type.String({
+	pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+});
 export const SessionIdSchema = IdSchema;
-export type ServiceId = Static<typeof ServiceIdSchema>;
+export type ServerId = Static<typeof ServerIdSchema>;
 export type SessionId = Static<typeof SessionIdSchema>;
 
-export function isServiceId(value: unknown): value is ServiceId {
-	return Check(ServiceIdSchema, value);
+export function isServerId(value: unknown): value is ServerId {
+	return Check(ServerIdSchema, value);
 }
 
 /** The durable metadata returned directly by SessionRepo.list(). */
@@ -89,7 +91,7 @@ const ProtocolRpcResultSchema = Type.Union([ServiceRpcResultSchema, ServerContro
 
 export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("version"),
-	Type.Literal("wrong_service"),
+	Type.Literal("wrong_server"),
 	Type.Literal("session_not_found"),
 	Type.Literal("server_draining"),
 	Type.Literal("invalid_request"),
@@ -112,7 +114,7 @@ export type ClientHello = Static<typeof ClientHelloSchema>;
 export const RequestEnvelopeSchema = StrictObject({
 	type: Type.Literal("request"),
 	id: IdSchema,
-	serviceId: ServiceIdSchema,
+	serverId: ServerIdSchema,
 	call: ProtocolRpcCallSchema,
 });
 export type RequestEnvelope = Static<typeof RequestEnvelopeSchema>;
@@ -122,7 +124,7 @@ export type ClientMessage = Static<typeof ClientMessageSchema>;
 export const ServerHelloSchema = StrictObject({
 	type: Type.Literal("hello"),
 	version: Type.Literal(PROTOCOL_VERSION),
-	serviceId: ServiceIdSchema,
+	serverId: ServerIdSchema,
 });
 export const ServerHelloErrorSchema = StrictObject({
 	type: Type.Literal("hello_error"),

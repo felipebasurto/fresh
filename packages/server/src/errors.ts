@@ -1,6 +1,6 @@
 import type { ProtocolErrorCode } from "@earendil-works/pi-protocol";
 
-type PiServerOperationErrorCode = Extract<ProtocolErrorCode, "wrong_service" | "session_not_found" | "server_draining">;
+type PiServerOperationErrorCode = Extract<ProtocolErrorCode, "wrong_server" | "session_not_found" | "server_draining">;
 
 export const INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error";
 
@@ -15,10 +15,10 @@ export class PiServerError extends Error {
 	}
 }
 
-export class WrongServiceError extends PiServerError {
+export class WrongServerError extends PiServerError {
 	constructor() {
-		super("wrong_service", "Request was addressed to another service");
-		this.name = "WrongServiceError";
+		super("wrong_server", "Request was addressed to another server");
+		this.name = "WrongServerError";
 	}
 }
 

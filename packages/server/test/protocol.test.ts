@@ -7,7 +7,7 @@ import { ProtocolTestClient, TestServerHost, type WireChannel } from "../src/tes
 let server: PiServer | undefined;
 
 function connect(): ProtocolTestClient {
-	server = new PiServer(new TestServerHost(), { listeners: [], serviceId: "00000000000000000000000000000001" });
+	server = new PiServer(new TestServerHost(), { listeners: [], serverId: "00000000-0000-4000-8000-000000000001" });
 	let handler: ByteConnectionHandler;
 	let client: ProtocolTestClient;
 	let closed = false;
@@ -53,7 +53,7 @@ test("requires hello as the first message", async () => {
 	await client.sendMessage({
 		type: "request",
 		id: "request-1",
-		serviceId: "00000000000000000000000000000001",
+		serverId: "00000000-0000-4000-8000-000000000001",
 		call: { method: "list", args: [] },
 	});
 	await expect(client.next((message) => message.type === "hello_error")).resolves.toMatchObject({
@@ -74,13 +74,16 @@ test("accepts fragmented hello and request frames", async () => {
 	const hello = encodeClientMessage({ type: "hello", version: 1 });
 	const helloResponse = client.next((message) => message.type === "hello");
 	await client.sendFragmentedMessage({ type: "hello", version: 1 }, Math.floor(hello.byteLength / 2));
-	await expect(helloResponse).resolves.toMatchObject({ type: "hello", serviceId: "00000000000000000000000000000001" });
+	await expect(helloResponse).resolves.toMatchObject({
+		type: "hello",
+		serverId: "00000000-0000-4000-8000-000000000001",
+	});
 
 	const response = client.next((message) => message.type === "response");
 	const request = {
 		type: "request" as const,
 		id: "request-1",
-		serviceId: "00000000000000000000000000000001",
+		serverId: "00000000-0000-4000-8000-000000000001",
 		call: { method: "list" as const, args: [] as [] },
 	};
 	const frame = encodeClientMessage(request);
@@ -119,7 +122,7 @@ test("processes a hello and request coalesced in one byte chunk", async () => {
 	const request = encodeClientMessage({
 		type: "request",
 		id: "request-1",
-		serviceId: "00000000000000000000000000000001",
+		serverId: "00000000-0000-4000-8000-000000000001",
 		call: { method: "list", args: [] },
 	});
 	const wire = new Uint8Array(hello.byteLength + request.byteLength);
@@ -140,7 +143,7 @@ test("reports a truncated final frame when the peer closes", async () => {
 	const errors: Error[] = [];
 	server = new PiServer(new TestServerHost(), {
 		listeners: [],
-		serviceId: "00000000000000000000000000000001",
+		serverId: "00000000-0000-4000-8000-000000000001",
 		onError: (error) => errors.push(error),
 	});
 	let closed = false;

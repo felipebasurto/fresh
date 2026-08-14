@@ -12,8 +12,8 @@ export type ListenerErrorHandler = (error: Error) => void;
 
 export interface PiClientOptions {
 	transportFactory: ByteTransportFactory;
-	/** Logical service identity expected at the physical endpoint. */
-	serviceId: string;
+	/** Logical server identity expected at the physical endpoint. */
+	serverId: string;
 	maxFrameLength?: number;
 	/** Reports subscriber failures without allowing them to corrupt client state. */
 	onListenerError?: ListenerErrorHandler;

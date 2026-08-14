@@ -12,8 +12,9 @@ The separate launcher-control operation `drain` closes hosted Harnesses, acknowl
 Concurrent attachments to one session reuse one hosted Harness. Attachment is a one-shot acquisition request, so losing the client connection does not close the Harness. Server shutdown closes every hosted Harness, releasing its Session writer ownership.
 
 ```ts
+import { randomUUID } from "node:crypto";
 import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
-import { generateServiceId, type PiServerHost } from "@earendil-works/pi-server";
+import type { PiServerHost } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 
 const sessions = new MemorySessionRepo();
@@ -24,15 +25,15 @@ const host: PiServerHost = {
   },
 };
 
-const serviceId = generateServiceId();
+const serverId = randomUUID();
 const server = createUnixServer(host, {
-  serviceId,
-  path: getUnixSocketPath(serviceId, "/run/user/1000/pi"),
+  serverId,
+  path: getUnixSocketPath(serverId, "/run/user/1000/pi"),
 });
 await server.start();
 ```
 
-Applications supply the repository and Harness factory. `serviceId` is a logical identity supplied by the launcher, not a socket address. `generateServiceId()` creates an in-memory 128-bit identity. The Unix preset requires an explicit physical `path`; `getUnixSocketPath()` derives one from a caller-selected directory. Choose a short, private runtime directory rather than deriving the route from an unbounded home-directory path. A long-lived launcher can reuse the same ID and path when replacing a server process.
+Applications supply the repository and Harness factory. `serverId` is a logical identity supplied by the launcher, not a socket address. The Unix preset requires an explicit physical `path`; `getUnixSocketPath()` derives one from a caller-selected directory. Choose a short, private runtime directory rather than deriving the route from an unbounded home-directory path. A long-lived launcher can reuse the same ID and path when replacing a server process.
 
 `PiServer` composes authenticated transports through `PiServerListener`. The Unix submodule provides `createUnixListener()` and `createUnixServer()`. Low-level CBOR framing and validation come from `@earendil-works/pi-protocol`.
 

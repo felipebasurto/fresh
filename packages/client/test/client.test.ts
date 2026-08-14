@@ -11,29 +11,29 @@ import { MemoryByteServer } from "./support.ts";
 
 async function connectClient(
 	server: MemoryByteServer,
-	serviceId = "00000000000000000000000000000001",
+	serverId = "00000000-0000-4000-8000-000000000001",
 ): Promise<PiClient> {
-	return PiClient.connect({ serviceId, transportFactory: (handlers) => server.connect(handlers) });
+	return PiClient.connect({ serverId, transportFactory: (handlers) => server.connect(handlers) });
 }
 
-test("requires a 128-bit service identity", () => {
-	expect(() => new PiClient({ serviceId: "invalid-service", transportFactory: () => Promise.reject() })).toThrow(
-		/serviceId/,
+test("requires a canonical UUIDv4 server identity", () => {
+	expect(() => new PiClient({ serverId: "invalid-server", transportFactory: () => Promise.reject() })).toThrow(
+		/serverId/,
 	);
 });
 
 describe("PiClient service operations", () => {
-	test("connects only to the expected logical service", async () => {
+	test("connects only to the expected logical server", async () => {
 		const matching = new MemoryByteServer();
 		const client = await connectClient(matching);
-		expect(client.hello).toMatchObject({ serviceId: "00000000000000000000000000000001" });
+		expect(client.hello).toMatchObject({ serverId: "00000000-0000-4000-8000-000000000001" });
 		await client.dispose();
 
-		const wrong = new MemoryByteServer("00000000000000000000000000000002");
+		const wrong = new MemoryByteServer("00000000-0000-4000-8000-000000000002");
 		await expect(connectClient(wrong)).rejects.toBeInstanceOf(ProtocolValidationError);
 	});
 
-	test("addresses list and attach requests to the configured service", async () => {
+	test("addresses list and attach requests to the configured server", async () => {
 		const server = new MemoryByteServer();
 		const client = await connectClient(server);
 		const listing = client.listSessions();
@@ -41,7 +41,7 @@ describe("PiClient service operations", () => {
 		expect(server.messages[1]).toEqual({
 			type: "request",
 			id: "request-1",
-			serviceId: "00000000000000000000000000000001",
+			serverId: "00000000-0000-4000-8000-000000000001",
 			call: { method: "list", args: [] },
 		});
 		server.send({
@@ -56,7 +56,7 @@ describe("PiClient service operations", () => {
 		await server.waitForMessages(3);
 		expect(server.messages[2]).toMatchObject({
 			type: "request",
-			serviceId: "00000000000000000000000000000001",
+			serverId: "00000000-0000-4000-8000-000000000001",
 			call: { method: "attach", args: ["session-1"] },
 		});
 		server.send({
@@ -122,13 +122,13 @@ describe("PiClient connection lifecycle", () => {
 		let closeCount = 0;
 		let sendCount = 0;
 		const client = new PiClient({
-			serviceId: "00000000000000000000000000000001",
+			serverId: "00000000-0000-4000-8000-000000000001",
 			transportFactory: (handlers) => {
 				handlers.onData(
 					encodeServerMessage({
 						type: "hello",
 						version: PROTOCOL_VERSION,
-						serviceId: "00000000000000000000000000000001",
+						serverId: "00000000-0000-4000-8000-000000000001",
 					}),
 				);
 				return {
@@ -155,7 +155,7 @@ describe("PiClient connection lifecycle", () => {
 		let handlers: Parameters<ByteTransportFactory>[0];
 		let closeCount = 0;
 		const client = new PiClient({
-			serviceId: "00000000000000000000000000000001",
+			serverId: "00000000-0000-4000-8000-000000000001",
 			transportFactory: (createdHandlers) => {
 				handlers = createdHandlers;
 				return {
@@ -190,7 +190,7 @@ describe("PiClient connection lifecycle", () => {
 		const transportFactory: ByteTransportFactory = (handlers) =>
 			(connection++ === 0 ? first : second).connect(handlers);
 		const client = new PiClient({
-			serviceId: "00000000000000000000000000000001",
+			serverId: "00000000-0000-4000-8000-000000000001",
 			transportFactory,
 		});
 		const states: string[] = [];
@@ -202,7 +202,7 @@ describe("PiClient connection lifecycle", () => {
 
 		await expect(pending).rejects.toBeInstanceOf(PiDisconnectedError);
 		await expect(client.reconnect()).resolves.toMatchObject({
-			serviceId: "00000000000000000000000000000001",
+			serverId: "00000000-0000-4000-8000-000000000001",
 		});
 		expect(connection).toBe(2);
 		expect(client.connected).toBe(true);
