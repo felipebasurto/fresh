@@ -1,3 +1,4 @@
+import type { SessionMetadata } from "@earendil-works/pi-agent-core";
 import {
 	type ClientHello,
 	type ClientMessage,
@@ -32,7 +33,7 @@ const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
 const MAX_UINT32 = 0xffff_ffff;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
-export class PiServer {
+export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 	readonly serverId: string;
 	/** Resolves after shutdown, or rejects when listener or hosted-Harness cleanup fails. */
 	readonly closed: Promise<void>;
@@ -42,7 +43,7 @@ export class PiServer {
 	private readonly handshakeTimeoutMs: number;
 	private readonly onError: ((error: Error) => void) | undefined;
 	private readonly connections = new Set<ConnectionState>();
-	private readonly sessions: HostedHarnessManager;
+	private readonly sessions: HostedHarnessManager<TMetadata>;
 	private closing = false;
 	private closePromise?: Promise<void>;
 	private closedSettled = false;
@@ -51,7 +52,7 @@ export class PiServer {
 	private startPromise?: Promise<this>;
 	private started = false;
 
-	constructor(host: PiServerHost, options: PiServerOptions) {
+	constructor(host: PiServerHost<TMetadata>, options: PiServerOptions) {
 		const resolved = resolveOptions(options);
 		this.listeners = options.listeners;
 		this.serverId = options.serverId;

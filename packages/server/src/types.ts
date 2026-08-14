@@ -1,4 +1,4 @@
-import type { AgentHarness, Session, SessionRepo } from "@earendil-works/pi-agent-core";
+import type { AgentHarness, SessionMetadata, SessionRepo } from "@earendil-works/pi-agent-core";
 import type { PiServerListener } from "./listener.ts";
 
 export interface PiServerOptions {
@@ -19,7 +19,7 @@ export interface HostedHarnessHandle extends Pick<AgentHarness, "close"> {
 }
 
 /** Host capabilities used directly by the list and attach control-plane operations. */
-export interface PiServerHost {
-	readonly sessions: Pick<SessionRepo, "list" | "open">;
-	createHarness(session: Session): Promise<HostedHarnessHandle>;
+export interface PiServerHost<TMetadata extends SessionMetadata = SessionMetadata> {
+	readonly sessions: Pick<SessionRepo<TMetadata>, "list">;
+	createHarness(metadata: TMetadata): Promise<HostedHarnessHandle>;
 }

@@ -1,5 +1,7 @@
+import type { SessionMetadata } from "@earendil-works/pi-agent-core";
 import {
 	createRpcDispatcher,
+	type SessionMetadata as ProtocolSessionMetadata,
 	ProtocolValidationError,
 	ServiceRpc,
 	type ServiceRpcCall,
@@ -10,30 +12,43 @@ import type { HostedHarnessHandle, PiServerHost } from "./types.ts";
 
 class HarnessCleanupError extends AggregateError {}
 
+function toProtocolSessionMetadata(metadata: SessionMetadata): ProtocolSessionMetadata {
+	return {
+		id: metadata.id,
+		createdAt: metadata.createdAt,
+		storageVersion: metadata.storageVersion,
+		...(metadata.cwd === undefined ? {} : { cwd: metadata.cwd }),
+		...(metadata.parentSessionId === undefined ? {} : { parentSessionId: metadata.parentSessionId }),
+		...(metadata.legacyParentSessionPath === undefined
+			? {}
+			: { legacyParentSessionPath: metadata.legacyParentSessionPath }),
+	};
+}
+
 interface HostedSession {
 	readonly id: string;
 	readonly harness: HostedHarnessHandle;
 }
 
-interface HostedHarnessManagerOptions {
-	host: PiServerHost;
+interface HostedHarnessManagerOptions<TMetadata extends SessionMetadata> {
+	host: PiServerHost<TMetadata>;
 	isClosing: () => boolean;
 	reportError: (error: unknown) => void;
 }
 
-export class HostedHarnessManager {
-	private readonly options: HostedHarnessManagerOptions;
+export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMetadata> {
+	private readonly options: HostedHarnessManagerOptions<TMetadata>;
 	private readonly hostedSessions = new Map<string, HostedSession>();
 	private readonly openingSessions = new Map<string, Promise<HostedSession>>();
 	private closePromise?: Promise<void>;
 	private readonly dispatchRpc: (call: ServiceRpcCall, context: undefined) => Promise<ServiceRpcResultUnion>;
 
-	constructor(options: HostedHarnessManagerOptions) {
+	constructor(options: HostedHarnessManagerOptions<TMetadata>) {
 		this.options = options;
 		this.dispatchRpc = createRpcDispatcher(
 			ServiceRpc,
 			{
-				list: () => this.options.host.sessions.list(),
+				list: async () => (await this.options.host.sessions.list()).map(toProtocolSessionMetadata),
 				attach: async (_context, sessionId) => {
 					if (this.options.isClosing()) throw new ServerDrainingError();
 					const hosted = await this.acquire(sessionId);
@@ -93,19 +108,7 @@ export class HostedHarnessManager {
 	private async open(sessionId: string): Promise<HostedSession> {
 		const metadata = (await this.options.host.sessions.list()).find((candidate) => candidate.id === sessionId);
 		if (!metadata) throw new SessionNotFoundError(`Unknown session: ${sessionId}`);
-		const session = await this.options.host.sessions.open(metadata);
-		let harness: HostedHarnessHandle;
-		try {
-			harness = await this.options.host.createHarness(session);
-		} catch (error) {
-			try {
-				await session.close();
-			} catch (closeError) {
-				this.options.reportError(closeError);
-				throw new HarnessCleanupError([error, closeError], "Harness creation and Session cleanup failed");
-			}
-			throw error;
-		}
+		const harness = await this.options.host.createHarness(metadata);
 		if (this.options.isClosing()) {
 			try {
 				await harness.close();

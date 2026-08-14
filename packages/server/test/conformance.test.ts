@@ -1,7 +1,9 @@
+import type { SessionMetadata } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, test } from "vitest";
 import type { ByteConnection, ByteConnectionHandler } from "../src/connection.ts";
 import { PiServer } from "../src/server.ts";
 import { ProtocolTestClient, TestServerHost, type WireChannel } from "../src/testing/index.ts";
+import type { PiServerHost } from "../src/types.ts";
 
 const servers = new Set<PiServer>();
 
@@ -80,7 +82,54 @@ describe("list and attach protocol", () => {
 		expect(host.harnesses.size).toBe(0);
 	});
 
-	test("attach opens the Session and creates one hosted Harness", async () => {
+	test("attach passes concrete repository metadata to the Harness host", async () => {
+		type BackendMetadata = SessionMetadata & { path: string; modifiedAt: number };
+		const metadata: BackendMetadata = {
+			id: "session-1",
+			createdAt: 1,
+			storageVersion: 1,
+			cwd: "/workspace",
+			path: "/sessions/session-1.jsonl",
+			modifiedAt: 2,
+		};
+		let received: BackendMetadata | undefined;
+		const host: PiServerHost<BackendMetadata> = {
+			sessions: { list: async () => [metadata] },
+			createHarness: async (candidate) => {
+				received = candidate;
+				return { close: async () => {} };
+			},
+		};
+		const server = new PiServer(host, {
+			listeners: [],
+			serverId: "00000000-0000-4000-8000-000000000001",
+		});
+		servers.add(server);
+		const client = connect(server);
+		await client.hello();
+
+		await expect(
+			client.request("00000000-0000-4000-8000-000000000001", { method: "list", args: [] }),
+		).resolves.toEqual({
+			type: "response",
+			id: "request-1",
+			ok: true,
+			result: [
+				{
+					id: "session-1",
+					createdAt: 1,
+					storageVersion: 1,
+					cwd: "/workspace",
+				},
+			],
+		});
+		await expect(
+			client.request("00000000-0000-4000-8000-000000000001", { method: "attach", args: ["session-1"] }),
+		).resolves.toMatchObject({ ok: true, result: { sessionId: "session-1" } });
+		expect(received).toBe(metadata);
+	});
+
+	test("attach creates one hosted Harness for concurrent callers", async () => {
 		const host = new TestServerHost();
 		await host.seed("session-1");
 		const server = createServer(host);
@@ -273,15 +322,15 @@ describe("server draining", () => {
 });
 
 describe("hosted Harness acquisition failures", () => {
-	test("shares an opening failure and allows a later retry", async () => {
+	test("shares a Harness creation failure, releases the Session, and allows a later retry", async () => {
 		const host = new TestServerHost();
 		await host.seed("session-1");
-		host.failNextOpen = new Error("open failed");
+		host.nextCreateHarnessError = new Error("Harness creation failed");
 		const server = createServer(host);
 		const first = connect(server);
 		const second = connect(server);
 		await Promise.all([first.hello(), second.hello()]);
-		const gate = host.gateNextOpen();
+		const gate = host.gateNextCreateHarness();
 
 		const firstAttach = first.request("00000000-0000-4000-8000-000000000001", {
 			method: "attach",
@@ -298,31 +347,12 @@ describe("hosted Harness acquisition failures", () => {
 			{ ok: false, error: { code: "internal_error" } },
 			{ ok: false, error: { code: "internal_error" } },
 		]);
-		expect(host.openCount).toBe(1);
+		expect(host.createHarnessCount).toBe(1);
 
 		await expect(
 			first.request("00000000-0000-4000-8000-000000000001", { method: "attach", args: ["session-1"] }),
 		).resolves.toMatchObject({ ok: true, result: { sessionId: "session-1" } });
-		expect(host.openCount).toBe(2);
-		expect(host.harnesses.get("session-1")).toHaveLength(1);
-	});
-
-	test("releases the opened Session when Harness creation fails", async () => {
-		const host = new TestServerHost();
-		await host.seed("session-1");
-		host.failNextHarness = new Error("harness failed");
-		const server = createServer(host);
-		const client = connect(server);
-		await client.hello();
-
-		await expect(
-			client.request("00000000-0000-4000-8000-000000000001", { method: "attach", args: ["session-1"] }),
-		).resolves.toMatchObject({ ok: false, error: { code: "internal_error" } });
-
-		await expect(
-			client.request("00000000-0000-4000-8000-000000000001", { method: "attach", args: ["session-1"] }),
-		).resolves.toMatchObject({ ok: true, result: { sessionId: "session-1" } });
-		expect(host.openCount).toBe(2);
+		expect(host.createHarnessCount).toBe(2);
 		expect(host.harnesses.get("session-1")).toHaveLength(1);
 	});
 
@@ -332,7 +362,7 @@ describe("hosted Harness acquisition failures", () => {
 		const server = createServer(host);
 		const client = connect(server);
 		await client.hello();
-		const gate = host.gateNextOpen();
+		const gate = host.gateNextCreateHarness();
 		const attach = client.request("00000000-0000-4000-8000-000000000001", {
 			method: "attach",
 			args: ["session-1"],
@@ -344,5 +374,32 @@ describe("hosted Harness acquisition failures", () => {
 		await closing;
 		await expect(attach).rejects.toThrow(/closed/i);
 		expect(host.latestHarness("session-1").closeCount).toBe(1);
+	});
+
+	test("fails shutdown when an in-flight acquisition cannot release its Harness", async () => {
+		const host = new TestServerHost();
+		await host.seed("session-1");
+		const cleanupError = new Error("close failed");
+		host.nextHarnessCloseError = cleanupError;
+		const server = createServer(host);
+		const client = connect(server);
+		await client.hello();
+		const gate = host.gateNextCreateHarness();
+		const attach = client.request("00000000-0000-4000-8000-000000000001", {
+			method: "attach",
+			args: ["session-1"],
+		});
+		await gate.entered.promise;
+
+		const closing = server.close();
+		gate.release.resolve(undefined);
+
+		await expect(closing).rejects.toThrow(/Failed to close hosted Harnesses/);
+		await expect(server.closed).rejects.toThrow(/Failed to close hosted Harnesses/);
+		await expect(attach).rejects.toThrow(/closed/i);
+		expect(host.latestHarness("session-1").closeCount).toBe(1);
+
+		servers.delete(server);
+		await host.latestHarness("session-1").close();
 	});
 });

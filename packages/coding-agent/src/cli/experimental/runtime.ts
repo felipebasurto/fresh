@@ -80,17 +80,9 @@ export async function startExperimentalMemoryServer(
 	const workerPids = new Map<string, number>();
 	const host: PiServerHost = {
 		sessions: repo,
-		createHarness: async (session) => {
-			const sessionId = session.metadata.id;
+		createHarness: async (metadata) => {
+			const sessionId = metadata.id;
 			const worker = await startExperimentalSessionWorker(sessionId, { sessionDir });
-			try {
-				// Prototype-only adapter: the server opened this parent-repository
-				// facade, while the child owns its independently restored Session.
-				await session.close();
-			} catch (error) {
-				await worker.close();
-				throw error;
-			}
 			workerPids.set(sessionId, worker.pid);
 			return {
 				terminated: worker.terminated.then((error) => {
