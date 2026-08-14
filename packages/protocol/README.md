@@ -20,15 +20,15 @@ Each wire frame consists of a four-byte unsigned big-endian payload length follo
 ```ts
 import {
   PROTOCOL_VERSION,
-  createServerMessageDecoder,
   encodeClientMessage,
+  ServerMessageDecoder,
   type ClientHello,
 } from "@earendil-works/pi-protocol";
 
 const hello: ClientHello = { type: "hello", version: PROTOCOL_VERSION };
 transport.send(encodeClientMessage(hello));
 
-const decoder = createServerMessageDecoder({ maxFrameLength: 1024 * 1024 });
+const decoder = new ServerMessageDecoder({ maxFrameLength: 1024 * 1024 });
 for (const message of decoder.push(incomingChunk)) handleServerMessage(message);
 decoder.end();
 ```

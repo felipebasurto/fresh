@@ -32,7 +32,6 @@ export class MemoryByteServer {
 						this.send({
 							type: "hello",
 							version: PROTOCOL_VERSION,
-							connectionId: "connection-1",
 							serviceId: this.serviceId,
 						});
 					}

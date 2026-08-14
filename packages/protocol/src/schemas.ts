@@ -19,22 +19,6 @@ const TimestampSchema = Type.Integer({ minimum: 0 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 	Type.Object(properties, { additionalProperties: false });
 
-export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
-const JsonValueRecursiveSchema = Type.Cyclic(
-	{
-		JsonValue: Type.Union([
-			Type.Null(),
-			Type.Boolean(),
-			Type.Number(),
-			Type.String(),
-			Type.Array(Type.Ref("JsonValue")),
-			Type.Record(Type.String(), Type.Ref("JsonValue")),
-		]),
-	},
-	"JsonValue",
-);
-export const JsonValueSchema = Type.Unsafe<JsonValue>(JsonValueRecursiveSchema);
-
 export const ServiceIdSchema = Type.String({ pattern: "^[0-9a-f]{32}$" });
 export const SessionIdSchema = IdSchema;
 export type ServiceId = Static<typeof ServiceIdSchema>;
@@ -107,8 +91,6 @@ export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("version"),
 	Type.Literal("wrong_service"),
 	Type.Literal("session_not_found"),
-	Type.Literal("session_locked"),
-	Type.Literal("server_busy"),
 	Type.Literal("server_draining"),
 	Type.Literal("invalid_request"),
 	Type.Literal("internal_error"),
@@ -116,7 +98,6 @@ export const ProtocolErrorCodeSchema = Type.Union([
 export const ProtocolErrorSchema = StrictObject({
 	code: ProtocolErrorCodeSchema,
 	message: Type.String(),
-	details: Type.Optional(JsonValueSchema),
 });
 export type ProtocolErrorCode = Static<typeof ProtocolErrorCodeSchema>;
 export type ProtocolError = Static<typeof ProtocolErrorSchema>;
@@ -141,7 +122,6 @@ export type ClientMessage = Static<typeof ClientMessageSchema>;
 export const ServerHelloSchema = StrictObject({
 	type: Type.Literal("hello"),
 	version: Type.Literal(PROTOCOL_VERSION),
-	connectionId: IdSchema,
 	serviceId: ServiceIdSchema,
 });
 export const ServerHelloErrorSchema = StrictObject({

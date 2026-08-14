@@ -9,7 +9,7 @@ The current slice supports two client operations:
 
 The separate launcher-control operation `drain` closes hosted Harnesses, acknowledges successful cleanup, and closes that server generation. It does not transfer hosted-session state, and the server does not decide whether a replacement should start. Clients explicitly reconnect and reattach after replacement.
 
-Concurrent attachments to one session reuse one hosted Harness. Losing a client connection removes its attachment but does not close the Harness. Server shutdown closes every hosted Harness, releasing its Session writer ownership.
+Concurrent attachments to one session reuse one hosted Harness. Attachment is a one-shot acquisition request, so losing the client connection does not close the Harness. Server shutdown closes every hosted Harness, releasing its Session writer ownership.
 
 ```ts
 import { MemorySessionRepo } from "@earendil-works/pi-agent-core";

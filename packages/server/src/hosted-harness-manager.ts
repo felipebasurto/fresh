@@ -1,4 +1,3 @@
-import type { SessionMetadata } from "@earendil-works/pi-agent-core";
 import {
 	createRpcDispatcher,
 	ProtocolValidationError,
@@ -6,17 +5,14 @@ import {
 	type ServiceRpcCall,
 	type ServiceRpcResultUnion,
 } from "@earendil-works/pi-protocol";
-import type { ConnectionState } from "./connection.ts";
 import { ServerDrainingError, SessionNotFoundError } from "./errors.ts";
-import type { HostedHarnessHandle, HostedSessionInfo, PiServerHost } from "./types.ts";
+import type { HostedHarnessHandle, PiServerHost } from "./types.ts";
 
 class HarnessCleanupError extends AggregateError {}
 
 interface HostedSession {
 	readonly id: string;
-	readonly metadata: SessionMetadata;
 	readonly harness: HostedHarnessHandle;
-	readonly connections: Set<ConnectionState>;
 }
 
 interface HostedHarnessManagerOptions {
@@ -30,7 +26,7 @@ export class HostedHarnessManager {
 	private readonly hostedSessions = new Map<string, HostedSession>();
 	private readonly openingSessions = new Map<string, Promise<HostedSession>>();
 	private closePromise?: Promise<void>;
-	private readonly dispatchRpc: (call: ServiceRpcCall, connection: ConnectionState) => Promise<ServiceRpcResultUnion>;
+	private readonly dispatchRpc: (call: ServiceRpcCall, context: undefined) => Promise<ServiceRpcResultUnion>;
 
 	constructor(options: HostedHarnessManagerOptions) {
 		this.options = options;
@@ -38,14 +34,9 @@ export class HostedHarnessManager {
 			ServiceRpc,
 			{
 				list: () => this.options.host.sessions.list(),
-				attach: async (connection, sessionId) => {
+				attach: async (_context, sessionId) => {
 					if (this.options.isClosing()) throw new ServerDrainingError();
 					const hosted = await this.acquire(sessionId);
-					if (connection.disconnected || connection.stage !== "ready" || connection.connection.closed) {
-						throw new ServerDrainingError();
-					}
-					connection.sessionIds.add(hosted.id);
-					hosted.connections.add(connection);
 					return { sessionId: hosted.id };
 				},
 			},
@@ -53,17 +44,8 @@ export class HostedHarnessManager {
 		);
 	}
 
-	get hosted(): readonly HostedSessionInfo[] {
-		return [...this.hostedSessions.values()].map(({ id, metadata }) => ({ sessionId: id, metadata }));
-	}
-
-	executeCall(connection: ConnectionState, call: ServiceRpcCall): Promise<ServiceRpcResultUnion> {
-		return this.dispatchRpc(call, connection);
-	}
-
-	disconnect(connection: ConnectionState): void {
-		for (const sessionId of connection.sessionIds) this.hostedSessions.get(sessionId)?.connections.delete(connection);
-		connection.sessionIds.clear();
+	executeCall(call: ServiceRpcCall): Promise<ServiceRpcResultUnion> {
+		return this.dispatchRpc(call, undefined);
 	}
 
 	close(): Promise<void> {
@@ -136,7 +118,7 @@ export class HostedHarnessManager {
 			}
 			throw new ServerDrainingError();
 		}
-		const hosted: HostedSession = { id: metadata.id, metadata, harness, connections: new Set() };
+		const hosted: HostedSession = { id: metadata.id, harness };
 		this.hostedSessions.set(hosted.id, hosted);
 		if (harness.terminated) {
 			void harness.terminated.then(
@@ -150,8 +132,6 @@ export class HostedHarnessManager {
 	private invalidate(hosted: HostedSession, error: Error | undefined): void {
 		if (this.hostedSessions.get(hosted.id) !== hosted) return;
 		this.hostedSessions.delete(hosted.id);
-		for (const connection of hosted.connections) connection.sessionIds.delete(hosted.id);
-		hosted.connections.clear();
 		if (error) this.options.reportError(error);
 	}
 }
