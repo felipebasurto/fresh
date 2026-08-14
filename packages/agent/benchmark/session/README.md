@@ -8,7 +8,7 @@ These benchmarks use deterministic synthetic data and make no claim to reproduce
 
 The timing suite runs scenarios against every target in `storage-targets.ts` and `session-repo-targets.ts`. Read scenarios reuse one immutable fixture per backend/dataset and validate their result once before timing. Every warmup and measured write runs once against an independently prepared fixture, so entry counts, sequence numbers, and durable artifacts start in equivalent states. Implementations are registered under the same Vitest suite so additional backends are directly comparable.
 
-Storage writes cover a single message, a 100-message transaction, and a mixed message/register/usage append to a 1k-entry synthetic branch. Repository scenarios cover listing 100, 1k, and 10k closed sessions and forking the current branch of open 1k- and 10k-entry source sessions. Fixture preparation, transaction generation, and validation happen outside the measured callback.
+Storage writes cover a single message, a 100-message transaction, and a mixed message/register/usage append to a 1k-entry synthetic branch. Repository scenarios cover creating an empty session, opening or deleting a closed empty session, listing 100, 1k, and 10k closed sessions, and forking the current branch of open 1k- and 10k-entry source sessions. Fixture preparation, transaction generation, and validation happen outside the measured callback.
 
 ```sh
 npm run bench:session:timing
