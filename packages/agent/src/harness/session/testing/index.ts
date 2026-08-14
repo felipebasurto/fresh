@@ -1,5 +1,16 @@
 export { STORAGE_BENCHMARK_DATASETS } from "./benchmark/datasets.ts";
 export {
+	SESSION_REPO_CATALOG_BENCHMARK_DATASETS,
+	SESSION_REPO_CATALOG_READ_BENCHMARK_SCENARIOS,
+	SESSION_REPO_CATALOG_WRITE_BENCHMARK_SCENARIOS,
+	SESSION_REPO_FORK_BENCHMARK_DATASETS,
+	SESSION_REPO_FORK_WRITE_BENCHMARK_SCENARIOS,
+	type SessionRepoCatalogBenchmarkDataset,
+	seedSessionRepoCatalogBenchmark,
+	seedSessionRepoForkBenchmark,
+	sessionRepoBenchmarkSessionId,
+} from "./benchmark/session-repo.ts";
+export {
 	generateStorageBenchmarkSeedTransactions,
 	STORAGE_READ_BENCHMARK_SCENARIOS,
 	STORAGE_WRITE_BENCHMARK_SCENARIOS,
@@ -10,6 +21,7 @@ export {
 	createSessionRepoForkConformance,
 	createSessionRepoLifecycleConformance,
 	createSessionRepoMessageConformance,
+	createSessionRepoOwnershipConformance,
 } from "./conformance/session-repo.ts";
 export { createStorageConformance } from "./conformance/storage.ts";
 export { InstrumentedStorage } from "./instrumented-storage.ts";

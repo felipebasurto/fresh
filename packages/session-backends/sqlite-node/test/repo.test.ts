@@ -5,8 +5,6 @@ import { describe, expect, it } from "vitest";
 import type { SqliteDatabase } from "../src/index.ts";
 import { createNodeSqliteFactory, SqliteSessionRepo, sql } from "../src/index.ts";
 
-type TestMetadata = { id: string; path: string; createdAt: number; storageVersion: number };
-
 async function withTempDir<T>(run: (directory: string) => Promise<T>): Promise<T> {
 	const directory = await mkdtemp(join(tmpdir(), "pi-sqlite-session-"));
 	try {
@@ -34,7 +32,8 @@ describe("SqliteSessionRepo", () => {
 				now: () => 1_700_000_000_000,
 			});
 
-			const metadata = (await repo.create({ id: "session" })) as TestMetadata;
+			const session = await repo.create({ id: "session" });
+			const metadata = session.metadata;
 			expect(metadata).toMatchObject({
 				id: "session",
 				createdAt: 1_700_000_000_000,
@@ -66,6 +65,7 @@ describe("SqliteSessionRepo", () => {
 					},
 				]);
 			});
+			await session.close();
 		});
 	});
 
@@ -76,12 +76,14 @@ describe("SqliteSessionRepo", () => {
 				databaseFactory: createNodeSqliteFactory(),
 				now: () => 1,
 			});
-			const metadata = (await repo.create({ id: "session" })) as TestMetadata;
+			const session = await repo.create({ id: "session" });
+			const { metadata } = session;
 
 			await expect(repo.create({ id: "session" })).rejects.toThrow();
 			await withDb(metadata.path, (db) => {
 				expect(sql`SELECT COUNT(*) AS count FROM session`.get<{ count: number }>(db)).toEqual({ count: 1 });
 			});
+			await session.close();
 		});
 	});
 
@@ -92,12 +94,14 @@ describe("SqliteSessionRepo", () => {
 				databaseFactory: createNodeSqliteFactory(),
 				now: () => 1,
 			});
-			const metadata = (await repo.create({ id: "session" })) as TestMetadata;
+			const session = await repo.create({ id: "session" });
+			const { metadata } = session;
 
 			await expect(repo.list()).resolves.toMatchObject([{ id: "session", path: metadata.path }]);
 			await withDb(metadata.path, (db) => {
 				expect(sql`SELECT owner_id, fence FROM writer_lease`.all(db)).toEqual([]);
 			});
+			await session.close();
 		});
 	});
 
@@ -123,9 +127,13 @@ describe("SqliteSessionRepo", () => {
 				databaseFactory: createNodeSqliteFactory(),
 				now: () => 1,
 			});
-			const metadata = (await repo.create({ id: "session" })) as TestMetadata;
+			const created = await repo.create({ id: "session" });
+			const { metadata } = created;
+			await created.close();
 
-			await expect(repo.open(metadata)).resolves.toMatchObject({ id: "session", path: metadata.path });
+			const opened = await repo.open(metadata);
+			expect(opened.metadata).toMatchObject({ id: "session", path: metadata.path });
+			await opened.close();
 
 			await withDb(metadata.path, (db) => {
 				sql`INSERT INTO writer_lease (owner_id, fence, expires_at_ms) VALUES (${"external"}, ${1}, ${1_000})`.run(

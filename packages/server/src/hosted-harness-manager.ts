@@ -7,8 +7,10 @@ import {
 	type ServiceRpcResultUnion,
 } from "@earendil-works/pi-protocol";
 import type { ConnectionState } from "./connection.ts";
-import { ServerRestartingError, SessionNotFoundError } from "./errors.ts";
+import { ServerDrainingError, SessionNotFoundError } from "./errors.ts";
 import type { HostedHarnessHandle, HostedSessionInfo, PiServerHost } from "./types.ts";
+
+class HarnessCleanupError extends AggregateError {}
 
 interface HostedSession {
 	readonly id: string;
@@ -27,6 +29,7 @@ export class HostedHarnessManager {
 	private readonly options: HostedHarnessManagerOptions;
 	private readonly hostedSessions = new Map<string, HostedSession>();
 	private readonly openingSessions = new Map<string, Promise<HostedSession>>();
+	private closePromise?: Promise<void>;
 	private readonly dispatchRpc: (call: ServiceRpcCall, connection: ConnectionState) => Promise<ServiceRpcResultUnion>;
 
 	constructor(options: HostedHarnessManagerOptions) {
@@ -36,10 +39,10 @@ export class HostedHarnessManager {
 			{
 				list: () => this.options.host.sessions.list(),
 				attach: async (connection, sessionId) => {
-					if (this.options.isClosing()) throw new ServerRestartingError();
+					if (this.options.isClosing()) throw new ServerDrainingError();
 					const hosted = await this.acquire(sessionId);
 					if (connection.disconnected || connection.stage !== "ready" || connection.connection.closed) {
-						throw new ServerRestartingError();
+						throw new ServerDrainingError();
 					}
 					connection.sessionIds.add(hosted.id);
 					hosted.connections.add(connection);
@@ -63,17 +66,32 @@ export class HostedHarnessManager {
 		connection.sessionIds.clear();
 	}
 
-	async close(): Promise<void> {
+	close(): Promise<void> {
+		this.closePromise ??= this.closeInternal();
+		return this.closePromise;
+	}
+
+	private async closeInternal(): Promise<void> {
 		const openingResults = await Promise.allSettled(this.openingSessions.values());
+		const closeErrors: unknown[] = [];
 		for (const result of openingResults) {
-			if (result.status === "rejected") this.options.reportError(result.reason);
+			if (result.status !== "rejected") continue;
+			this.options.reportError(result.reason);
+			if (result.reason instanceof HarnessCleanupError) closeErrors.push(result.reason);
 		}
 		const hosted = [...this.hostedSessions.values()];
-		this.hostedSessions.clear();
 		const closeResults = await Promise.allSettled(hosted.map(({ harness }) => harness.close()));
-		for (const result of closeResults) {
-			if (result.status === "rejected") this.options.reportError(result.reason);
+		for (let index = 0; index < closeResults.length; index++) {
+			const result = closeResults[index]!;
+			const session = hosted[index]!;
+			if (result.status === "fulfilled") {
+				if (this.hostedSessions.get(session.id) === session) this.hostedSessions.delete(session.id);
+				continue;
+			}
+			this.options.reportError(result.reason);
+			closeErrors.push(result.reason);
 		}
+		if (closeErrors.length > 0) throw new AggregateError(closeErrors, "Failed to close hosted Harnesses");
 	}
 
 	private async acquire(sessionId: string): Promise<HostedSession> {
@@ -98,12 +116,25 @@ export class HostedHarnessManager {
 		try {
 			harness = await this.options.host.createHarness(session);
 		} catch (error) {
-			await session.close().catch((closeError: unknown) => this.options.reportError(closeError));
+			try {
+				await session.close();
+			} catch (closeError) {
+				this.options.reportError(closeError);
+				throw new HarnessCleanupError([error, closeError], "Harness creation and Session cleanup failed");
+			}
 			throw error;
 		}
 		if (this.options.isClosing()) {
-			await harness.close().catch((error: unknown) => this.options.reportError(error));
-			throw new ServerRestartingError();
+			try {
+				await harness.close();
+			} catch (error) {
+				this.options.reportError(error);
+				throw new HarnessCleanupError(
+					[new ServerDrainingError(), error],
+					"Failed to close Harness acquired while draining",
+				);
+			}
+			throw new ServerDrainingError();
 		}
 		const hosted: HostedSession = { id: metadata.id, metadata, harness, connections: new Set() };
 		this.hostedSessions.set(hosted.id, hosted);

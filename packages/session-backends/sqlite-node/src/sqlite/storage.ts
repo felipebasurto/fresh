@@ -13,7 +13,7 @@ import type {
 	UsageScan,
 } from "@earendil-works/pi-agent-core";
 import { prepareStorageCommit } from "@earendil-works/pi-agent-core";
-import { scanBranchEntries, scanBranchEntryStructures } from "./session/branch-entries.ts";
+import { appendEntryToBranchIndex, scanBranchEntries, scanBranchEntryStructures } from "./session/branch-entries.ts";
 import { decodeEntryRow, insertEntryRow, readEntryRows, scanEntryRows } from "./session/entries.ts";
 import { deleteRegisterRow, listRegisterRows, readRegisterRow, setRegisterRow } from "./session/registers.ts";
 import { advanceNextSeq, readNextSeq } from "./session/session-sequences.ts";
@@ -109,7 +109,7 @@ export class SqliteStorage implements Storage {
 					case "entry": {
 						const { kind: _kind, ...entry } = write;
 						insertEntryRow(this.db, entry);
-						// TODO: Maintain branch_entries/branch_meta for every inserted entry.
+						appendEntryToBranchIndex(this.db, entry);
 						if (entry.type === "message") incrementMessageCount(this.db);
 						break;
 					}

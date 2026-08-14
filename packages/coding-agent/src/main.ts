@@ -29,7 +29,7 @@ import { resolveCredentialForPrint } from "./cli/credential-print.ts";
 import { experimentalCli } from "./cli/experimental/cli.ts";
 import type { ClientCommand } from "./cli/experimental/commands/client.ts";
 import type { ServerCommand } from "./cli/experimental/commands/server.ts";
-import { runExperimentalClient, startExperimentalMemoryServer } from "./cli/experimental/runtime.ts";
+import { runExperimentalClient, startExperimentalServerGeneration } from "./cli/experimental/runtime.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
@@ -72,7 +72,7 @@ import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
-const EXTENSION_LOAD_FAILURE_HINT = 'Hint: Start without extensions using "pi -ne".';
+const EXTENSION_LOAD_FAILURE_HINT = `Hint: Start without extensions using "${APP_NAME} -ne".`;
 
 /**
  * Read all content from piped stdin.
@@ -567,26 +567,34 @@ async function promptForMissingSessionCwd(
 	]);
 }
 
-async function waitForTermination(): Promise<void> {
-	await new Promise<void>((resolve) => {
-		const finish = (): void => {
+async function waitForTermination(serverClosed: Promise<void>): Promise<void> {
+	await new Promise<void>((resolve, reject) => {
+		const cleanup = (): void => {
 			process.off("SIGINT", finish);
 			process.off("SIGTERM", finish);
+		};
+		const finish = (): void => {
+			cleanup();
 			resolve();
+		};
+		const fail = (error: unknown): void => {
+			cleanup();
+			reject(error);
 		};
 		process.once("SIGINT", finish);
 		process.once("SIGTERM", finish);
+		void serverClosed.then(finish, fail);
 	});
 }
 
 async function runExperimentalServerCommand(command: ServerCommand): Promise<void> {
 	if (command.auth !== undefined) throw new Error("Authentication is not supported by the local demo server");
 	if (command.listen !== undefined) throw new Error("The local demo server uses its service-addressed Unix socket");
-	const runtime = await startExperimentalMemoryServer();
+	const runtime = await startExperimentalServerGeneration();
 	console.log(`Service: ${runtime.serviceId}`);
 	console.log(`Socket: ${runtime.socketPath}`);
 	try {
-		await waitForTermination();
+		await waitForTermination(runtime.closed);
 	} finally {
 		await runtime.close();
 	}

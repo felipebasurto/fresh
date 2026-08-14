@@ -12,6 +12,8 @@
 - Added scheduler-facing harness execution primitives (`accept`, fenced `drive`, `requestAbort`, and `inspectExecution`) plus replay-stable tool invocation identities.
 - Added isolated harness execution primitives for assistant streaming and durable-boundary tool phases.
 
+## [0.84.2] - 2026-08-14
+
 ### Fixed
 
 - Fixed `streamProxy()` dropping finalized tool-call metadata such as OpenAI Responses namespaces ([#7709](https://github.com/earendil-works/pi/issues/7709)).

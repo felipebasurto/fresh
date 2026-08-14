@@ -17,6 +17,7 @@ import {
 	ProtocolValidationError,
 	parseClientMessage,
 	parseServerMessage,
+	ServerControlRpc,
 	type ServerHello,
 	type ServerMessage,
 	ServerMessageDecoder,
@@ -44,7 +45,8 @@ describe("RPC manifest", () => {
 		const calls: unknown[] = [];
 		const client = createRpcClient(ServiceRpc, async (call) => {
 			calls.push(call);
-			return call.method === "list" ? [metadata] : { sessionId: call.args[0] };
+			if (call.method === "list") return [metadata];
+			return { sessionId: call.args[0] };
 		});
 
 		await expect(client.list()).resolves.toEqual([metadata]);
@@ -76,6 +78,22 @@ describe("RPC manifest", () => {
 			attach: (_context: undefined, sessionId: string) => ({ sessionId }),
 		} as never);
 		await expect(dispatch({ method: "list", args: [] }, undefined)).rejects.toThrow(/Invalid result.*list/);
+	});
+
+	test("keeps launcher control methods separate from session operations", async () => {
+		const calls: unknown[] = [];
+		const control = createRpcClient(ServerControlRpc, async (call) => {
+			calls.push(call);
+			return {};
+		});
+		const dispatch = createRpcDispatcher(ServerControlRpc, {
+			drain: () => ({}),
+		});
+
+		await expect(control.drain()).resolves.toEqual({});
+		await expect(dispatch({ method: "drain", args: [] }, undefined)).resolves.toEqual({});
+		expect(calls).toEqual([{ method: "drain", args: [] }]);
+		expect("drain" in createRpcClient(ServiceRpc, async () => [])).toBe(false);
 	});
 
 	test("rejects empty manifests instead of creating unusable RPC clients", () => {
@@ -118,7 +136,7 @@ describe("protocol validation", () => {
 		},
 	);
 
-	test("validates list and attach RPC calls with logical targets", () => {
+	test("validates service and launcher-control RPC calls with logical targets", () => {
 		const list: ClientMessage = {
 			type: "request",
 			id: "request-1",
@@ -131,8 +149,15 @@ describe("protocol validation", () => {
 			serviceId: "00000000000000000000000000000001",
 			call: { method: "attach", args: ["session-1"] },
 		};
+		const drain: ClientMessage = {
+			type: "request",
+			id: "request-3",
+			serviceId: "00000000000000000000000000000001",
+			call: { method: "drain", args: [] },
+		};
 		expect(parseClientMessage(list)).toEqual(list);
 		expect(parseClientMessage(attach)).toEqual(attach);
+		expect(parseClientMessage(drain)).toEqual(drain);
 		expect(() => parseClientMessage({ ...attach, call: { method: "attach", args: [] } })).toThrow(
 			ProtocolValidationError,
 		);
@@ -162,6 +187,17 @@ describe("protocol validation", () => {
 			result: { sessionId: "session-1" },
 		};
 		expect(parseServerMessage(message)).toEqual(message);
+	});
+
+	test("validates drain acknowledgements", () => {
+		const message: ServerMessage = {
+			type: "response",
+			id: "request-1",
+			ok: true,
+			result: {},
+		};
+		expect(parseServerMessage(message)).toEqual(message);
+		expect(() => parseServerMessage({ ...message, result: { sessionIds: [] } })).toThrow(ProtocolValidationError);
 	});
 
 	test.each([
@@ -205,7 +241,7 @@ describe("protocol validation", () => {
 		"session_not_found",
 		"session_locked",
 		"server_busy",
-		"server_restarting",
+		"server_draining",
 		"internal_error",
 	] as const)("accepts the %s error code", (code) => {
 		const message: ServerMessage = {

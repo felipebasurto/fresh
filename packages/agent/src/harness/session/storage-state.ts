@@ -1,6 +1,6 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import { addUsage } from "../utils/usage.ts";
-import { type CommittedWrite, type PreparedCommit, prepareStorageCommit } from "./commit.ts";
+import { type CommittedWrite, type PreparedCommit, prepareStorageCommit, validateCommittedWrites } from "./commit.ts";
 
 export type {
 	CommittedEntryWrite,
@@ -26,7 +26,7 @@ import type {
 
 export interface StorageStateSnapshot {
 	entries: Map<string, Entry>;
-	registers: Map<string, Register>;
+	registers: Register[];
 	usage: Map<string, UsageRow>;
 	stats: SessionStats;
 	nextSeq: number;
@@ -59,7 +59,9 @@ export class StorageState {
 	constructor(snapshot?: StorageStateSnapshot) {
 		this.entries = snapshot?.entries ?? new Map();
 		this.entriesBySeq = [...this.entries.values()].sort((left, right) => left.seq - right.seq);
-		this.registers = snapshot?.registers ?? new Map();
+		this.registers = new Map(
+			(snapshot?.registers ?? []).map((register) => [registerKey(register.namespace, register.key), register]),
+		);
 		this.usage = snapshot?.usage ?? new Map();
 		this.stats = snapshot?.stats ?? { messageCount: 0, usage: emptyUsage() };
 		this.nextSeq = snapshot?.nextSeq ?? 1;
@@ -72,27 +74,10 @@ export class StorageState {
 	}
 
 	validateCommitted(writes: readonly CommittedWrite[]): void {
-		let previousSeq = this.nextSeq - 1;
-		const transactionIds = new Set<string>();
-		const transactionEntryIds = new Set<string>();
-		for (const write of writes) {
-			if (write.seq <= previousSeq) throw new Error(`Non-monotonic storage sequence: ${write.seq}`);
-			previousSeq = write.seq;
-			if (write.kind !== "entry" && write.kind !== "usage") continue;
-			if (this.entries.has(write.id) || this.usage.has(write.id) || transactionIds.has(write.id)) {
-				throw new Error(`Duplicate entry or usage id: ${write.id}`);
-			}
-			if (
-				write.kind === "entry" &&
-				write.parentId !== null &&
-				!this.entries.has(write.parentId) &&
-				!transactionEntryIds.has(write.parentId)
-			) {
-				throw new Error(`Missing parent entry: ${write.parentId}`);
-			}
-			transactionIds.add(write.id);
-			if (write.kind === "entry") transactionEntryIds.add(write.id);
-		}
+		validateCommittedWrites(writes, this.nextSeq, {
+			hasEntryOrUsageId: (id) => this.entries.has(id) || this.usage.has(id),
+			hasEntryId: (id) => this.entries.has(id),
+		});
 	}
 
 	/** Apply writes already accepted by validateCommitted(). */
@@ -229,7 +214,7 @@ export class StorageState {
 	snapshot(): StorageStateSnapshot {
 		return {
 			entries: this.entries,
-			registers: this.registers,
+			registers: [...this.registers.values()],
 			usage: this.usage,
 			stats: this.stats,
 			nextSeq: this.nextSeq,

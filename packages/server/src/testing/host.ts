@@ -29,6 +29,8 @@ export class TestHarness {
 	readonly #termination = new Deferred<Error | undefined>();
 	readonly terminated = this.#termination.promise;
 	closeCount = 0;
+	failClose?: Error;
+	private nextCloseGate?: OpenGate;
 
 	constructor(session: Session) {
 		this.session = session;
@@ -36,6 +38,17 @@ export class TestHarness {
 
 	async close(): Promise<void> {
 		this.closeCount += 1;
+		const gate = this.nextCloseGate;
+		if (gate) {
+			this.nextCloseGate = undefined;
+			gate.entered.resolve(undefined);
+			await gate.release.promise;
+		}
+		if (this.failClose) {
+			const error = this.failClose;
+			this.failClose = undefined;
+			throw error;
+		}
 		await this.session.close();
 		this.closed.resolve(undefined);
 		this.#termination.resolve(undefined);
@@ -44,6 +57,12 @@ export class TestHarness {
 	async terminate(error: Error): Promise<void> {
 		await this.session.close();
 		this.#termination.resolve(error);
+	}
+
+	gateNextClose(): OpenGate {
+		const gate = { entered: new Deferred<void>(), release: new Deferred<void>() };
+		this.nextCloseGate = gate;
+		return gate;
 	}
 }
 

@@ -8,7 +8,6 @@ import {
 	ServiceRpc,
 	type ServiceRpcCall,
 	type ServiceRpcResult,
-	type ServiceRpcResultUnion,
 	type SessionMetadata,
 } from "@earendil-works/pi-protocol";
 import { Connection } from "./connection.ts";
@@ -17,8 +16,7 @@ import { createPromiseResolvers } from "./promise.ts";
 import type { ConnectionState, ConnectionStateChange, PiClientOptions, Unsubscribe } from "./types.ts";
 
 interface PendingRequest {
-	call: ServiceRpcCall;
-	resolve(result: ServiceRpcResultUnion): void;
+	resolve(result: unknown): void;
 	reject(error: Error): void;
 }
 
@@ -110,12 +108,12 @@ export class PiClient {
 		return this.#rpc.attach(sessionId);
 	}
 
-	#request(call: ServiceRpcCall): Promise<ServiceRpcResultUnion> {
+	#request(call: ServiceRpcCall): Promise<unknown> {
 		if (this.#disposed) return Promise.reject(new PiClientDisposedError());
 		if (!this.connected) return Promise.reject(new PiDisconnectedError());
 		const id = `request-${++this.#requestSequence}`;
-		const { promise, resolve, reject } = createPromiseResolvers<ServiceRpcResultUnion>();
-		this.#pendingRequests.set(id, { call, resolve, reject });
+		const { promise, resolve, reject } = createPromiseResolvers<unknown>();
+		this.#pendingRequests.set(id, { resolve, reject });
 		let frame: Uint8Array;
 		try {
 			frame = encodeClientMessage(

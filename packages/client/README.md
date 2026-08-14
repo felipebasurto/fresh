@@ -27,6 +27,19 @@ The client verifies that the physical endpoint reports the expected logical `ser
 
 `attachSession()` currently returns only `{ sessionId }`. Remote Session and Harness methods will be added directly from the new shared interfaces in a later slice. The client does not reconnect or replay requests automatically. After disconnection, call `reconnect()` and explicitly repeat safe control-plane actions.
 
+Server lifecycle control is not part of `PiClient`. Launchers use the separate `@earendil-works/pi-client/control` entry point to request a drain and wait for that server generation to close.
+
+```ts
+import { requestServerDrain } from "@earendil-works/pi-client/control";
+
+await requestServerDrain({ serviceId, transportFactory });
+// Drain was acknowledged. Verifying endpoint release and starting a successor are launcher policy.
+```
+
+`requestServerDrain()` applies a 15-second total timeout across connection, handshake, and drain acknowledgement. Pass `timeoutMs` to override it. A timeout is ambiguous and is never replayed automatically. The transport-neutral helper does not prove process termination or endpoint release; a Unix launcher separately waits for its stable socket path to disappear.
+
+The control API is administrative, not an authorization boundary. Only expose it over a transport that authenticates launchers as administrators. The experimental local launcher relies on a mode-`0600` Unix socket and treats every same-user peer as trusted.
+
 Call transport handlers as follows:
 
 - `handlers.onData(chunk)` for inbound bytes;

@@ -91,6 +91,7 @@ function createCase<TRepo>(
 
 /** Creates lifecycle cases for repositories that support creation, discovery, open, and deletion. */
 export function createSessionRepoLifecycleConformance<TMetadata extends SessionMetadata>(
+	// Require only the methods this group exercises so partial backends can run it independently.
 	backendFactory: () => Promise<Pick<SessionRepo<TMetadata>, "create" | "open" | "list" | "delete">>,
 	onClose?: () => void | Promise<void>,
 ): readonly ConformanceCase[] {
@@ -136,13 +137,11 @@ export function createSessionRepoLifecycleConformance<TMetadata extends SessionM
 						{ id: "second", parentSessionId: "parent" },
 					],
 				);
-				await rejects(repo.open(first.metadata));
 				await first.close();
 				await rejects(first.getName());
 				const reopened = await repo.open(first.metadata);
 				strictEqual(reopened === first, false);
 				strictEqual(await reopened.getName(), "preserved");
-				await rejects(repo.open(first.metadata));
 				await reopened.close();
 			},
 		),
@@ -158,6 +157,25 @@ export function createSessionRepoLifecycleConformance<TMetadata extends SessionM
 			);
 			await rejects(repo.open(removed.metadata));
 			await rejects(repo.delete(removed.metadata));
+		}),
+	];
+}
+
+/** Creates exclusive-open cases for repositories that own active session handles. */
+export function createSessionRepoOwnershipConformance<TMetadata extends SessionMetadata>(
+	backendFactory: () => Promise<Pick<SessionRepo<TMetadata>, "create" | "open">>,
+	onClose?: () => void | Promise<void>,
+): readonly ConformanceCase[] {
+	const factory = prepareRepoCaseFactory(backendFactory, onClose);
+	return [
+		createCase(factory, "ownership", "rejects opening an already-open session", async ({ repo }) => {
+			const session = await repo.create({ id: "session" });
+			await rejects(repo.open(session.metadata));
+			await session.close();
+
+			const reopened = await repo.open(session.metadata);
+			await rejects(repo.open(session.metadata));
+			await reopened.close();
 		}),
 	];
 }
@@ -220,19 +238,38 @@ export function createSessionRepoForkConformance<TMetadata extends SessionMetada
 ): readonly ConformanceCase[] {
 	const factory = prepareRepoCaseFactory(backendFactory, onClose);
 	return [
-		createCase(factory, "forks", "reserves destination ids across concurrent publication", async ({ repo }) => {
-			const source = await repo.create({ id: "source" });
-			const results = await Promise.allSettled([
-				repo.create({ id: "destination" }),
-				repo.fork(source.metadata, { id: "destination" }),
-			]);
-			strictEqual(results.filter((result) => result.status === "fulfilled").length, 1);
-			strictEqual(results.filter((result) => result.status === "rejected").length, 1);
-			for (const result of results) {
-				if (result.status === "fulfilled") await result.value.close();
-			}
-			await source.close();
-		}),
+		createCase(
+			factory,
+			"forks",
+			"publishes create when it reserves a shared destination id first",
+			async ({ repo }) => {
+				const source = await repo.create({ id: "source" });
+				const results = await Promise.allSettled([
+					repo.create({ id: "destination" }),
+					repo.fork(source.metadata, { id: "destination" }),
+				]);
+				strictEqual(results[0].status, "fulfilled");
+				strictEqual(results[1].status, "rejected");
+				if (results[0].status === "fulfilled") await results[0].value.close();
+				await source.close();
+			},
+		),
+		createCase(
+			factory,
+			"forks",
+			"publishes fork when it reserves a shared destination id first",
+			async ({ repo }) => {
+				const source = await repo.create({ id: "source" });
+				const results = await Promise.allSettled([
+					repo.fork(source.metadata, { id: "destination" }),
+					repo.create({ id: "destination" }),
+				]);
+				strictEqual(results[0].status, "fulfilled");
+				strictEqual(results[1].status, "rejected");
+				if (results[0].status === "fulfilled") await results[0].value.close();
+				await source.close();
+			},
+		),
 		createCase(factory, "forks", "forks a fresh session before first attachment", async ({ repo }) => {
 			const source = await repo.create({ id: "source" });
 			const fork = await repo.fork(source.metadata, { id: "fork" });
@@ -510,6 +547,7 @@ export function createSessionRepoConformance<TMetadata extends SessionMetadata>(
 ): readonly ConformanceCase[] {
 	return [
 		...createSessionRepoLifecycleConformance(factory, onClose),
+		...createSessionRepoOwnershipConformance(factory, onClose),
 		...createSessionRepoMessageConformance(factory, onClose),
 		...createSessionRepoForkConformance(factory, onClose),
 	];

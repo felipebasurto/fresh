@@ -4,10 +4,10 @@ import {
 	type ClientMessage,
 	encodeClientMessage,
 	PROTOCOL_VERSION,
+	type ProtocolRpcCall,
 	type ResponseEnvelope,
 	type ServerMessage,
 	ServerMessageDecoder,
-	type ServiceRpcCall,
 } from "@earendil-works/pi-protocol";
 import { Deferred } from "./host.ts";
 
@@ -48,7 +48,7 @@ export class ProtocolTestClient {
 
 	async request(
 		serviceId: string,
-		call: ServiceRpcCall,
+		call: ProtocolRpcCall,
 		id = `request-${++this.requestSequence}`,
 	): Promise<ResponseEnvelope> {
 		const response = this.next(

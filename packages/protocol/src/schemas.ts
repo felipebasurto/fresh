@@ -57,7 +57,7 @@ export const SessionMetadataSchema = Type.Unsafe<SessionMetadata>(
 	}),
 );
 
-/** Remote methods available on a Pi service in protocol v1. */
+/** Session operations available to normal Pi clients in protocol v1. */
 export const ServiceRpc = defineRpc({
 	list: {
 		args: Type.Tuple([]),
@@ -77,13 +77,39 @@ export type ServiceRpcResultUnion = RpcResultUnion<ServiceRpcManifest>;
 export const ServiceRpcCallSchema = Type.Unsafe<ServiceRpcCall>(createRpcCallSchema(ServiceRpc));
 export const ServiceRpcResultSchema = Type.Unsafe<ServiceRpcResultUnion>(createRpcResultSchema(ServiceRpc));
 
+/** Administrative lifecycle operations reserved for the server launcher. */
+export const ServerControlRpc = defineRpc({
+	drain: {
+		args: Type.Tuple([]),
+		result: StrictObject({}),
+	},
+});
+export type ServerControlRpcManifest = typeof ServerControlRpc;
+export type ServerControlRpcMethod = RpcMethodName<ServerControlRpcManifest>;
+export type ServerControlRpcArgs<TMethod extends ServerControlRpcMethod> = RpcArgs<ServerControlRpcManifest, TMethod>;
+export type ServerControlRpcResult<TMethod extends ServerControlRpcMethod> = RpcResult<
+	ServerControlRpcManifest,
+	TMethod
+>;
+export type ServerControlRpcCall = RpcCall<ServerControlRpcManifest>;
+export type ServerControlRpcResultUnion = RpcResultUnion<ServerControlRpcManifest>;
+export const ServerControlRpcCallSchema = Type.Unsafe<ServerControlRpcCall>(createRpcCallSchema(ServerControlRpc));
+export const ServerControlRpcResultSchema = Type.Unsafe<ServerControlRpcResultUnion>(
+	createRpcResultSchema(ServerControlRpc),
+);
+
+export type ProtocolRpcCall = ServiceRpcCall | ServerControlRpcCall;
+export type ProtocolRpcResult = ServiceRpcResultUnion | ServerControlRpcResultUnion;
+const ProtocolRpcCallSchema = Type.Union([ServiceRpcCallSchema, ServerControlRpcCallSchema]);
+const ProtocolRpcResultSchema = Type.Union([ServiceRpcResultSchema, ServerControlRpcResultSchema]);
+
 export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("version"),
 	Type.Literal("wrong_service"),
 	Type.Literal("session_not_found"),
 	Type.Literal("session_locked"),
 	Type.Literal("server_busy"),
-	Type.Literal("server_restarting"),
+	Type.Literal("server_draining"),
 	Type.Literal("invalid_request"),
 	Type.Literal("internal_error"),
 ]);
@@ -106,7 +132,7 @@ export const RequestEnvelopeSchema = StrictObject({
 	type: Type.Literal("request"),
 	id: IdSchema,
 	serviceId: ServiceIdSchema,
-	call: ServiceRpcCallSchema,
+	call: ProtocolRpcCallSchema,
 });
 export type RequestEnvelope = Static<typeof RequestEnvelopeSchema>;
 export const ClientMessageSchema = Type.Union([ClientHelloSchema, RequestEnvelopeSchema]);
@@ -127,7 +153,7 @@ export const ResponseEnvelopeSchema = Type.Union([
 		type: Type.Literal("response"),
 		id: IdSchema,
 		ok: Type.Literal(true),
-		result: ServiceRpcResultSchema,
+		result: ProtocolRpcResultSchema,
 	}),
 	StrictObject({
 		type: Type.Literal("response"),
