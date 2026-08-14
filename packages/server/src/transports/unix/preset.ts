@@ -17,7 +17,7 @@ export function createUnixServer(host: PiServerHost, options: UnixServerOptions)
 		listeners: [listener],
 		maxFrameLength: options.maxFrameLength,
 		handshakeTimeoutMs: options.handshakeTimeoutMs,
-		serviceId: options.serviceId,
+		serverId: options.serverId,
 		onError: options.onError,
 	});
 }

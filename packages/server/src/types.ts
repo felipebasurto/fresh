@@ -3,8 +3,8 @@ import type { PiServerListener } from "./listener.ts";
 
 export interface PiServerOptions {
 	listeners: readonly PiServerListener[];
-	/** Stable logical identity supplied by the server installation or profile. */
-	serviceId: string;
+	/** Stable logical server identity supplied by the installation or profile. */
+	serverId: string;
 	maxFrameLength?: number;
 	handshakeTimeoutMs?: number;
 	onError?: (error: Error) => void;

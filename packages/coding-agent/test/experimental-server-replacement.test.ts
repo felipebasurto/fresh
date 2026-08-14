@@ -97,7 +97,10 @@ describe.skipIf(process.platform === "win32")("experimental CLI server replaceme
 		const home = join(root, "long-home-segment".repeat(8));
 		await mkdir(home);
 		const first = await startServer(home);
-		const firstIdentity = await waitForOutput(first, /Service: ([0-9a-f]{32})/);
+		const firstIdentity = await waitForOutput(
+			first,
+			/Server: ([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/,
+		);
 		const firstSocket = await waitForOutput(first, /Socket: (.+\.sock)/);
 		expect(firstSocket[1]).not.toContain(home);
 		expect(Buffer.byteLength(firstSocket[1]!)).toBeLessThanOrEqual(103);
@@ -108,7 +111,10 @@ describe.skipIf(process.platform === "win32")("experimental CLI server replaceme
 		});
 
 		const replacement = await startServer(home);
-		const replacementIdentity = await waitForOutput(replacement, /Service: ([0-9a-f]{32})/);
+		const replacementIdentity = await waitForOutput(
+			replacement,
+			/Server: ([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/,
+		);
 		const replacementSocket = await waitForOutput(replacement, /Socket: (.+\.sock)/);
 		await waitForExit(first.child);
 
@@ -123,8 +129,8 @@ describe.skipIf(process.platform === "win32")("experimental CLI server replaceme
 		).resolves.toMatchObject({
 			kind: "list",
 			sessions: [
-				{ serviceId: firstIdentity[1], sessionId: "demo-1" },
-				{ serviceId: firstIdentity[1], sessionId: "demo-2" },
+				{ serverId: firstIdentity[1], sessionId: "demo-1" },
+				{ serverId: firstIdentity[1], sessionId: "demo-2" },
 			],
 		});
 		await expect(

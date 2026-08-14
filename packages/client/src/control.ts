@@ -1,7 +1,7 @@
 import {
 	createRpcClient,
 	encodeClientMessage,
-	isServiceId,
+	isServerId,
 	ProtocolValidationError,
 	ServerControlRpc,
 	type ServerControlRpcCall,
@@ -16,8 +16,8 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export interface ServerControlOptions {
 	readonly transportFactory: ByteTransportFactory;
-	/** Logical service identity expected at the physical endpoint. */
-	readonly serviceId: string;
+	/** Logical server identity expected at the physical endpoint. */
+	readonly serverId: string;
 	readonly maxFrameLength?: number;
 	/** Total time allowed for handshake and drain acknowledgement. Defaults to 15 seconds. */
 	readonly timeoutMs?: number;
@@ -44,8 +44,8 @@ interface PendingControlRequest {
  * Physical endpoint shutdown is transport-specific launcher policy.
  */
 export async function requestServerDrain(options: ServerControlOptions): Promise<void> {
-	if (!isServiceId(options.serviceId)) {
-		throw new TypeError("Server control serviceId must be 32 lowercase hexadecimal characters");
+	if (!isServerId(options.serverId)) {
+		throw new TypeError("Server control serverId must be a canonical lowercase UUIDv4");
 	}
 	const timeoutMs = options.timeoutMs ?? DEFAULT_SERVER_CONTROL_TIMEOUT_MS;
 	if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_DELAY_MS) {
@@ -55,7 +55,7 @@ export async function requestServerDrain(options: ServerControlOptions): Promise
 	let pending: PendingControlRequest | undefined;
 	const connection = new Connection({
 		transportFactory: options.transportFactory,
-		serviceId: options.serviceId,
+		serverId: options.serverId,
 		maxFrameLength: options.maxFrameLength,
 		onHandshake: () => {},
 		onMessage: (message) => {
@@ -78,7 +78,7 @@ export async function requestServerDrain(options: ServerControlOptions): Promise
 	const control = createRpcClient(
 		ServerControlRpc,
 		(call) =>
-			sendControlRequest(connection, options.serviceId, call, (request) => {
+			sendControlRequest(connection, options.serverId, call, (request) => {
 				pending = request;
 			}),
 		(message) => new ProtocolValidationError(message),
@@ -103,7 +103,7 @@ export async function requestServerDrain(options: ServerControlOptions): Promise
 
 function sendControlRequest(
 	connection: Connection,
-	serviceId: string,
+	serverId: string,
 	call: ServerControlRpcCall,
 	setPending: (request: PendingControlRequest) => void,
 ): Promise<unknown> {
@@ -113,7 +113,7 @@ function sendControlRequest(
 	let frame: Uint8Array;
 	try {
 		frame = encodeClientMessage(
-			{ type: "request", id, serviceId, call },
+			{ type: "request", id, serverId, call },
 			{ maxFrameLength: connection.maxFrameLength },
 		);
 	} catch (error) {

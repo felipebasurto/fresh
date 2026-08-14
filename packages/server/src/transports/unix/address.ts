@@ -1,12 +1,12 @@
 import { join } from "node:path";
 import { validateUnixSocketPath } from "./listener.ts";
 
-/** Derive the local Unix socket path for one logical service identity. */
-export function getUnixSocketPath(serviceId: string, serverDirectory: string): string {
-	if (!/^[0-9a-f]{32}$/.test(serviceId)) {
-		throw new TypeError("Unix serviceId must be 32 lowercase hexadecimal characters");
+/** Derive the local Unix socket path for one logical server identity. */
+export function getUnixSocketPath(serverId: string, serverDirectory: string): string {
+	if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(serverId)) {
+		throw new TypeError("Unix serverId must be a canonical lowercase UUIDv4");
 	}
-	const path = join(serverDirectory, `${serviceId}.sock`);
+	const path = join(serverDirectory, `${serverId}.sock`);
 	validateUnixSocketPath(path, "PiServer Unix socket path");
 	return path;
 }

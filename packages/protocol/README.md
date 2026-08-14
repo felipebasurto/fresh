@@ -4,12 +4,12 @@ Runtime-neutral schemas, types, CBOR encoding, and byte-stream framing for the e
 
 Protocol version `1` currently contains the first control-plane slice:
 
-- a version handshake that identifies the logical `serviceId`;
+- a version handshake that identifies the logical `serverId`;
 - a service RPC manifest with `list()` and `attach(sessionId)`;
 - a separate launcher-only server-control manifest with `drain()`;
 - correlated responses and bounded protocol errors.
 
-The manifest generates typed client methods and validated server dispatch. The wire uses generic `{ serviceId, method, args }` calls rather than a hand-written command union. `list()` returns the durable `SessionMetadata` values from `SessionRepo.list()`. `attach()` returns only the attached `sessionId`; the real `Session` and `AgentHarness` remain hosted by the server.
+The manifest generates typed client methods and validated server dispatch. The wire uses generic `{ serverId, method, args }` calls rather than a hand-written command union. `list()` returns the durable `SessionMetadata` values from `SessionRepo.list()`. `attach()` returns only the attached `sessionId`; the real `Session` and `AgentHarness` remain hosted by the server.
 
 `drain()` tells one server generation to close its hosted Harnesses, acknowledges successful cleanup, and begins shutdown. It does not transfer hosted-session state. The server does not know whether another generation will replace it; replacement and explicit client reattachment belong to the launcher and clients.
 
