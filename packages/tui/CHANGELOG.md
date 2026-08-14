@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added fullscreen component mouse dispatch with hit-testing, bubbling through `Container` and `Box`, pointer capture, focus transfer, overlays, render control, and the `MouseRegion` wrapper; `Input`, `Editor`, `SelectList`, and `SettingsList` now support pointer interaction.
+
 ## [0.84.2] - 2026-08-14
 
 ### Added
