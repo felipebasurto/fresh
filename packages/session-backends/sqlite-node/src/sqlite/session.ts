@@ -17,14 +17,8 @@ import type { SqliteSessionMetadata } from "./session/session-row.ts";
 /**
  * SQLite-specific open-session lifecycle wrapper.
  *
- * TODO: Wire SqliteSessionRepo.create/open to construct:
- *   SqliteStorage -> StorageBackedSession -> SqliteOpenSession.
- * TODO: Keep the database connection open until close() drains this wrapper and
- *   the wrapped StorageBackedSession closes its storage.
  * TODO: Keep the writer lease claimed for the lifetime of this open session,
  *   renew it while open, and release only the matching fenced lease on close.
- * TODO: Implement SqliteStorage.commit(); until then this wrapper can expose the
- *   Session API shape but cannot persist Session writes.
  */
 export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 	readonly metadata: SqliteSessionMetadata;
