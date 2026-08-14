@@ -1,5 +1,6 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { isAbsolute } from "node:path";
+import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
 import type { SessionWorkerCommand, SessionWorkerEvent } from "./session-worker-process.ts";
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 5_000;
@@ -21,17 +22,18 @@ export interface StartExperimentalSessionWorkerOptions {
 }
 
 export async function startExperimentalSessionWorker(
-	sessionId: string,
+	metadata: JsonlSessionMetadata,
 	options: StartExperimentalSessionWorkerOptions,
 ): Promise<ExperimentalSessionWorker> {
 	if (!isAbsolute(options.sessionDir)) throw new TypeError("Session worker sessionDir must be absolute");
+	const sessionId = metadata.id;
 	const startupTimeoutMs = validateTimeout(options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS, "startupTimeoutMs");
 	const shutdownTimeoutMs = validateTimeout(
 		options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
 		"shutdownTimeoutMs",
 	);
 	const workerUrl = options.workerUrl ?? defaultWorkerUrl();
-	const child = fork(workerUrl, [sessionId, options.sessionDir], {
+	const child = fork(workerUrl, [options.sessionDir, JSON.stringify(metadata)], {
 		execArgv: workerExecArgv(workerUrl),
 		stdio: ["ignore", "ignore", "inherit", "ipc"],
 	});

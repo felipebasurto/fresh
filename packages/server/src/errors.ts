@@ -1,6 +1,9 @@
 import type { ProtocolErrorCode } from "@earendil-works/pi-protocol";
 
-type PiServerOperationErrorCode = Extract<ProtocolErrorCode, "wrong_server" | "session_not_found" | "server_draining">;
+type PiServerOperationErrorCode = Extract<
+	ProtocolErrorCode,
+	"wrong_server" | "session_not_found" | "session_ambiguous" | "server_draining"
+>;
 
 export const INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error";
 
@@ -26,6 +29,13 @@ export class SessionNotFoundError extends PiServerError {
 	constructor(message = "Session was not found") {
 		super("session_not_found", message);
 		this.name = "SessionNotFoundError";
+	}
+}
+
+export class SessionAmbiguousError extends PiServerError {
+	constructor() {
+		super("session_ambiguous", "Session ID matches more than one session");
+		this.name = "SessionAmbiguousError";
 	}
 }
 

@@ -1,20 +1,30 @@
 import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
-	type ExperimentalMemoryServer,
+	type ExperimentalServer,
 	runExperimentalClient,
-	startExperimentalMemoryServer,
+	startExperimentalServer,
 	startExperimentalServerGeneration,
 } from "../src/cli/experimental/runtime.ts";
+import { configureExperimentalWorkerModel, createExperimentalSessions } from "./experimental-session-support.ts";
 
-const servers = new Set<ExperimentalMemoryServer>();
+const servers = new Set<ExperimentalServer>();
 const directories = new Set<string>();
+let agentDir: string;
 
-async function makeServer(): Promise<{ directory: string; runtime: ExperimentalMemoryServer }> {
+beforeEach(async () => {
+	agentDir = await mkdtemp(join("/tmp", "pi-experimental-agent-"));
+	directories.add(agentDir);
+	await configureExperimentalWorkerModel(agentDir);
+	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+	await createExperimentalSessions(join(agentDir, "experimental", "sessions"), ["demo-1", "demo-2"]);
+});
+
+async function makeServer(): Promise<{ directory: string; runtime: ExperimentalServer }> {
 	const directory = await mkdtemp(join("/tmp", "pes-"));
 	directories.add(directory);
-	const runtime = await startExperimentalMemoryServer({ directory });
+	const runtime = await startExperimentalServer({ directory });
 	servers.add(runtime);
 	return { directory, runtime };
 }
@@ -22,17 +32,18 @@ async function makeServer(): Promise<{ directory: string; runtime: ExperimentalM
 afterEach(async () => {
 	await Promise.all([...servers].map((server) => server.close()));
 	servers.clear();
+	vi.unstubAllEnvs();
 	await Promise.all([...directories].map((directory) => rm(directory, { recursive: true, force: true })));
 	directories.clear();
 });
 
-describe("experimental memory server composition", () => {
+describe("experimental durable server composition", () => {
 	test("does not change permissions on an explicit socket-path parent", async () => {
 		const directory = await mkdtemp(join("/tmp", "pep-"));
 		directories.add(directory);
 		await chmod(directory, 0o750);
 		const serverId = "00000000-0000-4000-8000-000000000001";
-		const runtime = await startExperimentalMemoryServer({
+		const runtime = await startExperimentalServer({
 			path: join(directory, `${serverId}.sock`),
 			serverId,
 		});
@@ -41,15 +52,14 @@ describe("experimental memory server composition", () => {
 		expect((await lstat(directory)).mode & 0o777).toBe(0o750);
 	});
 
-	test("resolves the configured session directory before starting workers", async () => {
+	test("resolves the configured session directory", async () => {
 		const directory = await mkdtemp(join("/tmp", "pes-"));
 		directories.add(directory);
-		const runtime = await startExperimentalMemoryServer({ directory, sessionDir: "relative/sessions" });
+		const runtime = await startExperimentalServer({ directory, sessionDir: "relative/sessions" });
 		servers.add(runtime);
 
 		expect(runtime.sessionDir).toBe(resolve("relative/sessions"));
-		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
-		expect(runtime.workerPids.get("demo-1")).toEqual(expect.any(Number));
+		expect(runtime.workerPids.size).toBe(0);
 	});
 
 	test("discovers and lists seeded sessions without hosting either session", async () => {
@@ -196,8 +206,8 @@ describe("experimental memory server composition", () => {
 	test("reports missing and ambiguous session selections", async () => {
 		const sharedDirectory = await mkdtemp(join("/tmp", "ped-"));
 		directories.add(sharedDirectory);
-		const firstShared = await startExperimentalMemoryServer({ directory: sharedDirectory });
-		const secondShared = await startExperimentalMemoryServer({ directory: sharedDirectory });
+		const firstShared = await startExperimentalServer({ directory: sharedDirectory });
+		const secondShared = await startExperimentalServer({ directory: sharedDirectory });
 		servers.add(firstShared);
 		servers.add(secondShared);
 
@@ -207,6 +217,18 @@ describe("experimental memory server composition", () => {
 		await expect(
 			runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory: sharedDirectory }),
 		).rejects.toThrow("Session demo-1 is available from more than one server");
+	});
+	test("rejects a duplicate session ID within one durable repository", async () => {
+		await createExperimentalSessions(
+			join(agentDir, "experimental", "sessions"),
+			["demo-1"],
+			join(agentDir, "other-cwd"),
+		);
+		const { directory } = await makeServer();
+
+		await expect(
+			runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory }),
+		).rejects.toMatchObject({ code: "session_ambiguous" });
 	});
 });
 

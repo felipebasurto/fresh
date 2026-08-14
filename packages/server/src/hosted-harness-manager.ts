@@ -7,7 +7,7 @@ import {
 	type ServiceRpcCall,
 	type ServiceRpcResultUnion,
 } from "@earendil-works/pi-protocol";
-import { ServerDrainingError, SessionNotFoundError } from "./errors.ts";
+import { ServerDrainingError, SessionAmbiguousError, SessionNotFoundError } from "./errors.ts";
 import type { HostedHarnessHandle, PiServerHost } from "./types.ts";
 
 class HarnessCleanupError extends AggregateError {}
@@ -106,8 +106,10 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 	}
 
 	private async open(sessionId: string): Promise<HostedSession> {
-		const metadata = (await this.options.host.sessions.list()).find((candidate) => candidate.id === sessionId);
-		if (!metadata) throw new SessionNotFoundError(`Unknown session: ${sessionId}`);
+		const matches = (await this.options.host.sessions.list()).filter((candidate) => candidate.id === sessionId);
+		if (matches.length === 0) throw new SessionNotFoundError(`Unknown session: ${sessionId}`);
+		if (matches.length > 1) throw new SessionAmbiguousError();
+		const metadata = matches[0]!;
 		const harness = await this.options.host.createHarness(metadata);
 		if (this.options.isClosing()) {
 			try {

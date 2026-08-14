@@ -3,7 +3,8 @@ import { chmod, lstat, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
+import { type JsonlSessionMetadata, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
+import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { PiClient } from "@earendil-works/pi-client";
 import { requestServerDrain } from "@earendil-works/pi-client/control";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
@@ -13,7 +14,6 @@ import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/u
 import { getAgentDir } from "../../config.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import type { ClientCommand } from "./commands/client.ts";
-import { DEMO_SESSION_IDS } from "./demo-sessions.ts";
 import { acquireExperimentalServerProfile } from "./server-profile.ts";
 import { startExperimentalSessionWorker } from "./session-worker.ts";
 
@@ -21,7 +21,7 @@ const SOCKET_RELEASE_TIMEOUT_MS = 10_000;
 const SOCKET_RELEASE_POLL_MS = 10;
 const EXPERIMENTAL_SOCKET_ROOT = "/tmp";
 
-export interface ExperimentalMemoryServer {
+export interface ExperimentalServer {
 	readonly serverId: string;
 	readonly sessionDir: string;
 	readonly socketPath: string;
@@ -38,7 +38,7 @@ export type ExperimentalClientResult =
 	  }
 	| { readonly kind: "attached"; readonly serverId: string; readonly sessionId: string };
 
-export interface StartExperimentalMemoryServerOptions {
+export interface StartExperimentalServerOptions {
 	/** Directory for server-addressed Unix sockets. Defaults to a short, private per-user runtime directory. */
 	readonly directory?: string;
 	readonly path?: string;
@@ -65,24 +65,21 @@ export function resolveExperimentalSessionDirectory(sessionDir?: string): string
 	return resolvePath(sessionDir ?? join(getAgentDir(), "experimental", "sessions"));
 }
 
-/** Start the temporary in-memory list-and-attach server composition. */
-export async function startExperimentalMemoryServer(
-	options: StartExperimentalMemoryServerOptions = {},
-): Promise<ExperimentalMemoryServer> {
+/** Start the experimental durable list-and-attach server composition. */
+export async function startExperimentalServer(
+	options: StartExperimentalServerOptions = {},
+): Promise<ExperimentalServer> {
 	const serverId = options.serverId ?? randomUUID();
 	const sessionDir = resolveExperimentalSessionDirectory(options.sessionDir);
-	const repo = new MemorySessionRepo();
-	for (const id of DEMO_SESSION_IDS) {
-		const session = await repo.create({ id });
-		await session.close();
-	}
+	const executionEnv = new NodeExecutionEnv({ cwd: process.cwd() });
+	const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot: sessionDir });
 
 	const workerPids = new Map<string, number>();
-	const host: PiServerHost = {
+	const host: PiServerHost<JsonlSessionMetadata> = {
 		sessions: repo,
 		createHarness: async (metadata) => {
 			const sessionId = metadata.id;
-			const worker = await startExperimentalSessionWorker(sessionId, { sessionDir });
+			const worker = await startExperimentalSessionWorker(metadata, { sessionDir });
 			workerPids.set(sessionId, worker.pid);
 			return {
 				terminated: worker.terminated.then((error) => {
@@ -105,11 +102,17 @@ export async function startExperimentalMemoryServer(
 		await ensurePrivateSocketDirectory(socketDirectory);
 		socketPath = getUnixSocketPath(serverId, socketDirectory);
 	}
+	const closeCatalog = async (): Promise<void> => {
+		const cleanup = await Promise.allSettled([repo.close(), executionEnv.cleanup()]);
+		const errors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+		if (errors.length === 1) throw errors[0];
+		if (errors.length > 1) throw new AggregateError(errors, "Experimental session catalog cleanup failed");
+	};
 	const server = createUnixServer(host, { serverId, path: socketPath, mode: 0o600 });
 	try {
 		await server.start();
 	} catch (error) {
-		const cleanup = await Promise.allSettled([server.close(), repo.close()]);
+		const cleanup = await Promise.allSettled([server.close(), closeCatalog()]);
 		const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
 		if (cleanupErrors.length > 0) {
 			throw new AggregateError([error, ...cleanupErrors], "Experimental server startup and cleanup failed");
@@ -119,10 +122,10 @@ export async function startExperimentalMemoryServer(
 
 	let closePromise: Promise<void> | undefined;
 	const closed = server.closed.then(
-		() => repo.close(),
+		() => closeCatalog(),
 		async (serverError: unknown) => {
 			try {
-				await repo.close();
+				await closeCatalog();
 			} catch (repoError) {
 				throw new AggregateError([serverError, repoError], "Server and repository shutdown failed");
 			}
@@ -150,16 +153,16 @@ export async function startExperimentalMemoryServer(
 /** Start the experimental local server, replacing an existing generation for the same profile. */
 export async function startExperimentalServerGeneration(
 	options: StartExperimentalServerGenerationOptions = {},
-): Promise<ExperimentalMemoryServer> {
+): Promise<ExperimentalServer> {
 	const directory = options.directory ?? join(homedir(), ".pi", "server");
 	const socketDirectory = options.socketDirectory ?? getExperimentalSocketDirectory();
 	const { serverId, release } = await acquireExperimentalServerProfile(directory);
-	let runtime: ExperimentalMemoryServer;
+	let runtime: ExperimentalServer;
 	try {
 		await ensurePrivateSocketDirectory(socketDirectory);
 		const socketPath = getUnixSocketPath(serverId, socketDirectory);
 		await drainExistingGeneration(serverId, socketPath);
-		runtime = await startExperimentalMemoryServer({
+		runtime = await startExperimentalServer({
 			directory,
 			path: socketPath,
 			serverId,
@@ -207,7 +210,7 @@ export async function runExperimentalClient(
 	command: ClientCommand,
 	options: RunExperimentalClientOptions = {},
 ): Promise<ExperimentalClientResult> {
-	if (command.auth !== undefined) throw new Error("Authentication is not supported by the local demo server");
+	if (command.auth !== undefined) throw new Error("Authentication is not supported by the experimental local server");
 	const routes = command.connect
 		? [routeFromExplicitPath(command.connect.path)]
 		: await discoverUnixServers({ directory: options.directory ?? getExperimentalSocketDirectory() });

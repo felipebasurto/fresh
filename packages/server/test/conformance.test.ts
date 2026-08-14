@@ -185,6 +185,32 @@ describe("list and attach protocol", () => {
 		expect(host.harnesses.size).toBe(0);
 	});
 
+	test("rejects an ambiguous session ID without creating a Harness", async () => {
+		type BackendMetadata = SessionMetadata & { path: string };
+		const host: PiServerHost<BackendMetadata> = {
+			sessions: {
+				list: async () => [
+					{ id: "duplicate", createdAt: 1, storageVersion: 1, cwd: "/one", path: "/one/session.jsonl" },
+					{ id: "duplicate", createdAt: 2, storageVersion: 1, cwd: "/two", path: "/two/session.jsonl" },
+				],
+			},
+			createHarness: async () => {
+				throw new Error("must not create a Harness for an ambiguous session");
+			},
+		};
+		const server = new PiServer(host, {
+			listeners: [],
+			serverId: "00000000-0000-4000-8000-000000000001",
+		});
+		servers.add(server);
+		const client = connect(server);
+		await client.hello();
+
+		await expect(
+			client.request("00000000-0000-4000-8000-000000000001", { method: "attach", args: ["duplicate"] }),
+		).resolves.toMatchObject({ ok: false, error: { code: "session_ambiguous" } });
+	});
+
 	test("invalidates a terminated Harness handle and allows a later attach", async () => {
 		const host = new TestServerHost();
 		await host.seed("session-1");

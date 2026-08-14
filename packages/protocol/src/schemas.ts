@@ -93,6 +93,7 @@ export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("version"),
 	Type.Literal("wrong_server"),
 	Type.Literal("session_not_found"),
+	Type.Literal("session_ambiguous"),
 	Type.Literal("server_draining"),
 	Type.Literal("invalid_request"),
 	Type.Literal("internal_error"),
