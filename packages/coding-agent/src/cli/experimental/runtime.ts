@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { MemorySessionRepo, type Session } from "@earendil-works/pi-agent-core";
+import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
 import { PiClient } from "@earendil-works/pi-client";
 import {
 	createUnixTransportFactory,
@@ -7,16 +7,17 @@ import {
 	type UnixServiceRoute,
 } from "@earendil-works/pi-client/unix";
 import { isServiceId } from "@earendil-works/pi-protocol";
-import { generateServiceId, type PiServer, type PiServerService } from "@earendil-works/pi-server";
+import { generateServiceId, type PiServer, type PiServerHost } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 import type { ClientCommand } from "./commands/client.ts";
-
-const DEMO_SESSION_IDS = ["demo-1", "demo-2"] as const;
+import { DEMO_SESSION_IDS } from "./demo-sessions.ts";
+import { startExperimentalSessionWorker } from "./session-worker.ts";
 
 export interface ExperimentalMemoryServer {
 	readonly serviceId: string;
 	readonly socketPath: string;
 	readonly server: PiServer;
+	readonly workerPids: ReadonlyMap<string, number>;
 	close(): Promise<void>;
 }
 
@@ -49,15 +50,38 @@ export async function startExperimentalMemoryServer(
 		await session.close();
 	}
 
-	// The list-and-attach protocol only needs ownership and close semantics. The
-	// complete AgentHarness implementation will replace this session owner when
-	// remote Harness methods are added.
-	const service: PiServerService = {
+	const workerPids = new Map<string, number>();
+	const host: PiServerHost = {
 		sessions: repo,
-		createHarness: (session: Session) => Promise.resolve({ close: () => session.close() }),
+		createHarness: async (session) => {
+			const sessionId = session.metadata.id;
+			const worker = await startExperimentalSessionWorker(sessionId);
+			try {
+				// Prototype-only adapter: the server opened this parent-repository
+				// facade, while the child owns its independently restored Session.
+				await session.close();
+			} catch (error) {
+				await worker.close();
+				throw error;
+			}
+			workerPids.set(sessionId, worker.pid);
+			return {
+				terminated: worker.terminated.then((error) => {
+					if (workerPids.get(sessionId) === worker.pid) workerPids.delete(sessionId);
+					return error;
+				}),
+				close: async () => {
+					try {
+						await worker.close();
+					} finally {
+						if (workerPids.get(sessionId) === worker.pid) workerPids.delete(sessionId);
+					}
+				},
+			};
+		},
 	};
 	const socketPath = options.path ?? getUnixSocketPath(serviceId, options.directory);
-	const server = createUnixServer(service, { serviceId, path: socketPath });
+	const server = createUnixServer(host, { serviceId, path: socketPath });
 	try {
 		await server.start();
 	} catch (error) {
@@ -70,6 +94,7 @@ export async function startExperimentalMemoryServer(
 		serviceId,
 		socketPath,
 		server,
+		workerPids,
 		close() {
 			if (closePromise === undefined) closePromise = server.close().finally(() => repo.close());
 			return closePromise;

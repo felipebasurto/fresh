@@ -25,7 +25,7 @@ import {
 import { INTERNAL_SERVER_ERROR_MESSAGE, InternalServerError, PiServerError, WrongServiceError } from "./errors.ts";
 import { HostedHarnessManager } from "./hosted-harness-manager.ts";
 import type { PiServerListener } from "./listener.ts";
-import type { HostedSessionInfo, PiServerOptions, PiServerService } from "./types.ts";
+import type { HostedSessionInfo, PiServerHost, PiServerOptions } from "./types.ts";
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
 const MAX_UINT32 = 0xffff_ffff;
@@ -45,7 +45,7 @@ export class PiServer {
 	private startPromise?: Promise<this>;
 	private started = false;
 
-	constructor(service: PiServerService, options: PiServerOptions) {
+	constructor(host: PiServerHost, options: PiServerOptions) {
 		const resolved = resolveOptions(options);
 		this.listeners = options.listeners;
 		this.serviceId = options.serviceId;
@@ -53,7 +53,7 @@ export class PiServer {
 		this.handshakeTimeoutMs = resolved.handshakeTimeoutMs;
 		this.onError = options.onError;
 		this.sessions = new HostedHarnessManager({
-			service,
+			host,
 			isClosing: () => this.closing,
 			reportError: (error) => this.reportError(error),
 		});

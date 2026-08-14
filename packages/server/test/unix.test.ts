@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { generateServiceId, type PiServer } from "../src/index.ts";
-import { connectUnixTestClient, type ProtocolTestClient, TestServerService } from "../src/testing/index.ts";
+import { connectUnixTestClient, type ProtocolTestClient, TestServerHost } from "../src/testing/index.ts";
 import { createUnixServer, getUnixSocketPath } from "../src/transports/unix/index.ts";
 
 const servers = new Set<PiServer>();
@@ -20,7 +20,7 @@ async function makeSocketPath(nested = false): Promise<string> {
 }
 
 function makeServer(path: string): PiServer {
-	const server = createUnixServer(new TestServerService(), { path, serviceId: "00000000000000000000000000000001" });
+	const server = createUnixServer(new TestServerHost(), { path, serviceId: "00000000000000000000000000000001" });
 	servers.add(server);
 	return server;
 }
@@ -58,7 +58,7 @@ test("creates an in-memory service ID and derives its Unix socket path", async (
 	expect(path).toBe(join(directory, `${serviceId}.sock`));
 	expect(getUnixSocketPath(serviceId)).toBe(join(homedir(), ".pi", "server", `${serviceId}.sock`));
 
-	const first = createUnixServer(new TestServerService(), { serviceId, path });
+	const first = createUnixServer(new TestServerHost(), { serviceId, path });
 	servers.add(first);
 	await first.start();
 	const firstClient = await connectUnixTestClient(path);
@@ -69,7 +69,7 @@ test("creates an in-memory service ID and derives its Unix socket path", async (
 	await first.close();
 	servers.delete(first);
 
-	const replacement = createUnixServer(new TestServerService(), { serviceId, path });
+	const replacement = createUnixServer(new TestServerHost(), { serviceId, path });
 	servers.add(replacement);
 	await replacement.start();
 	const replacementClient = await connectUnixTestClient(path);

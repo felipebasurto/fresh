@@ -1,4 +1,4 @@
-import type { AgentHarness, SessionMetadata } from "@earendil-works/pi-agent-core";
+import type { SessionMetadata } from "@earendil-works/pi-agent-core";
 import {
 	createRpcDispatcher,
 	ProtocolValidationError,
@@ -8,17 +8,17 @@ import {
 } from "@earendil-works/pi-protocol";
 import type { ConnectionState } from "./connection.ts";
 import { ServerRestartingError, SessionNotFoundError } from "./errors.ts";
-import type { HostedSessionInfo, PiServerService } from "./types.ts";
+import type { HostedHarnessHandle, HostedSessionInfo, PiServerHost } from "./types.ts";
 
 interface HostedSession {
 	readonly id: string;
 	readonly metadata: SessionMetadata;
-	readonly harness: Pick<AgentHarness, "close">;
+	readonly harness: HostedHarnessHandle;
 	readonly connections: Set<ConnectionState>;
 }
 
 interface HostedHarnessManagerOptions {
-	service: PiServerService;
+	host: PiServerHost;
 	isClosing: () => boolean;
 	reportError: (error: unknown) => void;
 }
@@ -34,7 +34,7 @@ export class HostedHarnessManager {
 		this.dispatchRpc = createRpcDispatcher(
 			ServiceRpc,
 			{
-				list: () => this.options.service.sessions.list(),
+				list: () => this.options.host.sessions.list(),
 				attach: async (connection, sessionId) => {
 					if (this.options.isClosing()) throw new ServerRestartingError();
 					const hosted = await this.acquire(sessionId);
@@ -91,12 +91,12 @@ export class HostedHarnessManager {
 	}
 
 	private async open(sessionId: string): Promise<HostedSession> {
-		const metadata = (await this.options.service.sessions.list()).find((candidate) => candidate.id === sessionId);
+		const metadata = (await this.options.host.sessions.list()).find((candidate) => candidate.id === sessionId);
 		if (!metadata) throw new SessionNotFoundError(`Unknown session: ${sessionId}`);
-		const session = await this.options.service.sessions.open(metadata);
-		let harness: Pick<AgentHarness, "close">;
+		const session = await this.options.host.sessions.open(metadata);
+		let harness: HostedHarnessHandle;
 		try {
-			harness = await this.options.service.createHarness(session);
+			harness = await this.options.host.createHarness(session);
 		} catch (error) {
 			await session.close().catch((closeError: unknown) => this.options.reportError(closeError));
 			throw error;
@@ -107,6 +107,20 @@ export class HostedHarnessManager {
 		}
 		const hosted: HostedSession = { id: metadata.id, metadata, harness, connections: new Set() };
 		this.hostedSessions.set(hosted.id, hosted);
+		if (harness.terminated) {
+			void harness.terminated.then(
+				(error) => this.invalidate(hosted, error),
+				(error: unknown) => this.invalidate(hosted, error instanceof Error ? error : new Error(String(error))),
+			);
+		}
 		return hosted;
+	}
+
+	private invalidate(hosted: HostedSession, error: Error | undefined): void {
+		if (this.hostedSessions.get(hosted.id) !== hosted) return;
+		this.hostedSessions.delete(hosted.id);
+		for (const connection of hosted.connections) connection.sessionIds.delete(hosted.id);
+		hosted.connections.clear();
+		if (error) this.options.reportError(error);
 	}
 }

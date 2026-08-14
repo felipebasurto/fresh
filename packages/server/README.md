@@ -11,18 +11,18 @@ Concurrent attachments to one session reuse one hosted Harness. Losing a client 
 
 ```ts
 import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
-import { generateServiceId, type PiServerService } from "@earendil-works/pi-server";
+import { generateServiceId, type PiServerHost } from "@earendil-works/pi-server";
 import { createUnixServer } from "@earendil-works/pi-server/unix";
 
 const sessions = new MemorySessionRepo();
-const service: PiServerService = {
+const host: PiServerHost = {
   sessions,
   async createHarness(session) {
     return createApplicationHarness({ session });
   },
 };
 
-const server = createUnixServer(service, {
+const server = createUnixServer(host, {
   serviceId: generateServiceId(),
 });
 await server.start();

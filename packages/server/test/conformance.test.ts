@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, test } from "vitest";
 import type { ByteConnection, ByteConnectionHandler } from "../src/connection.ts";
 import { PiServer } from "../src/server.ts";
-import { ProtocolTestClient, TestServerService, type WireChannel } from "../src/testing/index.ts";
+import { ProtocolTestClient, TestServerHost, type WireChannel } from "../src/testing/index.ts";
 
 const servers = new Set<PiServer>();
 
-function createServer(service: TestServerService, serviceId = "00000000000000000000000000000001"): PiServer {
+function createServer(service: TestServerHost, serviceId = "00000000000000000000000000000001"): PiServer {
 	const server = new PiServer(service, { listeners: [], serviceId });
 	servers.add(server);
 	return server;
@@ -55,7 +55,7 @@ afterEach(async () => {
 
 describe("list and attach protocol", () => {
 	test("handshake identifies the logical service without listing sessions", async () => {
-		const service = new TestServerService();
+		const service = new TestServerHost();
 		await service.seed();
 		const client = connect(createServer(service));
 
@@ -64,7 +64,7 @@ describe("list and attach protocol", () => {
 	});
 
 	test("list returns SessionRepo metadata without opening a session", async () => {
-		const service = new TestServerService();
+		const service = new TestServerHost();
 		const metadata = await service.seed("session-1", "parent-1");
 		const client = connect(createServer(service));
 		await client.hello();
@@ -79,7 +79,7 @@ describe("list and attach protocol", () => {
 	});
 
 	test("attach opens the Session and creates one hosted Harness", async () => {
-		const service = new TestServerService();
+		const service = new TestServerHost();
 		await service.seed("session-1");
 		const server = createServer(service);
 		const first = connect(server);
@@ -104,7 +104,7 @@ describe("list and attach protocol", () => {
 	});
 
 	test("rejects requests addressed to another service before repository access", async () => {
-		const service = new TestServerService();
+		const service = new TestServerHost();
 		await service.seed("session-1");
 		const client = connect(createServer(service));
 		await client.hello();
@@ -119,7 +119,7 @@ describe("list and attach protocol", () => {
 	});
 
 	test("reports an unknown session without creating a Harness", async () => {
-		const service = new TestServerService();
+		const service = new TestServerHost();
 		const client = connect(createServer(service));
 		await client.hello();
 
@@ -132,8 +132,27 @@ describe("list and attach protocol", () => {
 		expect(service.harnesses.size).toBe(0);
 	});
 
+	test("invalidates a terminated Harness handle and allows a later attach", async () => {
+		const service = new TestServerHost();
+		await service.seed("session-1");
+		const server = createServer(service);
+		const client = connect(server);
+		await client.hello();
+		await client.request("00000000000000000000000000000001", { method: "attach", args: ["session-1"] });
+		const firstHarness = service.latestHarness("session-1");
+
+		await firstHarness.terminate(new Error("worker crashed"));
+		await firstHarness.terminated;
+		expect(server.hostedSessions).toEqual([]);
+
+		await expect(
+			client.request("00000000000000000000000000000001", { method: "attach", args: ["session-1"] }),
+		).resolves.toMatchObject({ ok: true, result: { sessionId: "session-1" } });
+		expect(service.harnesses.get("session-1")).toHaveLength(2);
+	});
+
 	test("connection loss does not close a hosted Harness, but server shutdown does", async () => {
-		const service = new TestServerService();
+		const service = new TestServerHost();
 		await service.seed("session-1");
 		const server = createServer(service);
 		const client = connect(server);
@@ -150,7 +169,7 @@ describe("list and attach protocol", () => {
 
 describe("hosted Harness acquisition failures", () => {
 	test("shares an opening failure and allows a later retry", async () => {
-		const service = new TestServerService();
+		const service = new TestServerHost();
 		await service.seed("session-1");
 		service.failNextOpen = new Error("open failed");
 		const server = createServer(service);
@@ -185,7 +204,7 @@ describe("hosted Harness acquisition failures", () => {
 	});
 
 	test("releases the opened Session when Harness creation fails", async () => {
-		const service = new TestServerService();
+		const service = new TestServerHost();
 		await service.seed("session-1");
 		service.failNextHarness = new Error("harness failed");
 		const server = createServer(service);
@@ -205,7 +224,7 @@ describe("hosted Harness acquisition failures", () => {
 	});
 
 	test("closes a Harness acquired while server shutdown is in progress", async () => {
-		const service = new TestServerService();
+		const service = new TestServerHost();
 		await service.seed("session-1");
 		const server = createServer(service);
 		const client = connect(server);

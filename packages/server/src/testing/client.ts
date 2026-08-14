@@ -9,7 +9,7 @@ import {
 	ServerMessageDecoder,
 	type ServiceRpcCall,
 } from "@earendil-works/pi-protocol";
-import { Deferred } from "./service.ts";
+import { Deferred } from "./host.ts";
 
 interface MessageWaiter {
 	predicate: (message: ServerMessage) => boolean;

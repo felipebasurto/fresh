@@ -40,7 +40,7 @@ describe("experimental memory server composition", () => {
 		expect(runtime.server.hostedSessions).toEqual([]);
 	});
 
-	test("attaches to a seeded session and reuses its hosted owner", async () => {
+	test("attaches to a seeded session and reuses its hosted handle", async () => {
 		const { directory, runtime } = await makeServer();
 
 		await expect(runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory })).resolves.toEqual({
@@ -49,6 +49,8 @@ describe("experimental memory server composition", () => {
 			sessionId: "demo-1",
 		});
 		expect(runtime.server.hostedSessions.map(({ sessionId }) => sessionId)).toEqual(["demo-1"]);
+		const firstPid = runtime.workerPids.get("demo-1");
+		expect(firstPid).toEqual(expect.any(Number));
 
 		await runExperimentalClient({
 			command: "client",
@@ -56,6 +58,40 @@ describe("experimental memory server composition", () => {
 			connect: { transport: "unix", path: runtime.socketPath },
 		});
 		expect(runtime.server.hostedSessions.map(({ sessionId }) => sessionId)).toEqual(["demo-1"]);
+		expect(runtime.workerPids.get("demo-1")).toBe(firstPid);
+	});
+
+	test("invalidates an exited worker and starts a replacement on the next attach", async () => {
+		const { directory, runtime } = await makeServer();
+		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
+		const firstPid = runtime.workerPids.get("demo-1");
+		expect(firstPid).toEqual(expect.any(Number));
+
+		process.kill(firstPid!, "SIGKILL");
+		await expect.poll(() => runtime.server.hostedSessions).toEqual([]);
+		expect(runtime.workerPids.has("demo-1")).toBe(false);
+
+		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
+		const replacementPid = runtime.workerPids.get("demo-1");
+		expect(replacementPid).toEqual(expect.any(Number));
+		expect(replacementPid).not.toBe(firstPid);
+	});
+
+	test("starts one process per attached session and stops them during shutdown", async () => {
+		const { directory, runtime } = await makeServer();
+		await Promise.all([
+			runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory }),
+			runExperimentalClient({ command: "client", sessionId: "demo-2" }, { directory }),
+		]);
+
+		const pids = [...runtime.workerPids.values()];
+		expect(pids).toHaveLength(2);
+		expect(new Set(pids).size).toBe(2);
+		for (const pid of pids) expect(processExists(pid)).toBe(true);
+
+		await runtime.close();
+		expect(runtime.workerPids.size).toBe(0);
+		for (const pid of pids) expect(processExists(pid)).toBe(false);
 	});
 
 	test("reports missing and ambiguous session selections", async () => {
@@ -74,3 +110,12 @@ describe("experimental memory server composition", () => {
 		).rejects.toThrow("Session demo-1 is available from more than one service");
 	});
 });
+
+function processExists(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
