@@ -5,9 +5,11 @@
 ### Breaking Changes
 
 - Replaced the unfinished harness runtime and record-log session model with the shared entry/register/usage, operation-state, session, search, and public harness contracts specified for the durable harness.
+- Added the required replay-stable invocation metadata argument to `AgentHarnessTool.execute()`.
 
 ### Added
 
+- Added scheduler-facing harness execution primitives (`accept`, fenced `drive`, `requestAbort`, and `inspectExecution`) plus replay-stable tool invocation identities.
 - Added isolated harness execution primitives for assistant streaming and durable-boundary tool phases.
 
 ### Fixed
