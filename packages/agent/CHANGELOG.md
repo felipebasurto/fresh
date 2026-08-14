@@ -2,13 +2,7 @@
 
 ## [Unreleased]
 
-### Breaking Changes
-
-- Replaced the unfinished harness runtime and record-log session model with the shared entry/register/usage, operation-state, session, search, and public harness contracts specified for the durable harness.
-
-### Added
-
-- Added isolated harness execution primitives for assistant streaming and durable-boundary tool phases.
+## [0.84.2] - 2026-08-14
 
 ### Fixed
 
