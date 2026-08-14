@@ -17,21 +17,12 @@ const EMPTY_USAGE = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-// Re-enable each case as the work-in-progress backend implements the missing contract behavior.
-const DISABLED_CASES = new Set([
-	"transactions/rolls back every store when a mixed transaction fails",
-	"transactions/enforces one shared entry and usage id namespace",
-	"branch queries/applies stops before filters and cursors before limits",
-	"lifecycle/seals admission, drains admitted commits, and closes idempotently",
-]);
-
 function registerConformance(name: string, cases: readonly ConformanceCase[]): void {
 	describe(name, () => {
 		for (const group of new Set(cases.map((testCase) => testCase.group))) {
 			describe(group, () => {
 				for (const testCase of cases.filter((candidate) => candidate.group === group)) {
-					const register = DISABLED_CASES.has(`${group}/${testCase.name}`) ? it.skip : it;
-					register(testCase.name, () => testCase.run());
+					it(testCase.name, () => testCase.run());
 				}
 			});
 		}
