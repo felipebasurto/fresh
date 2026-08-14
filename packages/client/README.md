@@ -63,15 +63,16 @@ const client = new PiClient({
 await client.connect();
 ```
 
-Unix discovery scans `~/.pi/server/*.sock`, derives each expected service ID from its filename, and verifies it through the existing handshake:
+Unix discovery scans an explicit physical-route directory, derives each expected service ID from its filename, and verifies it through the existing handshake:
 
 ```ts
 import { discoverUnixServices } from "@earendil-works/pi-client/unix";
 
-const routes = await discoverUnixServices();
-// [{ serviceId: "...", path: "/home/me/.pi/server/<serviceId>.sock" }]
+const routes = await discoverUnixServices({ directory: "/run/user/1000/pi" });
+// [{ serviceId: "...", path: "/run/user/1000/pi/<serviceId>.sock" }]
 ```
 
-Malformed entries, non-sockets, stale or unresponsive endpoints, and service-ID mismatches are ignored. Discovery is read-only and probes at most 16 sockets concurrently. Unexpected filesystem and socket errors reject discovery. Pass `directory` or `timeoutMs` to override the defaults.
+Malformed entries, non-sockets, stale or unresponsive endpoints, and service-ID mismatches are ignored. Discovery is read-only and probes at most 16 sockets concurrently. Unexpected filesystem and socket errors reject discovery. The caller must choose a short, private directory because Unix socket path limits are substantially lower than normal filesystem path limits.
+Pass `timeoutMs` to override the default probe timeout.
 
 `PiClientOptions.maxFrameLength` bounds protocol payloads. `maxPendingBytes` bounds queued Unix transport output. Configure matching limits on both peers.

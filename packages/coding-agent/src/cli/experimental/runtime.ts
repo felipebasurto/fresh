@@ -1,4 +1,4 @@
-import { lstat } from "node:fs/promises";
+import { chmod, lstat, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -20,6 +20,7 @@ import { startExperimentalSessionWorker } from "./session-worker.ts";
 
 const SOCKET_RELEASE_TIMEOUT_MS = 10_000;
 const SOCKET_RELEASE_POLL_MS = 10;
+const EXPERIMENTAL_SOCKET_ROOT = "/tmp";
 
 export interface ExperimentalMemoryServer {
 	readonly serviceId: string;
@@ -38,19 +39,21 @@ export type ExperimentalClientResult =
 	| { readonly kind: "attached"; readonly serviceId: string; readonly sessionId: string };
 
 export interface StartExperimentalMemoryServerOptions {
-	/** Directory for service-addressed Unix sockets. Defaults to ~/.pi/server. */
+	/** Directory for service-addressed Unix sockets. Defaults to a short, private per-user runtime directory. */
 	readonly directory?: string;
 	readonly path?: string;
 	readonly serviceId?: string;
 }
 
 export interface StartExperimentalServerGenerationOptions {
-	/** One directory represents one experimental local service profile. */
+	/** Persistent profile directory. Defaults to ~/.pi/server. */
 	readonly directory?: string;
+	/** Physical socket directory. Defaults to a short, private per-user runtime directory. */
+	readonly socketDirectory?: string;
 }
 
 export interface RunExperimentalClientOptions {
-	/** Directory searched when --connect is omitted. Defaults to ~/.pi/server. */
+	/** Directory searched when --connect is omitted. Defaults to the experimental per-user runtime directory. */
 	readonly directory?: string;
 }
 
@@ -95,7 +98,12 @@ export async function startExperimentalMemoryServer(
 			};
 		},
 	};
-	const socketPath = options.path ?? getUnixSocketPath(serviceId, options.directory);
+	let socketPath = options.path;
+	if (socketPath === undefined) {
+		const socketDirectory = options.directory ?? getExperimentalSocketDirectory();
+		await ensurePrivateSocketDirectory(socketDirectory);
+		socketPath = getUnixSocketPath(serviceId, socketDirectory);
+	}
 	const server = createUnixServer(host, { serviceId, path: socketPath, mode: 0o600 });
 	try {
 		await server.start();
@@ -142,10 +150,12 @@ export async function startExperimentalServerGeneration(
 	options: StartExperimentalServerGenerationOptions = {},
 ): Promise<ExperimentalMemoryServer> {
 	const directory = options.directory ?? join(homedir(), ".pi", "server");
+	const socketDirectory = options.socketDirectory ?? getExperimentalSocketDirectory();
 	const { serviceId, release } = await acquireExperimentalServiceProfile(directory);
 	let runtime: ExperimentalMemoryServer;
 	try {
-		const socketPath = getUnixSocketPath(serviceId, directory);
+		await ensurePrivateSocketDirectory(socketDirectory);
+		const socketPath = getUnixSocketPath(serviceId, socketDirectory);
 		await drainExistingGeneration(serviceId, socketPath);
 		runtime = await startExperimentalMemoryServer({
 			directory,
@@ -195,7 +205,9 @@ export async function runExperimentalClient(
 	options: RunExperimentalClientOptions = {},
 ): Promise<ExperimentalClientResult> {
 	if (command.auth !== undefined) throw new Error("Authentication is not supported by the local demo server");
-	const routes = command.connect ? [routeFromExplicitPath(command.connect.path)] : await discoverUnixServices(options);
+	const routes = command.connect
+		? [routeFromExplicitPath(command.connect.path)]
+		: await discoverUnixServices({ directory: options.directory ?? getExperimentalSocketDirectory() });
 	const discovered: { route: UnixServiceRoute; sessionIds: string[] }[] = [];
 
 	for (const route of routes) {
@@ -263,6 +275,23 @@ async function waitForSocketRelease(path: string): Promise<void> {
 		if (Date.now() >= deadline) throw new Error(`Timed out waiting for server socket to close: ${path}`);
 		await delay(SOCKET_RELEASE_POLL_MS);
 	}
+}
+
+function getExperimentalSocketDirectory(): string {
+	if (process.platform === "win32" || typeof process.getuid !== "function") {
+		throw new Error("Experimental Unix server transport requires a POSIX user ID");
+	}
+	return join(EXPERIMENTAL_SOCKET_ROOT, `pi-server-${process.getuid()}`);
+}
+
+async function ensurePrivateSocketDirectory(directory: string): Promise<void> {
+	if (typeof process.getuid !== "function") throw new Error("Unix socket directory requires a POSIX user ID");
+	await mkdir(directory, { recursive: true, mode: 0o700 });
+	const stats = await lstat(directory);
+	if (!stats.isDirectory()) throw new Error(`Unix socket directory is not a directory: ${directory}`);
+	if (stats.uid !== process.getuid())
+		throw new Error(`Unix socket directory is not owned by the current user: ${directory}`);
+	await chmod(directory, 0o700);
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {

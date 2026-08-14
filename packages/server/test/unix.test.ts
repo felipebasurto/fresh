@@ -1,7 +1,6 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { once } from "node:events";
 import { lstat, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { generateServiceId, type PiServer } from "../src/index.ts";
@@ -14,7 +13,7 @@ const children = new Set<ChildProcess>();
 const tempDirectories = new Set<string>();
 
 async function makeSocketPath(nested = false): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "ps-"));
+	const directory = await mkdtemp(join("/tmp", "ps-"));
 	tempDirectories.add(directory);
 	return nested ? join(directory, "p", "n", "server.sock") : join(directory, "server.sock");
 }
@@ -48,16 +47,14 @@ test("generates unique service IDs", () => {
 	expect(second).not.toBe(first);
 });
 
-test("creates an in-memory service ID and derives its Unix socket path", async () => {
-	const directory = await mkdtemp(join(tmpdir(), "pi-server-"));
+test("creates an in-memory service ID and derives its explicit Unix socket path", async () => {
+	const directory = await mkdtemp(join("/tmp", "pi-server-"));
 	tempDirectories.add(directory);
 	const serviceId = generateServiceId();
 	const path = getUnixSocketPath(serviceId, directory);
 
 	expect(serviceId).toMatch(/^[0-9a-f]{32}$/);
 	expect(path).toBe(join(directory, `${serviceId}.sock`));
-	expect(getUnixSocketPath(serviceId)).toBe(join(homedir(), ".pi", "server", `${serviceId}.sock`));
-
 	const first = createUnixServer(new TestServerHost(), { serviceId, path });
 	servers.add(first);
 	await first.start();

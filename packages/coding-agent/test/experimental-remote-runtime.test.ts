@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, rm } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
@@ -27,6 +27,20 @@ afterEach(async () => {
 });
 
 describe("experimental memory server composition", () => {
+	test("does not change permissions on an explicit socket-path parent", async () => {
+		const directory = await mkdtemp(join("/tmp", "pep-"));
+		directories.add(directory);
+		await chmod(directory, 0o750);
+		const serviceId = "00000000000000000000000000000001";
+		const runtime = await startExperimentalMemoryServer({
+			path: join(directory, `${serviceId}.sock`),
+			serviceId,
+		});
+		servers.add(runtime);
+
+		expect((await lstat(directory)).mode & 0o777).toBe(0o750);
+	});
+
 	test("discovers and lists seeded sessions without hosting either session", async () => {
 		const { directory, runtime } = await makeServer();
 
@@ -99,8 +113,8 @@ describe("experimental memory server composition", () => {
 		const directory = await mkdtemp(join("/tmp", "pel-"));
 		directories.add(directory);
 		const generations = await Promise.all([
-			startExperimentalServerGeneration({ directory }),
-			startExperimentalServerGeneration({ directory }),
+			startExperimentalServerGeneration({ directory, socketDirectory: directory }),
+			startExperimentalServerGeneration({ directory, socketDirectory: directory }),
 		]);
 		for (const generation of generations) servers.add(generation);
 
@@ -125,8 +139,14 @@ describe("experimental memory server composition", () => {
 		const otherDirectory = await mkdtemp(join("/tmp", "per-"));
 		directories.add(firstDirectory);
 		directories.add(otherDirectory);
-		const first = await startExperimentalServerGeneration({ directory: firstDirectory });
-		const other = await startExperimentalServerGeneration({ directory: otherDirectory });
+		const first = await startExperimentalServerGeneration({
+			directory: firstDirectory,
+			socketDirectory: firstDirectory,
+		});
+		const other = await startExperimentalServerGeneration({
+			directory: otherDirectory,
+			socketDirectory: otherDirectory,
+		});
 		servers.add(first);
 		servers.add(other);
 		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory: firstDirectory });
@@ -136,7 +156,10 @@ describe("experimental memory server composition", () => {
 		expect(firstWorkerPid).toEqual(expect.any(Number));
 		expect(otherWorkerPid).toEqual(expect.any(Number));
 
-		const replacement = await startExperimentalServerGeneration({ directory: firstDirectory });
+		const replacement = await startExperimentalServerGeneration({
+			directory: firstDirectory,
+			socketDirectory: firstDirectory,
+		});
 		servers.add(replacement);
 		await first.closed;
 
