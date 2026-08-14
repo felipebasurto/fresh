@@ -1,5 +1,5 @@
 import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
 	type ExperimentalMemoryServer,
@@ -39,6 +39,17 @@ describe("experimental memory server composition", () => {
 		servers.add(runtime);
 
 		expect((await lstat(directory)).mode & 0o777).toBe(0o750);
+	});
+
+	test("resolves the configured session directory before starting workers", async () => {
+		const directory = await mkdtemp(join("/tmp", "pes-"));
+		directories.add(directory);
+		const runtime = await startExperimentalMemoryServer({ directory, sessionDir: "relative/sessions" });
+		servers.add(runtime);
+
+		expect(runtime.sessionDir).toBe(resolve("relative/sessions"));
+		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
+		expect(runtime.workerPids.get("demo-1")).toEqual(expect.any(Number));
 	});
 
 	test("discovers and lists seeded sessions without hosting either session", async () => {

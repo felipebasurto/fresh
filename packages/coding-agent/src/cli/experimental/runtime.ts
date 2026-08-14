@@ -10,6 +10,8 @@ import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute }
 import { isServerId } from "@earendil-works/pi-protocol";
 import type { PiServer, PiServerHost } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
+import { getAgentDir } from "../../config.ts";
+import { resolvePath } from "../../utils/paths.ts";
 import type { ClientCommand } from "./commands/client.ts";
 import { DEMO_SESSION_IDS } from "./demo-sessions.ts";
 import { acquireExperimentalServerProfile } from "./server-profile.ts";
@@ -21,6 +23,7 @@ const EXPERIMENTAL_SOCKET_ROOT = "/tmp";
 
 export interface ExperimentalMemoryServer {
 	readonly serverId: string;
+	readonly sessionDir: string;
 	readonly socketPath: string;
 	readonly server: PiServer;
 	readonly workerPids: ReadonlyMap<string, number>;
@@ -40,6 +43,8 @@ export interface StartExperimentalMemoryServerOptions {
 	readonly directory?: string;
 	readonly path?: string;
 	readonly serverId?: string;
+	/** Durable session directory. Defaults to the experimental directory under the configured agent directory. */
+	readonly sessionDir?: string;
 }
 
 export interface StartExperimentalServerGenerationOptions {
@@ -47,6 +52,8 @@ export interface StartExperimentalServerGenerationOptions {
 	readonly directory?: string;
 	/** Physical socket directory. Defaults to a short, private per-user runtime directory. */
 	readonly socketDirectory?: string;
+	/** Durable session directory. Defaults to the experimental directory under the configured agent directory. */
+	readonly sessionDir?: string;
 }
 
 export interface RunExperimentalClientOptions {
@@ -54,11 +61,16 @@ export interface RunExperimentalClientOptions {
 	readonly directory?: string;
 }
 
+export function resolveExperimentalSessionDirectory(sessionDir?: string): string {
+	return resolvePath(sessionDir ?? join(getAgentDir(), "experimental", "sessions"));
+}
+
 /** Start the temporary in-memory list-and-attach server composition. */
 export async function startExperimentalMemoryServer(
 	options: StartExperimentalMemoryServerOptions = {},
 ): Promise<ExperimentalMemoryServer> {
 	const serverId = options.serverId ?? randomUUID();
+	const sessionDir = resolveExperimentalSessionDirectory(options.sessionDir);
 	const repo = new MemorySessionRepo();
 	for (const id of DEMO_SESSION_IDS) {
 		const session = await repo.create({ id });
@@ -70,7 +82,7 @@ export async function startExperimentalMemoryServer(
 		sessions: repo,
 		createHarness: async (session) => {
 			const sessionId = session.metadata.id;
-			const worker = await startExperimentalSessionWorker(sessionId);
+			const worker = await startExperimentalSessionWorker(sessionId, { sessionDir });
 			try {
 				// Prototype-only adapter: the server opened this parent-repository
 				// facade, while the child owns its independently restored Session.
@@ -127,6 +139,7 @@ export async function startExperimentalMemoryServer(
 	);
 	return {
 		serverId,
+		sessionDir,
 		socketPath,
 		server,
 		workerPids,
@@ -158,6 +171,7 @@ export async function startExperimentalServerGeneration(
 			directory,
 			path: socketPath,
 			serverId,
+			sessionDir: options.sessionDir,
 		});
 	} catch (error) {
 		try {

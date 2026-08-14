@@ -6,6 +6,7 @@ import {
 
 const workers = new Set<ExperimentalSessionWorker>();
 const fixtureUrl = new URL("fixtures/session-worker-fixture.ts", import.meta.url);
+const sessionDir = "/tmp/pi-session-worker-tests";
 
 afterEach(async () => {
 	await Promise.all([...workers].map((worker) => worker.close()));
@@ -14,7 +15,7 @@ afterEach(async () => {
 
 describe("experimental session worker controller", () => {
 	test("starts a real child, validates readiness, and closes idempotently", async () => {
-		const worker = await startExperimentalSessionWorker("ready", { workerUrl: fixtureUrl });
+		const worker = await startExperimentalSessionWorker("ready", { sessionDir, workerUrl: fixtureUrl });
 		workers.add(worker);
 
 		expect(worker.sessionId).toBe("ready");
@@ -26,9 +27,16 @@ describe("experimental session worker controller", () => {
 		await expect(worker.terminated).resolves.toBeUndefined();
 	});
 
+	test("rejects a relative session directory before starting a child", async () => {
+		await expect(
+			startExperimentalSessionWorker("ready", { sessionDir: "relative", workerUrl: fixtureUrl }),
+		).rejects.toThrow("sessionDir must be absolute");
+	});
+
 	test("times out and kills a child that never reports readiness", async () => {
 		await expect(
 			startExperimentalSessionWorker("startup-hang", {
+				sessionDir,
 				workerUrl: fixtureUrl,
 				startupTimeoutMs: 10,
 			}),
@@ -40,11 +48,14 @@ describe("experimental session worker controller", () => {
 		["exit before readiness", "exit", /exited before readiness/],
 		["invalid ready identity", "mismatch", /invalid identity/],
 	] as const)("rejects %s", async (_label, sessionId, message) => {
-		await expect(startExperimentalSessionWorker(sessionId, { workerUrl: fixtureUrl })).rejects.toThrow(message);
+		await expect(startExperimentalSessionWorker(sessionId, { sessionDir, workerUrl: fixtureUrl })).rejects.toThrow(
+			message,
+		);
 	});
 
 	test("kills a worker that ignores graceful shutdown", async () => {
 		const worker = await startExperimentalSessionWorker("hang", {
+			sessionDir,
 			workerUrl: fixtureUrl,
 			shutdownTimeoutMs: 10,
 		});
@@ -55,7 +66,7 @@ describe("experimental session worker controller", () => {
 	});
 
 	test("reports an unexpected exit after readiness", async () => {
-		const worker = await startExperimentalSessionWorker("ready", { workerUrl: fixtureUrl });
+		const worker = await startExperimentalSessionWorker("ready", { sessionDir, workerUrl: fixtureUrl });
 		workers.add(worker);
 
 		process.kill(worker.pid, "SIGKILL");

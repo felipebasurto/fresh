@@ -1,5 +1,5 @@
 import type { AuthInput } from "../auth.ts";
-import { Command } from "../command.ts";
+import { Command, stringOption } from "../command.ts";
 import {
 	authTokenFileOption,
 	authTokenOption,
@@ -14,6 +14,7 @@ export interface ServerCommand {
 	readonly command: "server";
 	readonly auth?: AuthInput;
 	readonly listen?: readonly TransportAddress[];
+	readonly sessionDir?: string;
 }
 
 export interface ServerCommandContext {
@@ -21,14 +22,17 @@ export interface ServerCommandContext {
 }
 
 const listenOption = transportOption("--listen");
+const sessionDirOption = stringOption("--session-dir");
 
 export const serverCommand = new Command<ServerCommand, ServerCommandContext>("server")
 	.option(listenOption)
+	.option(sessionDirOption)
 	.option(authTokenOption)
 	.option(authTokenFileOption)
 	.build((input) => {
 		const { auth, errors: authErrors } = parseAuth(input);
 		const listen = input.values(listenOption);
+		const sessionDir = input.value(sessionDirOption);
 		const { errors: optionErrors } = parseLegacyOptions(input);
 		const errors = [...authErrors, ...optionErrors, ...unsupportedLegacyOptions("server", input)];
 		if (errors.length > 0) return { ok: false, errors };
@@ -38,6 +42,7 @@ export const serverCommand = new Command<ServerCommand, ServerCommandContext>("s
 				command: "server",
 				...(auth === undefined ? {} : { auth }),
 				...(listen.length === 0 ? {} : { listen }),
+				...(sessionDir === undefined ? {} : { sessionDir }),
 			},
 		};
 	})

@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { type AgentHarness, MemorySessionRepo } from "@earendil-works/pi-agent-core";
 import { isDemoSessionId } from "./demo-sessions.ts";
 
@@ -26,6 +27,8 @@ async function run(): Promise<void> {
 	// requested session through durable storage.
 	const sessionId = process.argv[2];
 	if (!sessionId || !isDemoSessionId(sessionId)) throw new Error(`Unknown demo session: ${sessionId ?? ""}`);
+	const sessionDir = process.argv[3];
+	if (!sessionDir || !isAbsolute(sessionDir)) throw new Error("Session worker requires an absolute session directory");
 
 	// Prototype-only isolated state. The parent and child intentionally seed
 	// separate repositories; this does not provide persistence or shared state.

@@ -1,4 +1,5 @@
 import { type ChildProcess, fork } from "node:child_process";
+import { isAbsolute } from "node:path";
 import type { SessionWorkerCommand, SessionWorkerEvent } from "./session-worker-process.ts";
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 5_000;
@@ -13,6 +14,7 @@ export interface ExperimentalSessionWorker {
 }
 
 export interface StartExperimentalSessionWorkerOptions {
+	readonly sessionDir: string;
 	readonly startupTimeoutMs?: number;
 	readonly shutdownTimeoutMs?: number;
 	readonly workerUrl?: URL;
@@ -20,15 +22,16 @@ export interface StartExperimentalSessionWorkerOptions {
 
 export async function startExperimentalSessionWorker(
 	sessionId: string,
-	options: StartExperimentalSessionWorkerOptions = {},
+	options: StartExperimentalSessionWorkerOptions,
 ): Promise<ExperimentalSessionWorker> {
+	if (!isAbsolute(options.sessionDir)) throw new TypeError("Session worker sessionDir must be absolute");
 	const startupTimeoutMs = validateTimeout(options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS, "startupTimeoutMs");
 	const shutdownTimeoutMs = validateTimeout(
 		options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
 		"shutdownTimeoutMs",
 	);
 	const workerUrl = options.workerUrl ?? defaultWorkerUrl();
-	const child = fork(workerUrl, [sessionId], {
+	const child = fork(workerUrl, [sessionId, options.sessionDir], {
 		execArgv: workerExecArgv(workerUrl),
 		stdio: ["ignore", "ignore", "inherit", "ipc"],
 	});
