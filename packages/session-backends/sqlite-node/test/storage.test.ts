@@ -29,7 +29,218 @@ function expectBranchPlan(plan: string[]): void {
 	expect(plan.some((detail) => detail.includes("SCAN e"))).toBe(false);
 }
 
+function insertCommitSessionRow(db: SqliteDatabase, nextSeq = 1): void {
+	sql`INSERT INTO session
+		(created_at, parent_session_id, storage_version, metadata, message_count, usage_payload, next_seq)
+		VALUES (
+			${1},
+			${null},
+			${1},
+			${null},
+			${0},
+			${JSON.stringify({
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			})},
+			${nextSeq}
+		)`.run(db);
+}
+
 describe("SqliteStorage", () => {
+	it("commits root entries and append-to-tip entries into the branch index", async () => {
+		await withStorage(async (storage, db) => {
+			insertCommitSessionRow(db);
+
+			expect(
+				await storage.commit({
+					writes: [
+						{
+							kind: "entry",
+							entry: {
+								id: "root",
+								parentId: null,
+								type: "message",
+								message: { role: "user", content: "root", timestamp: 10 },
+							},
+						},
+					],
+				}),
+			).toEqual({ firstSeq: 1, seqs: [1], timestamp: 1_700_000_000_000 });
+			expect(
+				await storage.commit({
+					writes: [
+						{
+							kind: "entry",
+							entry: {
+								id: "child",
+								parentId: "root",
+								type: "message",
+								message: { role: "user", content: "child", timestamp: 11 },
+							},
+						},
+					],
+				}),
+			).toEqual({ firstSeq: 2, seqs: [2], timestamp: 1_700_000_000_000 });
+
+			expect(sql`SELECT branch_id, tip_entry_id, tip_seq FROM branch_meta`.all(db)).toEqual([
+				{ branch_id: "root", tip_entry_id: "child", tip_seq: 2 },
+			]);
+			expect(
+				sql`SELECT branch_id, entry_id, entry_seq, entry_type FROM branch_entries ORDER BY entry_seq`.all(db),
+			).toEqual([
+				{ branch_id: "root", entry_id: "root", entry_seq: 1, entry_type: "message" },
+				{ branch_id: "root", entry_id: "child", entry_seq: 2, entry_type: "message" },
+			]);
+			expect((await storage.scanBranch({ start: "child" })).map((entry) => entry.id)).toEqual(["child", "root"]);
+		});
+	});
+
+	it("commits divergent branch entries by materializing a new segment", async () => {
+		await withStorage(async (storage, db) => {
+			insertCommitSessionRow(db);
+			await storage.commit({
+				writes: [
+					{
+						kind: "entry",
+						entry: {
+							id: "root",
+							parentId: null,
+							type: "message",
+							message: { role: "user", content: "root", timestamp: 10 },
+						},
+					},
+					{
+						kind: "entry",
+						entry: {
+							id: "left",
+							parentId: "root",
+							type: "message",
+							message: { role: "user", content: "left", timestamp: 11 },
+						},
+					},
+					{
+						kind: "entry",
+						entry: {
+							id: "right",
+							parentId: "root",
+							type: "message",
+							message: { role: "user", content: "right", timestamp: 12 },
+						},
+					},
+				],
+			});
+
+			expect(
+				sql`SELECT branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq FROM branch_meta ORDER BY branch_id`.all(
+					db,
+				),
+			).toEqual([
+				{ branch_id: "right", tip_entry_id: "right", tip_seq: 3, base_branch_id: null, base_seq: null },
+				{ branch_id: "root", tip_entry_id: "left", tip_seq: 2, base_branch_id: null, base_seq: null },
+			]);
+			expect(
+				sql`SELECT branch_id, entry_id, entry_seq, entry_type FROM branch_entries ORDER BY branch_id, entry_seq`.all(
+					db,
+				),
+			).toEqual([
+				{ branch_id: "right", entry_id: "root", entry_seq: 1, entry_type: "message" },
+				{ branch_id: "right", entry_id: "right", entry_seq: 3, entry_type: "message" },
+				{ branch_id: "root", entry_id: "root", entry_seq: 1, entry_type: "message" },
+				{ branch_id: "root", entry_id: "left", entry_seq: 2, entry_type: "message" },
+			]);
+			expect((await storage.scanBranch({ start: "right" })).map((entry) => entry.id)).toEqual(["right", "root"]);
+			expect((await storage.scanBranch({ start: "left" })).map((entry) => entry.id)).toEqual(["left", "root"]);
+		});
+	});
+
+	it("bases divergent branch segments at the newest compaction", async () => {
+		await withStorage(async (storage, db) => {
+			insertCommitSessionRow(db);
+			await storage.commit({
+				writes: [
+					{
+						kind: "entry",
+						entry: {
+							id: "root",
+							parentId: null,
+							type: "message",
+							message: { role: "user", content: "root", timestamp: 10 },
+						},
+					},
+					{
+						kind: "entry",
+						entry: {
+							id: "compact",
+							parentId: "root",
+							type: "compaction",
+							summary: "summary",
+							retainedTail: [],
+							tokensBefore: 1,
+							fromHook: false,
+						},
+					},
+					{
+						kind: "entry",
+						entry: {
+							id: "left",
+							parentId: "compact",
+							type: "message",
+							message: { role: "user", content: "left", timestamp: 11 },
+						},
+					},
+					{
+						kind: "entry",
+						entry: {
+							id: "leaf",
+							parentId: "left",
+							type: "message",
+							message: { role: "user", content: "leaf", timestamp: 12 },
+						},
+					},
+					{
+						kind: "entry",
+						entry: {
+							id: "right",
+							parentId: "left",
+							type: "message",
+							message: { role: "user", content: "right", timestamp: 13 },
+						},
+					},
+				],
+			});
+
+			expect(
+				sql`SELECT branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq FROM branch_meta WHERE branch_id = ${"right"}`.get(
+					db,
+				),
+			).toEqual({
+				branch_id: "right",
+				tip_entry_id: "right",
+				tip_seq: 5,
+				base_branch_id: "root",
+				base_seq: 2,
+			});
+			expect(
+				sql`SELECT branch_id, entry_id, entry_seq, entry_type FROM branch_entries WHERE branch_id = ${"right"} ORDER BY entry_seq`.all(
+					db,
+				),
+			).toEqual([
+				{ branch_id: "right", entry_id: "left", entry_seq: 3, entry_type: "message" },
+				{ branch_id: "right", entry_id: "right", entry_seq: 5, entry_type: "message" },
+			]);
+			expect((await storage.scanBranch({ start: "right" })).map((entry) => entry.id)).toEqual([
+				"right",
+				"left",
+				"compact",
+				"root",
+			]);
+		});
+	});
+
 	it("gets entries by requested id order", async () => {
 		await withStorage(async (storage, db) => {
 			sql`INSERT INTO entries (id, parent_id, seq, type, custom_type, timestamp, payload)

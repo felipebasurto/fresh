@@ -35,6 +35,19 @@ interface EntryStructureRow {
 	timestamp: number;
 }
 
+interface BranchTipRow {
+	branch_id: string;
+}
+
+interface CompactionBoundary {
+	branchId: string;
+	seq: number;
+}
+
+interface CompactionBoundaryRow {
+	entry_seq: number | null;
+}
+
 function readBranchMembership(db: SqliteDatabase, entryId: string): BranchMembershipRow {
 	const row = sql`SELECT b.branch_id, b.entry_seq
 		FROM branch_entries b
@@ -56,6 +69,31 @@ function readBranchMeta(db: SqliteDatabase, branchId: string): BranchMetaRow {
 	return row;
 }
 
+function insertBranchEntry(db: SqliteDatabase, branchId: string, entry: Entry): void {
+	sql`INSERT INTO branch_entries (branch_id, entry_id, entry_seq, entry_type)
+		VALUES (${branchId}, ${entry.id}, ${entry.seq}, ${entry.type})`.run(db);
+}
+
+function readBranchTipForParent(db: SqliteDatabase, parentId: string): BranchTipRow | undefined {
+	return sql`SELECT branch_id
+		FROM branch_meta
+		WHERE tip_entry_id = ${parentId}`.get<BranchTipRow>(db);
+}
+
+function createRootBranchForEntry(db: SqliteDatabase, entry: Entry): void {
+	sql`INSERT INTO branch_meta (branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq)
+		VALUES (${entry.id}, ${entry.id}, ${entry.seq}, ${null}, ${null})`.run(db);
+	insertBranchEntry(db, entry.id, entry);
+}
+
+function appendEntryToExistingBranch(db: SqliteDatabase, branchId: string, entry: Entry): void {
+	insertBranchEntry(db, branchId, entry);
+	const result = sql`UPDATE branch_meta
+		SET tip_entry_id = ${entry.id}, tip_seq = ${entry.seq}
+		WHERE branch_id = ${branchId}`.run(db);
+	if (result.changes !== 1) throw new Error(`Expected to update branch ${branchId}, updated ${result.changes}`);
+}
+
 function readBranchSegmentsNewestFirst(db: SqliteDatabase, start: string): BranchSegment[] {
 	let { branch_id: branchId, entry_seq: upperSeq } = readBranchMembership(db, start);
 	const segments: BranchSegment[] = [];
@@ -69,6 +107,69 @@ function readBranchSegmentsNewestFirst(db: SqliteDatabase, start: string): Branc
 		upperSeq = meta.base_seq;
 	}
 	return segments;
+}
+
+function readNewestCompactionBoundary(
+	db: SqliteDatabase,
+	segmentsNewestFirst: readonly BranchSegment[],
+): CompactionBoundary | undefined {
+	for (const segment of segmentsNewestFirst) {
+		const row = sql`SELECT MAX(entry_seq) AS entry_seq
+			FROM branch_entries
+			WHERE branch_id = ${segment.branchId}
+				AND entry_seq > ${segment.lowerSeq}
+				AND entry_seq <= ${segment.upperSeq}
+				AND entry_type = ${"compaction"}`.get<CompactionBoundaryRow>(db);
+		if (row?.entry_seq !== null && row?.entry_seq !== undefined)
+			return { branchId: segment.branchId, seq: row.entry_seq };
+	}
+	return undefined;
+}
+
+function copyBranchEntriesAfterSeqThroughParent(
+	db: SqliteDatabase,
+	targetBranchId: string,
+	segmentsNewestFirst: readonly BranchSegment[],
+	afterSeq: number,
+): void {
+	for (const segment of [...segmentsNewestFirst].reverse()) {
+		const lowerSeq = Math.max(segment.lowerSeq, afterSeq);
+		if (segment.upperSeq <= lowerSeq) continue;
+		sql`INSERT INTO branch_entries (branch_id, entry_id, entry_seq, entry_type)
+			SELECT ${targetBranchId}, entry_id, entry_seq, entry_type
+			FROM branch_entries
+			WHERE branch_id = ${segment.branchId}
+				AND entry_seq > ${lowerSeq}
+				AND entry_seq <= ${segment.upperSeq}`.run(db);
+	}
+}
+
+function createDivergentBranchForEntry(db: SqliteDatabase, entry: Entry): void {
+	if (entry.parentId === null) throw new Error("Root entries do not create divergent branches");
+	const segmentsNewestFirst = readBranchSegmentsNewestFirst(db, entry.parentId);
+	const compaction = readNewestCompactionBoundary(db, segmentsNewestFirst);
+	const branchId = entry.id;
+	// A null base means this segment stores its own root-through-parent prefix.
+	sql`INSERT INTO branch_meta (branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq)
+		VALUES (${branchId}, ${entry.id}, ${entry.seq}, ${compaction?.branchId ?? null}, ${compaction?.seq ?? null})`.run(
+		db,
+	);
+	copyBranchEntriesAfterSeqThroughParent(db, branchId, segmentsNewestFirst, compaction?.seq ?? 0);
+	insertBranchEntry(db, branchId, entry);
+}
+
+export function appendEntryToBranchIndex(db: SqliteDatabase, entry: Entry): void {
+	if (entry.parentId === null) {
+		createRootBranchForEntry(db, entry);
+		return;
+	}
+
+	const branch = readBranchTipForParent(db, entry.parentId);
+	if (branch === undefined) {
+		createDivergentBranchForEntry(db, entry);
+		return;
+	}
+	appendEntryToExistingBranch(db, branch.branch_id, entry);
 }
 
 function stopPredicates(query: StorageBranchScan): SqlQuery[] {
