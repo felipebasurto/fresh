@@ -9,9 +9,11 @@ import {
 	isSupportedProtocolVersion,
 	PROTOCOL_VERSION,
 	type ProtocolError,
+	type ProtocolRpcResult,
 	ProtocolValidationError,
 	type RequestEnvelope,
 	type ResponseEnvelope,
+	type ServerControlRpcResult,
 	type ServerHello,
 	type ServerHelloError,
 	type ServerMessage,
@@ -22,7 +24,13 @@ import {
 	type ConnectionState,
 	isTerminalConnection,
 } from "./connection.ts";
-import { INTERNAL_SERVER_ERROR_MESSAGE, InternalServerError, PiServerError, WrongServiceError } from "./errors.ts";
+import {
+	INTERNAL_SERVER_ERROR_MESSAGE,
+	InternalServerError,
+	PiServerError,
+	ServerDrainingError,
+	WrongServiceError,
+} from "./errors.ts";
 import { HostedHarnessManager } from "./hosted-harness-manager.ts";
 import type { PiServerListener } from "./listener.ts";
 import type { HostedSessionInfo, PiServerHost, PiServerOptions } from "./types.ts";
@@ -33,6 +41,8 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export class PiServer {
 	readonly serviceId: string;
+	/** Resolves after shutdown, or rejects when listener or hosted-Harness cleanup fails. */
+	readonly closed: Promise<void>;
 
 	private readonly listeners: readonly PiServerListener[];
 	private readonly maxFrameLength: number;
@@ -42,6 +52,9 @@ export class PiServer {
 	private readonly sessions: HostedHarnessManager;
 	private closing = false;
 	private closePromise?: Promise<void>;
+	private closedSettled = false;
+	private rejectClosed!: (error: unknown) => void;
+	private resolveClosed!: () => void;
 	private startPromise?: Promise<this>;
 	private started = false;
 
@@ -57,6 +70,11 @@ export class PiServer {
 			isClosing: () => this.closing,
 			reportError: (error) => this.reportError(error),
 		});
+		this.closed = new Promise((resolve, reject) => {
+			this.resolveClosed = resolve;
+			this.rejectClosed = reject;
+		});
+		void this.closed.catch(() => {});
 	}
 
 	get addresses(): readonly string[] {
@@ -86,8 +104,22 @@ export class PiServer {
 			return this;
 		} catch (error) {
 			this.closing = true;
-			await Promise.allSettled(started.map((listener) => listener.close()));
-			await this.closeServerState();
+			const cleanupErrors: unknown[] = [];
+			const listenerResults = await Promise.allSettled(started.map((listener) => listener.close()));
+			for (const result of listenerResults) {
+				if (result.status === "rejected") cleanupErrors.push(result.reason);
+			}
+			try {
+				await this.closeServerState();
+			} catch (cleanupError) {
+				cleanupErrors.push(cleanupError);
+			}
+			if (cleanupErrors.length > 0) {
+				const failure = new AggregateError([error, ...cleanupErrors], "Server startup and cleanup failed");
+				this.settleClosed(failure);
+				throw failure;
+			}
+			this.settleClosed();
 			throw error;
 		} finally {
 			this.startPromise = undefined;
@@ -144,12 +176,26 @@ export class PiServer {
 	private async closeInternal(): Promise<void> {
 		const starting = this.startPromise;
 		if (starting) await starting.catch(() => {});
-		try {
-			await Promise.all(this.listeners.map((listener) => listener.close()));
-		} finally {
-			await this.closeServerState();
-			this.started = false;
+		const errors: unknown[] = [];
+		const listenerResults = await Promise.allSettled(this.listeners.map((listener) => listener.close()));
+		for (const result of listenerResults) {
+			if (result.status === "rejected") errors.push(result.reason);
 		}
+		try {
+			await this.closeServerState();
+		} catch (error) {
+			errors.push(error);
+		}
+		this.started = false;
+		if (errors.length > 0) {
+			const failure =
+				errors.length === 1 && errors[0] instanceof Error
+					? errors[0]
+					: new AggregateError(errors, "Server shutdown failed");
+			this.settleClosed(failure);
+			throw failure;
+		}
+		this.settleClosed();
 	}
 
 	private receive(state: ConnectionState, chunk: Uint8Array): void {
@@ -227,9 +273,19 @@ export class PiServer {
 	}
 
 	private async handleRequest(state: ConnectionState, envelope: RequestEnvelope): Promise<void> {
+		const draining = envelope.call.method === "drain";
+		let ownsDrain = false;
 		try {
 			if (envelope.serviceId !== this.serviceId) throw new WrongServiceError();
-			const result = await this.sessions.executeCall(state, envelope.call);
+			let result: ProtocolRpcResult;
+			if (draining) {
+				if (this.closing) throw new ServerDrainingError();
+				this.closing = true;
+				ownsDrain = true;
+				result = await this.drain();
+			} else {
+				result = await this.sessions.executeCall(state, envelope.call);
+			}
 			await this.sendMessage(state, {
 				type: "response",
 				id: envelope.id,
@@ -243,7 +299,18 @@ export class PiServer {
 				ok: false,
 				error: this.toProtocolError(error),
 			} satisfies ResponseEnvelope);
+		} finally {
+			if (ownsDrain) this.scheduleClose();
 		}
+	}
+
+	private async drain(): Promise<ServerControlRpcResult<"drain">> {
+		await this.sessions.close();
+		return {};
+	}
+
+	private scheduleClose(): void {
+		void this.close().catch((error: unknown) => this.reportError(error));
 	}
 
 	private transportClosed(connection: ConnectionState): void {
@@ -346,6 +413,13 @@ export class PiServer {
 		} catch {
 			// Error observers cannot affect server state.
 		}
+	}
+
+	private settleClosed(error?: unknown): void {
+		if (this.closedSettled) return;
+		this.closedSettled = true;
+		if (error === undefined) this.resolveClosed();
+		else this.rejectClosed(error);
 	}
 }
 

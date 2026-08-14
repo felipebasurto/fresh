@@ -10,6 +10,10 @@
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
 		},
+		"./control": {
+			"types": "./dist/control.d.ts",
+			"import": "./dist/control.js"
+		},
 		"./unix": {
 			"types": "./dist/unix.d.ts",
 			"import": "./dist/unix.js"

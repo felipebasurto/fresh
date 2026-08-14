@@ -151,9 +151,11 @@ class UnixListener implements PiServerListener {
 		try {
 			await closeNetServer(server, (error) => this.reportError(error));
 		} finally {
-			await this.cleanupOwnedSocket();
+			// Remove the private bind path before the public route. Launchers use the
+			// public route disappearing as the signal that a successor may bind safely.
 			if (this.ownedBindPath) await removePath(this.ownedBindPath);
 			this.ownedBindPath = undefined;
+			await this.cleanupOwnedSocket();
 		}
 	}
 

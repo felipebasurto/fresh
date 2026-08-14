@@ -22,7 +22,7 @@ test("requires a 128-bit service identity", () => {
 	);
 });
 
-describe("PiClient list and attach", () => {
+describe("PiClient service operations", () => {
 	test("connects only to the expected logical service", async () => {
 		const matching = new MemoryByteServer();
 		const client = await connectClient(matching);

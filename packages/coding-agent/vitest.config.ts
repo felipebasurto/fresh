@@ -23,6 +23,10 @@ export default mergeConfig(
 		resolve: {
 			alias: [
 				{
+					find: /^@earendil-works\/pi-client\/control$/,
+					replacement: fileURLToPath(new URL("../client/src/control.ts", import.meta.url)),
+				},
+				{
 					find: /^@earendil-works\/pi-client\/unix$/,
 					replacement: fileURLToPath(new URL("../client/src/unix.ts", import.meta.url)),
 				},
