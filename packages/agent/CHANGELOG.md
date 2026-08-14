@@ -11,6 +11,7 @@
 
 - Added scheduler-facing harness execution primitives (`accept`, fenced `drive`, `requestAbort`, and `inspectExecution`) plus replay-stable tool invocation identities.
 - Added isolated harness execution primitives for assistant streaming and durable-boundary tool phases.
+- Added durable `AgentHarness` prompt acceptance and minimal no-tool execution with recovery, lifecycle events, usage settlement, and terminal cleanup.
 
 ## [0.84.2] - 2026-08-14
 
