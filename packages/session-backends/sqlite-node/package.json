@@ -19,9 +19,8 @@
 	"scripts": {
 		"clean": "node -e \"import('node:fs/promises').then(fs=>fs.rm('dist',{recursive:true,force:true}))\"",
 		"build": "tsgo -p tsconfig.build.json && node scripts/copy-migrations.mjs",
-		"test": "vitest --run --exclude test/storage-conformance.test.ts",
-		"test:conformance": "vitest --run test/storage-conformance.test.ts",
-		"coverage": "vitest --run --coverage --exclude test/storage-conformance.test.ts",
+		"test": "vitest --run",
+		"coverage": "vitest --run --coverage",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"author": "Earendil Works",
