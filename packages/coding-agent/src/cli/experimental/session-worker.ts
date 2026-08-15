@@ -97,7 +97,7 @@ export async function startExperimentalSessionWorker(
 	} else {
 		const controlDirectory = resolveExperimentalServerDirectory(options.controlDirectory);
 		await ensurePrivateServerDirectory(controlDirectory);
-		controlAddress = join(controlDirectory, `.worker-${controlId}.sock`);
+		controlAddress = join(controlDirectory, `worker-${controlId}.sock`);
 	}
 	const control = await createWorkerControlServer(controlAddress, token, metadata.id);
 	let child: ChildProcess;

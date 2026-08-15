@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { type JsonlSessionMetadata, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
@@ -13,9 +13,10 @@ const workers = new Set<ExperimentalSessionWorker>();
 const fixtureUrl = new URL("fixtures/session-worker-fixture.ts", import.meta.url);
 const sessionDir = "/tmp/pi-session-worker-tests";
 const directories = new Set<string>();
+let serverDir: string;
 
 beforeEach(async () => {
-	const serverDir = await mkdtemp(join("/tmp", "pi-session-worker-server-"));
+	serverDir = await mkdtemp(join("/tmp", "pi-session-worker-server-"));
 	directories.add(serverDir);
 	vi.stubEnv("PI_SERVER_DIR", serverDir);
 });
@@ -50,6 +51,9 @@ describe("experimental session worker controller", () => {
 		expect(worker.sessionId).toBe("ready");
 		expect(worker.pid).not.toBe(process.pid);
 		expect(processExists(worker.pid)).toBe(true);
+		const entries = await readdir(serverDir);
+		expect(entries).toHaveLength(1);
+		expect(entries[0]).toMatch(/^worker-[0-9a-f-]+\.sock$/);
 
 		await Promise.all([worker.close(), worker.close()]);
 		expect(processExists(worker.pid)).toBe(false);

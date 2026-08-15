@@ -47,7 +47,7 @@ export async function acquireExperimentalServerProfile(
 		}
 	}
 
-	const release = await lockfile.lock(join(directory, `.launcher-${serverId}`), {
+	const release = await lockfile.lock(join(directory, `launcher-${serverId}`), {
 		realpath: false,
 		stale: LOCK_STALE_MS,
 		update: LOCK_STALE_MS / 3,

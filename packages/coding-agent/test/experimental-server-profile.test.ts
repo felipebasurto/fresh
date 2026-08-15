@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -48,6 +48,10 @@ describe("experimental server profile", () => {
 		]);
 		expect(first.serverId).toBe(FIRST_SERVER_ID);
 		expect(second.serverId).toBe(SECOND_SERVER_ID);
+		expect((await readdir(directory)).sort()).toEqual([
+			`launcher-${FIRST_SERVER_ID}.lock`,
+			`launcher-${SECOND_SERVER_ID}.lock`,
+		]);
 		await Promise.all([first.release(), second.release()]);
 	});
 

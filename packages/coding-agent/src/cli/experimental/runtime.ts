@@ -193,7 +193,8 @@ export async function startExperimentalCoordinatedServer(
 		await ensurePrivateServerDirectory(directory);
 		const socketPath = getUnixSocketPath(serverId, directory);
 		const controlPath = join(directory, `control-${serverId}.sock`);
-		const serverPath = join(directory, `.server-${serverId}-${randomUUID().slice(0, 12)}.sock`);
+		const serverNonce = randomUUID().replaceAll("-", "").slice(0, 12);
+		const serverPath = join(directory, `server-${serverId}-${serverNonce}.sock`);
 		startupLease = await ensureExperimentalCoordinator(socketPath, controlPath);
 		coordinator = new CoordinatorServer({ controlPath, endpoint: serverPath });
 		const sessionDir = resolveExperimentalSessionDirectory(options.sessionDir);

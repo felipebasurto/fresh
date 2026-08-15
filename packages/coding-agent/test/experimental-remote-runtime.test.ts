@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
@@ -82,6 +82,12 @@ describe("experimental durable server composition", () => {
 		expect(publicSocket.mode & 0o777).toBe(0o600);
 		expect(controlSocket.isSocket()).toBe(true);
 		expect(controlSocket.mode & 0o777).toBe(0o600);
+		const entries = await readdir(directory);
+		expect(entries).toHaveLength(3);
+		expect(entries.every((entry) => !entry.startsWith("."))).toBe(true);
+		expect(entries).toContain(`${serverId}.sock`);
+		expect(entries).toContain(`control-${serverId}.sock`);
+		expect(entries).toContainEqual(expect.stringMatching(new RegExp(`^server-${serverId}-[0-9a-f]{12}\\.sock$`)));
 		await expect(runExperimentalClient({ command: "client" })).resolves.toMatchObject({
 			kind: "list",
 			sessions: [{ sessionId: "demo-1" }, { sessionId: "demo-2" }],
