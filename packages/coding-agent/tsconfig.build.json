@@ -8,7 +8,6 @@
 			"@earendil-works/pi-ai": ["../ai/dist/index.d.ts"],
 			"@earendil-works/pi-ai/*": ["../ai/dist/*.d.ts", "../ai/dist/providers/*.d.ts"],
 			"@earendil-works/pi-client": ["../client/dist/index.d.ts"],
-			"@earendil-works/pi-client/control": ["../client/dist/control.d.ts"],
 			"@earendil-works/pi-client/unix": ["../client/dist/unix.d.ts"],
 			"@earendil-works/pi-client/*": ["../client/dist/*.d.ts"],
 			"@earendil-works/pi-server": ["../server/dist/index.d.ts"],

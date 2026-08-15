@@ -2,23 +2,27 @@ import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { type JsonlSessionMetadata, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { PiClient } from "@earendil-works/pi-client";
-import { requestServerDrain } from "@earendil-works/pi-client/control";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
 import { isServerId } from "@earendil-works/pi-protocol";
-import type { PiServer, PiServerHost } from "@earendil-works/pi-server";
+import type { HostedHarnessHandle, PiServer, PiServerHost } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 import { getAgentDir } from "../../config.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import type { ClientCommand } from "./commands/client.ts";
+import { CoordinatedSessionWorkers } from "./coordinated-session-workers.ts";
+import {
+	CoordinatorServer,
+	type CoordinatorStartupLease,
+	ensureExperimentalCoordinator,
+	getExperimentalCoordinatorControlPath,
+	getExperimentalServerPath,
+} from "./coordinator-client.ts";
 import { acquireExperimentalServerProfile } from "./server-profile.ts";
 import { startExperimentalSessionWorker } from "./session-worker.ts";
 
-const SOCKET_RELEASE_TIMEOUT_MS = 10_000;
-const SOCKET_RELEASE_POLL_MS = 10;
 const EXPERIMENTAL_SOCKET_ROOT = "/tmp";
 
 export interface ExperimentalServer {
@@ -47,7 +51,7 @@ export interface StartExperimentalServerOptions {
 	readonly sessionDir?: string;
 }
 
-export interface StartExperimentalServerGenerationOptions {
+export interface StartExperimentalCoordinatedServerOptions {
 	/** Persistent profile directory. Defaults to ~/.pi/server. */
 	readonly directory?: string;
 	/** Physical socket directory. Defaults to a short, private per-user runtime directory. */
@@ -65,18 +69,21 @@ export function resolveExperimentalSessionDirectory(sessionDir?: string): string
 	return resolvePath(sessionDir ?? join(getAgentDir(), "experimental", "sessions"));
 }
 
+interface ExperimentalWorkerController {
+	readonly workerPids: ReadonlyMap<string, number>;
+	readonly trackedSessions: readonly JsonlSessionMetadata[];
+	createHarness(metadata: JsonlSessionMetadata): Promise<HostedHarnessHandle>;
+}
+
 /** Start the experimental durable list-and-attach server composition. */
 export async function startExperimentalServer(
 	options: StartExperimentalServerOptions = {},
 ): Promise<ExperimentalServer> {
-	const serverId = options.serverId ?? randomUUID();
 	const sessionDir = resolveExperimentalSessionDirectory(options.sessionDir);
-	const executionEnv = new NodeExecutionEnv({ cwd: process.cwd() });
-	const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot: sessionDir });
-
 	const workerPids = new Map<string, number>();
-	const host: PiServerHost<JsonlSessionMetadata> = {
-		sessions: repo,
+	const controller: ExperimentalWorkerController = {
+		workerPids,
+		trackedSessions: [],
 		createHarness: async (metadata) => {
 			const sessionId = metadata.id;
 			const worker = await startExperimentalSessionWorker(metadata, { sessionDir });
@@ -95,6 +102,27 @@ export async function startExperimentalServer(
 				},
 			};
 		},
+	};
+	return startExperimentalServerBackend(options, controller);
+}
+
+async function startExperimentalServerBackend(
+	options: StartExperimentalServerOptions,
+	workers: ExperimentalWorkerController,
+): Promise<ExperimentalServer> {
+	const serverId = options.serverId ?? randomUUID();
+	const sessionDir = resolveExperimentalSessionDirectory(options.sessionDir);
+	const executionEnv = new NodeExecutionEnv({ cwd: process.cwd() });
+	const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot: sessionDir });
+	const host: PiServerHost<JsonlSessionMetadata> = {
+		sessions: {
+			list: async () => {
+				const sessions = new Map((await repo.list()).map((metadata) => [metadata.path, metadata]));
+				for (const metadata of workers.trackedSessions) sessions.set(metadata.path, metadata);
+				return [...sessions.values()];
+			},
+		},
+		createHarness: (metadata) => workers.createHarness(metadata),
 	};
 	let socketPath = options.path;
 	if (socketPath === undefined) {
@@ -137,70 +165,98 @@ export async function startExperimentalServer(
 		sessionDir,
 		socketPath,
 		server,
-		workerPids,
+		workerPids: workers.workerPids,
 		closed,
 		close() {
-			if (closePromise === undefined)
-				closePromise = server.close().then(
-					() => closed,
-					() => closed,
-				);
+			closePromise ??= server.close().then(
+				() => closed,
+				() => closed,
+			);
 			return closePromise;
 		},
 	};
 }
 
-/** Start the experimental local server, replacing an existing generation for the same profile. */
-export async function startExperimentalServerGeneration(
-	options: StartExperimentalServerGenerationOptions = {},
+/** Start a replaceable experimental server behind the stable coordinator endpoint. */
+export async function startExperimentalCoordinatedServer(
+	options: StartExperimentalCoordinatedServerOptions = {},
 ): Promise<ExperimentalServer> {
 	const directory = options.directory ?? join(homedir(), ".pi", "server");
 	const socketDirectory = options.socketDirectory ?? getExperimentalSocketDirectory();
 	const { serverId, release } = await acquireExperimentalServerProfile(directory);
-	let runtime: ExperimentalServer;
+	let backend: ExperimentalServer | undefined;
+	let coordinator: CoordinatorServer | undefined;
+	let startupLease: CoordinatorStartupLease | undefined;
+	let workers: CoordinatedSessionWorkers | undefined;
+	let released = false;
 	try {
 		await ensurePrivateSocketDirectory(socketDirectory);
 		const socketPath = getUnixSocketPath(serverId, socketDirectory);
-		await drainExistingGeneration(serverId, socketPath);
-		runtime = await startExperimentalServer({
-			directory,
-			path: socketPath,
-			serverId,
-			sessionDir: options.sessionDir,
-		});
-	} catch (error) {
-		try {
-			await release();
-		} catch (releaseError) {
-			throw new AggregateError([error, releaseError], "Server generation failed and launcher lock release failed");
-		}
-		throw error;
-	}
+		const controlPath = getExperimentalCoordinatorControlPath(serverId, socketDirectory);
+		const serverPath = getExperimentalServerPath(socketDirectory);
+		startupLease = await ensureExperimentalCoordinator(socketPath, controlPath);
+		coordinator = new CoordinatorServer({ controlPath, endpoint: serverPath });
+		const sessionDir = resolveExperimentalSessionDirectory(options.sessionDir);
+		workers = new CoordinatedSessionWorkers(coordinator, sessionDir);
+		backend = await startExperimentalServerBackend(
+			{ path: serverPath, serverId, sessionDir: options.sessionDir },
+			workers,
+		);
+		await coordinator.connect();
+		startupLease.close();
+		startupLease = undefined;
+		await workers.discover(coordinator.peerIds);
 
-	try {
+		const activeBackend = backend;
+		const activeCoordinator = coordinator;
+		const activeWorkers = workers;
+		void activeCoordinator.replaced
+			.then(async () => {
+				activeWorkers.detach();
+				await activeBackend.close();
+			})
+			.finally(() => activeCoordinator.close())
+			.catch(() => {});
+		let closePromise: Promise<void> | undefined;
+		const runtime: ExperimentalServer = {
+			serverId,
+			sessionDir: activeBackend.sessionDir,
+			socketPath,
+			server: activeBackend.server,
+			workerPids: activeWorkers.workerPids,
+			closed: activeBackend.closed,
+			close() {
+				closePromise ??= (async () => {
+					try {
+						await activeBackend.close();
+					} finally {
+						try {
+							if (activeCoordinator.wasReplaced) activeWorkers.detach();
+							else await activeWorkers.shutdown();
+						} finally {
+							activeCoordinator.close();
+						}
+					}
+				})();
+				return closePromise;
+			},
+		};
+		released = true;
 		await release();
+		return runtime;
 	} catch (error) {
-		try {
-			await runtime.close();
-		} catch (closeError) {
-			throw new AggregateError([error, closeError], "Launcher lock release and server cleanup failed");
+		startupLease?.close();
+		if (coordinator?.wasReplaced) workers?.detach();
+		const cleanup = await Promise.allSettled([
+			backend?.close(),
+			coordinator?.wasReplaced ? undefined : workers?.shutdown(),
+			Promise.resolve(coordinator?.close()),
+			released ? undefined : release(),
+		]);
+		const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+		if (cleanupErrors.length > 0) {
+			throw new AggregateError([error, ...cleanupErrors], "Coordinated server startup and cleanup failed");
 		}
-		throw error;
-	}
-	return runtime;
-}
-
-async function drainExistingGeneration(serverId: string, socketPath: string): Promise<void> {
-	try {
-		await requestServerDrain({
-			serverId,
-			transportFactory: createUnixTransportFactory({ path: socketPath }),
-		});
-		await waitForSocketRelease(socketPath);
-	} catch (error) {
-		// At this launcher boundary, a missing or refused stable socket proves that
-		// no generation accepted the drain request. All ambiguous failures propagate.
-		if (hasErrorCode(error, "ENOENT") || hasErrorCode(error, "ECONNREFUSED")) return;
 		throw error;
 	}
 }
@@ -269,20 +325,6 @@ function routeFromExplicitPath(path: string): UnixServerRoute {
 	return { serverId, path };
 }
 
-async function waitForSocketRelease(path: string): Promise<void> {
-	const deadline = Date.now() + SOCKET_RELEASE_TIMEOUT_MS;
-	while (true) {
-		try {
-			await lstat(path);
-		} catch (error) {
-			if (hasErrorCode(error, "ENOENT")) return;
-			throw error;
-		}
-		if (Date.now() >= deadline) throw new Error(`Timed out waiting for server socket to close: ${path}`);
-		await delay(SOCKET_RELEASE_POLL_MS);
-	}
-}
-
 function getExperimentalSocketDirectory(): string {
 	if (process.platform === "win32" || typeof process.getuid !== "function") {
 		throw new Error("Experimental Unix server transport requires a POSIX user ID");
@@ -298,15 +340,4 @@ async function ensurePrivateSocketDirectory(directory: string): Promise<void> {
 	if (stats.uid !== process.getuid())
 		throw new Error(`Unix socket directory is not owned by the current user: ${directory}`);
 	await chmod(directory, 0o700);
-}
-
-function hasErrorCode(error: unknown, code: string): boolean {
-	let current = error;
-	const seen = new Set<unknown>();
-	while (current instanceof Error && !seen.has(current)) {
-		seen.add(current);
-		if ("code" in current && current.code === code) return true;
-		current = current.cause;
-	}
-	return false;
 }

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import { runExperimentalClient } from "../src/cli/experimental/runtime.ts";
+import { configureExperimentalWorkerModel, createExperimentalSessions } from "./experimental-session-support.ts";
 
 const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const processes = new Set<ChildProcess>();
@@ -17,10 +18,10 @@ interface RunningCli {
 	readonly errors: () => string;
 }
 
-async function startServer(home: string): Promise<RunningCli> {
+async function startServer(home: string, agentDir: string): Promise<RunningCli> {
 	const child = spawn(process.execPath, ["--import", "tsx", cliPath, "server"], {
 		cwd: fileURLToPath(new URL("../../..", import.meta.url)),
-		env: { ...process.env, HOME: home, PI_EXPERIMENTAL: "1" },
+		env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agentDir, PI_EXPERIMENTAL: "1" },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	processes.add(child);
@@ -91,12 +92,15 @@ afterEach(async () => {
 });
 
 describe.skipIf(process.platform === "win32")("experimental CLI server replacement", () => {
-	test("a second CLI generation starts clean and accepts explicit reattachment", async () => {
+	test("a second CLI server takes over the stable coordinator socket", async () => {
 		const root = await mkdtemp(join(tmpdir(), "pcs-"));
 		directories.add(root);
 		const home = join(root, "long-home-segment".repeat(8));
 		await mkdir(home);
-		const first = await startServer(home);
+		const agentDir = join(root, "agent");
+		await configureExperimentalWorkerModel(agentDir);
+		await createExperimentalSessions(join(agentDir, "experimental", "sessions"), ["demo-1", "demo-2"]);
+		const first = await startServer(home, agentDir);
 		const firstIdentity = await waitForOutput(
 			first,
 			/Server: ([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/,
@@ -110,7 +114,7 @@ describe.skipIf(process.platform === "win32")("experimental CLI server replaceme
 			connect: { transport: "unix", path: firstSocket[1]! },
 		});
 
-		const replacement = await startServer(home);
+		const replacement = await startServer(home, agentDir);
 		const replacementIdentity = await waitForOutput(
 			replacement,
 			/Server: ([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/,

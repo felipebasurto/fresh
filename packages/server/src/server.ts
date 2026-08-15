@@ -13,7 +13,6 @@ import {
 	ProtocolValidationError,
 	type RequestEnvelope,
 	type ResponseEnvelope,
-	type ServerControlRpcResult,
 	type ServerHello,
 	type ServerHelloError,
 	type ServerMessage,
@@ -24,7 +23,7 @@ import {
 	type ConnectionState,
 	isTerminalConnection,
 } from "./connection.ts";
-import { INTERNAL_SERVER_ERROR_MESSAGE, PiServerError, ServerDrainingError, WrongServerError } from "./errors.ts";
+import { INTERNAL_SERVER_ERROR_MESSAGE, PiServerError, WrongServerError } from "./errors.ts";
 import { HostedHarnessManager } from "./hosted-harness-manager.ts";
 import type { PiServerListener } from "./listener.ts";
 import type { PiServerHost, PiServerOptions } from "./types.ts";
@@ -254,19 +253,9 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 	}
 
 	private async handleRequest(state: ConnectionState, envelope: RequestEnvelope): Promise<void> {
-		const draining = envelope.call.method === "drain";
-		let ownsDrain = false;
 		try {
 			if (envelope.serverId !== this.serverId) throw new WrongServerError();
-			let result: ProtocolRpcResult;
-			if (draining) {
-				if (this.closing) throw new ServerDrainingError();
-				this.closing = true;
-				ownsDrain = true;
-				result = await this.drain();
-			} else {
-				result = await this.sessions.executeCall(envelope.call);
-			}
+			const result: ProtocolRpcResult = await this.sessions.executeCall(envelope.call);
 			await this.sendMessage(state, {
 				type: "response",
 				id: envelope.id,
@@ -280,18 +269,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 				ok: false,
 				error: this.toProtocolError(error),
 			} satisfies ResponseEnvelope);
-		} finally {
-			if (ownsDrain) this.scheduleClose();
 		}
-	}
-
-	private async drain(): Promise<ServerControlRpcResult<"drain">> {
-		await this.sessions.close();
-		return {};
-	}
-
-	private scheduleClose(): void {
-		void this.close().catch((error: unknown) => this.reportError(error));
 	}
 
 	private transportClosed(connection: ConnectionState): void {
