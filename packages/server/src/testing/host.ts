@@ -73,9 +73,9 @@ interface ListDelay {
 export class TestServerHost implements PiServerHost {
 	readonly repo = new MemorySessionRepo({ now: () => 1 });
 	readonly harnesses = new Map<string, TestHarness[]>();
-	openCount = 0;
-	failNextOpen?: Error;
-	failNextHarness?: Error;
+	createHarnessCount = 0;
+	nextCreateHarnessError?: Error;
+	nextHarnessCloseError?: Error;
 	readonly sessions: PiServerHost["sessions"] = {
 		list: async () => {
 			const delay = this.nextListDelay;
@@ -86,36 +86,38 @@ export class TestServerHost implements PiServerHost {
 			}
 			return this.repo.list();
 		},
-		open: async (metadata) => {
-			this.openCount += 1;
-			const gate = this.nextOpenGate;
-			if (gate) {
-				this.nextOpenGate = undefined;
-				gate.entered.resolve(undefined);
-				await gate.release.promise;
-			}
-			if (this.failNextOpen) {
-				const error = this.failNextOpen;
-				this.failNextOpen = undefined;
-				throw error;
-			}
-			return this.repo.open(metadata);
-		},
 	};
 	private nextListDelay?: ListDelay;
-	private nextOpenGate?: OpenGate;
+	private nextCreateHarnessGate?: OpenGate;
 
-	async createHarness(session: Session): Promise<HostedHarnessHandle> {
-		if (this.failNextHarness) {
-			const error = this.failNextHarness;
-			this.failNextHarness = undefined;
+	async createHarness(metadata: SessionMetadata): Promise<HostedHarnessHandle> {
+		this.createHarnessCount += 1;
+		const gate = this.nextCreateHarnessGate;
+		if (gate) {
+			this.nextCreateHarnessGate = undefined;
+			gate.entered.resolve(undefined);
+			await gate.release.promise;
+		}
+		const session = await this.repo.open(metadata);
+		try {
+			if (this.nextCreateHarnessError) {
+				const error = this.nextCreateHarnessError;
+				this.nextCreateHarnessError = undefined;
+				throw error;
+			}
+			const harness = new TestHarness(session);
+			if (this.nextHarnessCloseError) {
+				harness.failClose = this.nextHarnessCloseError;
+				this.nextHarnessCloseError = undefined;
+			}
+			const harnesses = this.harnesses.get(metadata.id) ?? [];
+			harnesses.push(harness);
+			this.harnesses.set(metadata.id, harnesses);
+			return harness;
+		} catch (error) {
+			await session.close();
 			throw error;
 		}
-		const harness = new TestHarness(session);
-		const harnesses = this.harnesses.get(session.metadata.id) ?? [];
-		harnesses.push(harness);
-		this.harnesses.set(session.metadata.id, harnesses);
-		return harness;
 	}
 
 	async seed(id = "session-1", parentSessionId?: string): Promise<SessionMetadata> {
@@ -131,9 +133,9 @@ export class TestServerHost implements PiServerHost {
 		return delay;
 	}
 
-	gateNextOpen(): OpenGate {
+	gateNextCreateHarness(): OpenGate {
 		const gate = { entered: new Deferred<void>(), release: new Deferred<void>() };
-		this.nextOpenGate = gate;
+		this.nextCreateHarnessGate = gate;
 		return gate;
 	}
 

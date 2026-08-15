@@ -1,5 +1,6 @@
+import { isServerId, type ServerId } from "@earendil-works/pi-protocol";
 import type { AuthInput } from "../auth.ts";
-import { Command } from "../command.ts";
+import { Command, stringOption, valueOption } from "../command.ts";
 import {
 	authTokenFileOption,
 	authTokenOption,
@@ -14,6 +15,8 @@ export interface ServerCommand {
 	readonly command: "server";
 	readonly auth?: AuthInput;
 	readonly listen?: readonly TransportAddress[];
+	readonly serverId?: ServerId;
+	readonly sessionDir?: string;
 }
 
 export interface ServerCommandContext {
@@ -21,14 +24,24 @@ export interface ServerCommandContext {
 }
 
 const listenOption = transportOption("--listen");
+const serverIdOption = valueOption("--server-id", (value) =>
+	isServerId(value)
+		? { ok: true, value }
+		: { ok: false, error: `Invalid --server-id "${value}"; expected a lowercase UUIDv4` },
+);
+const sessionDirOption = stringOption("--session-dir");
 
 export const serverCommand = new Command<ServerCommand, ServerCommandContext>("server")
 	.option(listenOption)
+	.option(serverIdOption)
+	.option(sessionDirOption)
 	.option(authTokenOption)
 	.option(authTokenFileOption)
 	.build((input) => {
 		const { auth, errors: authErrors } = parseAuth(input);
 		const listen = input.values(listenOption);
+		const serverId = input.value(serverIdOption);
+		const sessionDir = input.value(sessionDirOption);
 		const { errors: optionErrors } = parseLegacyOptions(input);
 		const errors = [...authErrors, ...optionErrors, ...unsupportedLegacyOptions("server", input)];
 		if (errors.length > 0) return { ok: false, errors };
@@ -38,6 +51,8 @@ export const serverCommand = new Command<ServerCommand, ServerCommandContext>("s
 				command: "server",
 				...(auth === undefined ? {} : { auth }),
 				...(listen.length === 0 ? {} : { listen }),
+				...(serverId === undefined ? {} : { serverId }),
+				...(sessionDir === undefined ? {} : { sessionDir }),
 			},
 		};
 	})

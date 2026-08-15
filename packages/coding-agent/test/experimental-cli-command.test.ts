@@ -38,6 +38,26 @@ describe("experimental CLI commands", () => {
 		});
 	});
 
+	test("parses an experimental server ID", () => {
+		expect(experimentalCli.parse(["server", "--server-id", "00000000-0000-4000-8000-000000000001"])).toEqual({
+			ok: true,
+			command: {
+				command: "server",
+				serverId: "00000000-0000-4000-8000-000000000001",
+			},
+		});
+	});
+
+	test("parses an experimental server session directory", () => {
+		expect(experimentalCli.parse(["server", "--session-dir", "~/pi-sessions"])).toEqual({
+			ok: true,
+			command: {
+				command: "server",
+				sessionDir: "~/pi-sessions",
+			},
+		});
+	});
+
 	test("leaves experimental-looking existing option values with the existing parser", () => {
 		expect(experimentalCli.parse(["--system-prompt", "--listen", "unix:///tmp/pi.sock"])).toMatchObject({
 			ok: true,
@@ -139,6 +159,13 @@ describe("experimental CLI commands", () => {
 			"The experimental server command does not support existing CLI options yet",
 		],
 		[["client", "--connect", "ws://localhost:8080"], 'Unsupported --connect transport "ws:"'],
+		[["server", "--server-id", "not-a-uuid"], "Invalid --server-id"],
+		[["server", "--server-id"], "--server-id requires a value"],
+		[["server", "--session-dir"], "--session-dir requires a value"],
+		[
+			["server", "--session-dir", "/tmp/first", "--session-dir=/tmp/second"],
+			"--session-dir may only be specified once",
+		],
 		[["--listen"], "--listen requires a value"],
 		[["--connect="], "--connect is only valid for client mode"],
 	] as const)("rejects invalid experimental input %j", (argv, error) => {

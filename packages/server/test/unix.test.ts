@@ -1,7 +1,7 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { once } from "node:events";
-import { lstat, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdtemp, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import type { PiServer } from "../src/index.ts";
 import { connectUnixTestClient, type ProtocolTestClient, TestServerHost } from "../src/testing/index.ts";
@@ -100,6 +100,7 @@ describe("Unix listener filesystem lifecycle", () => {
 		const stats = await lstat(path);
 		expect(stats.isSocket()).toBe(true);
 		if (process.platform !== "win32") expect(stats.mode & 0o777).toBe(0o600);
+		expect(await readdir(dirname(path))).toEqual(["server.sock"]);
 
 		await server.close();
 		await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });

@@ -80,6 +80,26 @@ describe("experimental CLI command composition", () => {
 		});
 	});
 
+	test("passes server options to the command action", async () => {
+		const runServer = vi.fn(() => undefined);
+		const result = await experimentalCli.execute(
+			["server", "--server-id", "00000000-0000-4000-8000-000000000001", "--session-dir", "./sessions"],
+			{
+				runPi: vi.fn(() => undefined),
+				runServer,
+				runClient: vi.fn(() => undefined),
+			},
+		);
+
+		const command = {
+			command: "server" as const,
+			serverId: "00000000-0000-4000-8000-000000000001",
+			sessionDir: "./sessions",
+		};
+		expect(result).toEqual({ ok: true, command });
+		expect(runServer).toHaveBeenCalledWith(command);
+	});
+
 	test.each(["pi", "server", "client"] as const)("executes the parsed %s command", async (name) => {
 		const context = {
 			runPi: vi.fn(() => undefined),

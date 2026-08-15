@@ -85,6 +85,8 @@ class UnixListener implements PiServerListener {
 			this.socketIdentity = { dev: stats.dev, ino: stats.ino };
 			await link(ownedBindPath, this.path);
 			await setSocketMode(this.path, this.mode);
+			await removePath(ownedBindPath);
+			this.ownedBindPath = undefined;
 		} catch (error) {
 			await this.closeServerAndCleanup(server);
 			this.server = undefined;
@@ -144,8 +146,7 @@ class UnixListener implements PiServerListener {
 		try {
 			await closeNetServer(server, (error) => this.reportError(error));
 		} finally {
-			// Remove the private bind path before the public route. Launchers use the
-			// public route disappearing as the signal that a successor may bind safely.
+			// Remove an unpublished startup bind path before the public route.
 			if (this.ownedBindPath) await removePath(this.ownedBindPath);
 			this.ownedBindPath = undefined;
 			await this.cleanupOwnedSocket();
@@ -165,7 +166,7 @@ class UnixListener implements PiServerListener {
 		}
 		if (!current.isSocket() || current.dev !== identity.dev || current.ino !== identity.ino) return;
 
-		const preserved = join(dirname(this.path), `.c-${randomUUID().slice(0, 6)}`);
+		const preserved = join(dirname(this.path), `cleanup-${randomUUID().slice(0, 6)}`);
 		try {
 			await rename(this.path, preserved);
 		} catch (error) {
@@ -301,7 +302,7 @@ export class UnixByteConnection implements ByteConnection {
 
 function getOwnedBindPath(path: string): string {
 	const suffix = createHash("sha256").update(path).digest("hex").slice(0, 8);
-	return join(dirname(path), `.p-${suffix}`);
+	return join(dirname(path), `bind-${suffix}`);
 }
 
 async function removeStaleSocket(path: string): Promise<void> {
@@ -315,7 +316,7 @@ async function removeStaleSocket(path: string): Promise<void> {
 	if (!original.isSocket()) throw new Error(`Refusing to remove non-socket Unix listener path: ${path}`);
 	if (await isSocketLive(path)) throw new Error(`Unix listener is already running: ${path}`);
 
-	const preserved = join(dirname(path), `.s-${randomUUID().slice(0, 6)}`);
+	const preserved = join(dirname(path), `stale-${randomUUID().slice(0, 6)}`);
 	try {
 		await rename(path, preserved);
 	} catch (error) {
