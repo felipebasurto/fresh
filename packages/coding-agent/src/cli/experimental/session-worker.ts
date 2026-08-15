@@ -2,12 +2,12 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, unlink } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
-import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
+import { ensurePrivateServerDirectory, resolveExperimentalServerDirectory } from "./server-directory.ts";
 import type { SessionWorkerCommand, SessionWorkerEvent } from "./session-worker-process.ts";
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
@@ -47,6 +47,7 @@ export interface SessionWorkerLaunchSpec {
 
 export interface StartExperimentalSessionWorkerOptions {
 	readonly sessionDir: string;
+	readonly controlDirectory?: string;
 	readonly startupTimeoutMs?: number;
 	readonly shutdownTimeoutMs?: number;
 	readonly workerUrl?: URL;
@@ -90,8 +91,14 @@ export async function startExperimentalSessionWorker(
 	const launch = createExperimentalSessionWorkerLaunchSpec(metadata, options);
 	const token = randomUUID();
 	const controlId = randomUUID();
-	const controlAddress =
-		process.platform === "win32" ? `\\\\.\\pipe\\pi-worker-${controlId}` : join(tmpdir(), `pi-w-${controlId}.sock`);
+	let controlAddress: string;
+	if (process.platform === "win32") {
+		controlAddress = `\\\\.\\pipe\\pi-worker-${controlId}`;
+	} else {
+		const controlDirectory = resolveExperimentalServerDirectory(options.controlDirectory);
+		await ensurePrivateServerDirectory(controlDirectory);
+		controlAddress = join(controlDirectory, `.worker-${controlId}.sock`);
+	}
 	const control = await createWorkerControlServer(controlAddress, token, metadata.id);
 	let child: ChildProcess;
 	try {

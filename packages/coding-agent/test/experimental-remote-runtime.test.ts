@@ -64,6 +64,27 @@ describe("experimental durable server composition", () => {
 		expect(runtime.workerPids.size).toBe(0);
 	});
 
+	test("uses PI_SERVER_DIR for sockets and discovery", async () => {
+		const directory = await mkdtemp(join("/tmp", "pi-server-dir-"));
+		directories.add(directory);
+		vi.stubEnv("PI_SERVER_DIR", directory);
+		const runtime = await startExperimentalCoordinatedServer();
+		servers.add(runtime);
+
+		expect(runtime.socketPath).toBe(join(directory, `${runtime.serverId}.sock`));
+		expect((await lstat(directory)).mode & 0o777).toBe(0o700);
+		const publicSocket = await lstat(runtime.socketPath);
+		const controlSocket = await lstat(join(directory, "control.sock"));
+		expect(publicSocket.isSocket()).toBe(true);
+		expect(publicSocket.mode & 0o777).toBe(0o600);
+		expect(controlSocket.isSocket()).toBe(true);
+		expect(controlSocket.mode & 0o777).toBe(0o600);
+		await expect(runExperimentalClient({ command: "client" })).resolves.toMatchObject({
+			kind: "list",
+			sessions: [{ sessionId: "demo-1" }, { sessionId: "demo-2" }],
+		});
+	});
+
 	test("discovers and lists seeded sessions without hosting either session", async () => {
 		const { directory, runtime } = await makeServer();
 
@@ -135,7 +156,7 @@ describe("experimental durable server composition", () => {
 	test("coordinated server replaces an exited worker on the next attach", async () => {
 		const directory = await mkdtemp(join("/tmp", "pew-"));
 		directories.add(directory);
-		const runtime = await startExperimentalCoordinatedServer({ directory, socketDirectory: directory });
+		const runtime = await startExperimentalCoordinatedServer({ directory });
 		servers.add(runtime);
 		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
 		const firstPid = runtime.workerPids.get("demo-1");
@@ -152,7 +173,7 @@ describe("experimental durable server composition", () => {
 	test("normal coordinated shutdown stops detached workers", async () => {
 		const directory = await mkdtemp(join("/tmp", "pes-"));
 		directories.add(directory);
-		const runtime = await startExperimentalCoordinatedServer({ directory, socketDirectory: directory });
+		const runtime = await startExperimentalCoordinatedServer({ directory });
 		servers.add(runtime);
 		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
 		const pid = runtime.workerPids.get("demo-1");
@@ -168,8 +189,8 @@ describe("experimental durable server composition", () => {
 		const directory = await mkdtemp(join("/tmp", "pel-"));
 		directories.add(directory);
 		const runtimes = await Promise.all([
-			startExperimentalCoordinatedServer({ directory, socketDirectory: directory }),
-			startExperimentalCoordinatedServer({ directory, socketDirectory: directory }),
+			startExperimentalCoordinatedServer({ directory }),
+			startExperimentalCoordinatedServer({ directory }),
 		]);
 		for (const runtime of runtimes) servers.add(runtime);
 
@@ -196,7 +217,7 @@ describe("experimental durable server composition", () => {
 	test("shuts down the replaced server without waiting for its clients", async () => {
 		const directory = await mkdtemp(join("/tmp", "peg-"));
 		directories.add(directory);
-		const first = await startExperimentalCoordinatedServer({ directory, socketDirectory: directory });
+		const first = await startExperimentalCoordinatedServer({ directory });
 		servers.add(first);
 		const client = await PiClient.connect({
 			serverId: first.serverId,
@@ -204,7 +225,7 @@ describe("experimental durable server composition", () => {
 		});
 		await client.listSessions();
 
-		const replacement = await startExperimentalCoordinatedServer({ directory, socketDirectory: directory });
+		const replacement = await startExperimentalCoordinatedServer({ directory });
 		servers.add(replacement);
 		await first.closed;
 		await expect(runExperimentalClient({ command: "client" }, { directory })).resolves.toMatchObject({
@@ -217,19 +238,13 @@ describe("experimental durable server composition", () => {
 	test("discovers workers after replacing the server", async () => {
 		const firstDirectory = await mkdtemp(join("/tmp", "per-"));
 		directories.add(firstDirectory);
-		const first = await startExperimentalCoordinatedServer({
-			directory: firstDirectory,
-			socketDirectory: firstDirectory,
-		});
+		const first = await startExperimentalCoordinatedServer({ directory: firstDirectory });
 		servers.add(first);
 		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory: firstDirectory });
 		const firstWorkerPid = first.workerPids.get("demo-1");
 		expect(firstWorkerPid).toEqual(expect.any(Number));
 
-		const replacement = await startExperimentalCoordinatedServer({
-			directory: firstDirectory,
-			socketDirectory: firstDirectory,
-		});
+		const replacement = await startExperimentalCoordinatedServer({ directory: firstDirectory });
 		servers.add(replacement);
 		await first.closed;
 
@@ -257,14 +272,13 @@ describe("experimental durable server composition", () => {
 		const emptySessionDir = await mkdtemp(join("/tmp", "pet-sessions-"));
 		directories.add(directory);
 		directories.add(emptySessionDir);
-		const first = await startExperimentalCoordinatedServer({ directory, socketDirectory: directory });
+		const first = await startExperimentalCoordinatedServer({ directory });
 		servers.add(first);
 		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
 		const workerPid = first.workerPids.get("demo-1");
 
 		const replacement = await startExperimentalCoordinatedServer({
 			directory,
-			socketDirectory: directory,
 			sessionDir: emptySessionDir,
 		});
 		servers.add(replacement);

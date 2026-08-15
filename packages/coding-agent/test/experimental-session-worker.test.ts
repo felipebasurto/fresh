@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { type JsonlSessionMetadata, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	type ExperimentalSessionWorker,
 	startExperimentalSessionWorker,
@@ -13,6 +13,12 @@ const workers = new Set<ExperimentalSessionWorker>();
 const fixtureUrl = new URL("fixtures/session-worker-fixture.ts", import.meta.url);
 const sessionDir = "/tmp/pi-session-worker-tests";
 const directories = new Set<string>();
+
+beforeEach(async () => {
+	const serverDir = await mkdtemp(join("/tmp", "pi-session-worker-server-"));
+	directories.add(serverDir);
+	vi.stubEnv("PI_SERVER_DIR", serverDir);
+});
 
 function testMetadata(id: string): JsonlSessionMetadata {
 	return {

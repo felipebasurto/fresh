@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { type JsonlSessionMetadata, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
@@ -17,13 +15,10 @@ import {
 	CoordinatorServer,
 	type CoordinatorStartupLease,
 	ensureExperimentalCoordinator,
-	getExperimentalCoordinatorControlPath,
-	getExperimentalServerPath,
 } from "./coordinator-client.ts";
+import { ensurePrivateServerDirectory, resolveExperimentalServerDirectory } from "./server-directory.ts";
 import { acquireExperimentalServerProfile } from "./server-profile.ts";
 import { startExperimentalSessionWorker } from "./session-worker.ts";
-
-const EXPERIMENTAL_SOCKET_ROOT = "/tmp";
 
 export interface ExperimentalServer {
 	readonly serverId: string;
@@ -43,7 +38,7 @@ export type ExperimentalClientResult =
 	| { readonly kind: "attached"; readonly serverId: string; readonly sessionId: string };
 
 export interface StartExperimentalServerOptions {
-	/** Directory for server-addressed Unix sockets. Defaults to a short, private per-user runtime directory. */
+	/** Directory for server sockets. Defaults to PI_SERVER_DIR or ~/.pi/server. */
 	readonly directory?: string;
 	readonly path?: string;
 	readonly serverId?: string;
@@ -52,16 +47,14 @@ export interface StartExperimentalServerOptions {
 }
 
 export interface StartExperimentalCoordinatedServerOptions {
-	/** Persistent profile directory. Defaults to ~/.pi/server. */
+	/** Server profile and socket directory. Defaults to PI_SERVER_DIR or ~/.pi/server. */
 	readonly directory?: string;
-	/** Physical socket directory. Defaults to a short, private per-user runtime directory. */
-	readonly socketDirectory?: string;
 	/** Durable session directory. Defaults to the experimental directory under the configured agent directory. */
 	readonly sessionDir?: string;
 }
 
 export interface RunExperimentalClientOptions {
-	/** Directory searched when --connect is omitted. Defaults to the experimental per-user runtime directory. */
+	/** Directory searched when --connect is omitted. Defaults to PI_SERVER_DIR or ~/.pi/server. */
 	readonly directory?: string;
 }
 
@@ -86,7 +79,10 @@ export async function startExperimentalServer(
 		trackedSessions: [],
 		createHarness: async (metadata) => {
 			const sessionId = metadata.id;
-			const worker = await startExperimentalSessionWorker(metadata, { sessionDir });
+			const worker = await startExperimentalSessionWorker(metadata, {
+				sessionDir,
+				controlDirectory: options.directory,
+			});
 			workerPids.set(sessionId, worker.pid);
 			return {
 				terminated: worker.terminated.then((error) => {
@@ -126,9 +122,9 @@ async function startExperimentalServerBackend(
 	};
 	let socketPath = options.path;
 	if (socketPath === undefined) {
-		const socketDirectory = options.directory ?? getExperimentalSocketDirectory();
-		await ensurePrivateSocketDirectory(socketDirectory);
-		socketPath = getUnixSocketPath(serverId, socketDirectory);
+		const serverDirectory = resolveExperimentalServerDirectory(options.directory);
+		await ensurePrivateServerDirectory(serverDirectory);
+		socketPath = getUnixSocketPath(serverId, serverDirectory);
 	}
 	const closeCatalog = async (): Promise<void> => {
 		const cleanup = await Promise.allSettled([repo.close(), executionEnv.cleanup()]);
@@ -181,8 +177,7 @@ async function startExperimentalServerBackend(
 export async function startExperimentalCoordinatedServer(
 	options: StartExperimentalCoordinatedServerOptions = {},
 ): Promise<ExperimentalServer> {
-	const directory = options.directory ?? join(homedir(), ".pi", "server");
-	const socketDirectory = options.socketDirectory ?? getExperimentalSocketDirectory();
+	const directory = resolveExperimentalServerDirectory(options.directory);
 	const { serverId, release } = await acquireExperimentalServerProfile(directory);
 	let backend: ExperimentalServer | undefined;
 	let coordinator: CoordinatorServer | undefined;
@@ -190,10 +185,10 @@ export async function startExperimentalCoordinatedServer(
 	let workers: CoordinatedSessionWorkers | undefined;
 	let released = false;
 	try {
-		await ensurePrivateSocketDirectory(socketDirectory);
-		const socketPath = getUnixSocketPath(serverId, socketDirectory);
-		const controlPath = getExperimentalCoordinatorControlPath(serverId, socketDirectory);
-		const serverPath = getExperimentalServerPath(socketDirectory);
+		await ensurePrivateServerDirectory(directory);
+		const socketPath = getUnixSocketPath(serverId, directory);
+		const controlPath = join(directory, "control.sock");
+		const serverPath = join(directory, `.server-${randomUUID().slice(0, 12)}.sock`);
 		startupLease = await ensureExperimentalCoordinator(socketPath, controlPath);
 		coordinator = new CoordinatorServer({ controlPath, endpoint: serverPath });
 		const sessionDir = resolveExperimentalSessionDirectory(options.sessionDir);
@@ -269,7 +264,7 @@ export async function runExperimentalClient(
 	if (command.auth !== undefined) throw new Error("Authentication is not supported by the experimental local server");
 	const routes = command.connect
 		? [routeFromExplicitPath(command.connect.path)]
-		: await discoverUnixServers({ directory: options.directory ?? getExperimentalSocketDirectory() });
+		: await discoverUnixServers({ directory: resolveExperimentalServerDirectory(options.directory) });
 	const discovered: { route: UnixServerRoute; sessionIds: string[] }[] = [];
 
 	for (const route of routes) {
@@ -323,21 +318,4 @@ function routeFromExplicitPath(path: string): UnixServerRoute {
 		throw new Error("--connect path must end with <uuidv4-server-id>.sock");
 	}
 	return { serverId, path };
-}
-
-function getExperimentalSocketDirectory(): string {
-	if (process.platform === "win32" || typeof process.getuid !== "function") {
-		throw new Error("Experimental Unix server transport requires a POSIX user ID");
-	}
-	return join(EXPERIMENTAL_SOCKET_ROOT, `pi-server-${process.getuid()}`);
-}
-
-async function ensurePrivateSocketDirectory(directory: string): Promise<void> {
-	if (typeof process.getuid !== "function") throw new Error("Unix socket directory requires a POSIX user ID");
-	await mkdir(directory, { recursive: true, mode: 0o700 });
-	const stats = await lstat(directory);
-	if (!stats.isDirectory()) throw new Error(`Unix socket directory is not a directory: ${directory}`);
-	if (stats.uid !== process.getuid())
-		throw new Error(`Unix socket directory is not owned by the current user: ${directory}`);
-	await chmod(directory, 0o700);
 }

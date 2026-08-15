@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -174,14 +173,6 @@ export class CoordinatorServer {
 		this.#replacedValue = true;
 		this.#resolveReplaced();
 	}
-}
-
-export function getExperimentalCoordinatorControlPath(serverId: string, socketDirectory: string): string {
-	return join(socketDirectory, `.c-${serverId.slice(0, 12)}.sock`);
-}
-
-export function getExperimentalServerPath(socketDirectory: string): string {
-	return join(socketDirectory, `.s-${randomUUID().slice(0, 12)}.sock`);
 }
 
 export interface CoordinatorStartupLease {
