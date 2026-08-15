@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { resolvePath } from "../../utils/paths.ts";
 
 export const ENV_SERVER_DIR = "PI_SERVER_DIR";
+export const ENV_SERVER_ID = "PI_SERVER_ID";
 
 export function resolveExperimentalServerDirectory(directory?: string): string {
 	return resolvePath(directory ?? process.env[ENV_SERVER_DIR] ?? join(homedir(), ".pi", "server"));

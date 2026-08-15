@@ -4,7 +4,7 @@ import { type JsonlSessionMetadata, JsonlSessionRepo } from "@earendil-works/pi-
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
-import { isServerId } from "@earendil-works/pi-protocol";
+import { isServerId, type ServerId } from "@earendil-works/pi-protocol";
 import type { HostedHarnessHandle, PiServer, PiServerHost } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 import { getAgentDir } from "../../config.ts";
@@ -16,7 +16,7 @@ import {
 	type CoordinatorStartupLease,
 	ensureExperimentalCoordinator,
 } from "./coordinator-client.ts";
-import { ensurePrivateServerDirectory, resolveExperimentalServerDirectory } from "./server-directory.ts";
+import { ENV_SERVER_ID, ensurePrivateServerDirectory, resolveExperimentalServerDirectory } from "./server-directory.ts";
 import { acquireExperimentalServerProfile } from "./server-profile.ts";
 import { startExperimentalSessionWorker } from "./session-worker.ts";
 
@@ -41,7 +41,7 @@ export interface StartExperimentalServerOptions {
 	/** Directory for server sockets. Defaults to PI_SERVER_DIR or ~/.pi/server. */
 	readonly directory?: string;
 	readonly path?: string;
-	readonly serverId?: string;
+	readonly serverId?: ServerId;
 	/** Durable session directory. Defaults to the experimental directory under the configured agent directory. */
 	readonly sessionDir?: string;
 }
@@ -49,6 +49,8 @@ export interface StartExperimentalServerOptions {
 export interface StartExperimentalCoordinatedServerOptions {
 	/** Server profile and socket directory. Defaults to PI_SERVER_DIR or ~/.pi/server. */
 	readonly directory?: string;
+	/** Logical service ID. Defaults to PI_SERVER_ID or the directory's default-server-id. */
+	readonly serverId?: ServerId;
 	/** Durable session directory. Defaults to the experimental directory under the configured agent directory. */
 	readonly sessionDir?: string;
 }
@@ -178,7 +180,10 @@ export async function startExperimentalCoordinatedServer(
 	options: StartExperimentalCoordinatedServerOptions = {},
 ): Promise<ExperimentalServer> {
 	const directory = resolveExperimentalServerDirectory(options.directory);
-	const { serverId, release } = await acquireExperimentalServerProfile(directory);
+	const { serverId, release } = await acquireExperimentalServerProfile(
+		directory,
+		options.serverId ?? process.env[ENV_SERVER_ID],
+	);
 	let backend: ExperimentalServer | undefined;
 	let coordinator: CoordinatorServer | undefined;
 	let startupLease: CoordinatorStartupLease | undefined;
@@ -187,8 +192,8 @@ export async function startExperimentalCoordinatedServer(
 	try {
 		await ensurePrivateServerDirectory(directory);
 		const socketPath = getUnixSocketPath(serverId, directory);
-		const controlPath = join(directory, "control.sock");
-		const serverPath = join(directory, `.server-${randomUUID().slice(0, 12)}.sock`);
+		const controlPath = join(directory, `control-${serverId}.sock`);
+		const serverPath = join(directory, `.server-${serverId}-${randomUUID().slice(0, 12)}.sock`);
 		startupLease = await ensureExperimentalCoordinator(socketPath, controlPath);
 		coordinator = new CoordinatorServer({ controlPath, endpoint: serverPath });
 		const sessionDir = resolveExperimentalSessionDirectory(options.sessionDir);

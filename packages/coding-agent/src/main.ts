@@ -590,7 +590,10 @@ async function waitForTermination(serverClosed: Promise<void>): Promise<void> {
 async function runExperimentalServerCommand(command: ServerCommand): Promise<void> {
 	if (command.auth !== undefined) throw new Error("Authentication is not supported by the local demo server");
 	if (command.listen !== undefined) throw new Error("The local demo server uses its server-addressed Unix socket");
-	const runtime = await startExperimentalCoordinatedServer({ sessionDir: command.sessionDir });
+	const runtime = await startExperimentalCoordinatedServer({
+		serverId: command.serverId,
+		sessionDir: command.sessionDir,
+	});
 	console.log(`Server: ${runtime.serverId}`);
 	console.log(`Socket: ${runtime.socketPath}`);
 	try {

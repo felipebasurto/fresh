@@ -80,19 +80,24 @@ describe("experimental CLI command composition", () => {
 		});
 	});
 
-	test("passes the server session directory to the command action", async () => {
+	test("passes server options to the command action", async () => {
 		const runServer = vi.fn(() => undefined);
-		const result = await experimentalCli.execute(["server", "--session-dir", "./sessions"], {
-			runPi: vi.fn(() => undefined),
-			runServer,
-			runClient: vi.fn(() => undefined),
-		});
+		const result = await experimentalCli.execute(
+			["server", "--server-id", "00000000-0000-4000-8000-000000000001", "--session-dir", "./sessions"],
+			{
+				runPi: vi.fn(() => undefined),
+				runServer,
+				runClient: vi.fn(() => undefined),
+			},
+		);
 
-		expect(result).toEqual({
-			ok: true,
-			command: { command: "server", sessionDir: "./sessions" },
-		});
-		expect(runServer).toHaveBeenCalledWith({ command: "server", sessionDir: "./sessions" });
+		const command = {
+			command: "server" as const,
+			serverId: "00000000-0000-4000-8000-000000000001",
+			sessionDir: "./sessions",
+		};
+		expect(result).toEqual({ ok: true, command });
+		expect(runServer).toHaveBeenCalledWith(command);
 	});
 
 	test.each(["pi", "server", "client"] as const)("executes the parsed %s command", async (name) => {

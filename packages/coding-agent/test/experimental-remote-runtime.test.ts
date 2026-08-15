@@ -64,17 +64,20 @@ describe("experimental durable server composition", () => {
 		expect(runtime.workerPids.size).toBe(0);
 	});
 
-	test("uses PI_SERVER_DIR for sockets and discovery", async () => {
+	test("uses PI_SERVER_DIR and PI_SERVER_ID", async () => {
 		const directory = await mkdtemp(join("/tmp", "pi-server-dir-"));
 		directories.add(directory);
+		const serverId = "00000000-0000-4000-8000-000000000001";
 		vi.stubEnv("PI_SERVER_DIR", directory);
+		vi.stubEnv("PI_SERVER_ID", serverId);
 		const runtime = await startExperimentalCoordinatedServer();
 		servers.add(runtime);
 
-		expect(runtime.socketPath).toBe(join(directory, `${runtime.serverId}.sock`));
+		expect(runtime.serverId).toBe(serverId);
+		expect(runtime.socketPath).toBe(join(directory, `${serverId}.sock`));
 		expect((await lstat(directory)).mode & 0o777).toBe(0o700);
 		const publicSocket = await lstat(runtime.socketPath);
-		const controlSocket = await lstat(join(directory, "control.sock"));
+		const controlSocket = await lstat(join(directory, `control-${runtime.serverId}.sock`));
 		expect(publicSocket.isSocket()).toBe(true);
 		expect(publicSocket.mode & 0o777).toBe(0o600);
 		expect(controlSocket.isSocket()).toBe(true);
@@ -82,6 +85,41 @@ describe("experimental durable server composition", () => {
 		await expect(runExperimentalClient({ command: "client" })).resolves.toMatchObject({
 			kind: "list",
 			sessions: [{ sessionId: "demo-1" }, { sessionId: "demo-2" }],
+		});
+	});
+
+	test("runs and discovers multiple logical servers from one directory", async () => {
+		const directory = await mkdtemp(join("/tmp", "pi-multi-server-"));
+		directories.add(directory);
+		const firstId = "00000000-0000-4000-8000-000000000001";
+		const secondId = "00000000-0000-4000-8000-000000000002";
+		const [first, second] = await Promise.all([
+			startExperimentalCoordinatedServer({ directory, serverId: firstId }),
+			startExperimentalCoordinatedServer({ directory, serverId: secondId }),
+		]);
+		servers.add(first);
+		servers.add(second);
+
+		expect((await lstat(join(directory, `control-${firstId}.sock`))).isSocket()).toBe(true);
+		expect((await lstat(join(directory, `control-${secondId}.sock`))).isSocket()).toBe(true);
+		await expect(runExperimentalClient({ command: "client" }, { directory })).resolves.toEqual({
+			kind: "list",
+			sessions: [
+				{ serverId: firstId, sessionId: "demo-1" },
+				{ serverId: firstId, sessionId: "demo-2" },
+				{ serverId: secondId, sessionId: "demo-1" },
+				{ serverId: secondId, sessionId: "demo-2" },
+			],
+		});
+
+		await first.close();
+		await expect.poll(() => pathExists(first.socketPath)).toBe(false);
+		await expect(runExperimentalClient({ command: "client" }, { directory })).resolves.toEqual({
+			kind: "list",
+			sessions: [
+				{ serverId: secondId, sessionId: "demo-1" },
+				{ serverId: secondId, sessionId: "demo-2" },
+			],
 		});
 	});
 

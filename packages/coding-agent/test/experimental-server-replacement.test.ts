@@ -113,7 +113,7 @@ describe.skipIf(process.platform === "win32")("experimental CLI server replaceme
 		);
 		const firstSocket = await waitForOutput(first, /Socket: (.+\.sock)/);
 		expect(firstSocket[1]).toBe(join(serverDir, `${firstIdentity[1]}.sock`));
-		expect((await lstat(join(serverDir, "control.sock"))).isSocket()).toBe(true);
+		expect((await lstat(join(serverDir, `control-${firstIdentity[1]}.sock`))).isSocket()).toBe(true);
 		await runExperimentalClient({
 			command: "client",
 			sessionId: "demo-1",
