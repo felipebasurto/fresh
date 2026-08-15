@@ -18,7 +18,7 @@ interface RunningCli {
 }
 
 async function startServer(home: string, agentDir: string, serverDir: string): Promise<RunningCli> {
-	const child = spawn(process.execPath, ["--import", "tsx", cliPath, "server"], {
+	const child = spawn(process.execPath, [cliPath, "server"], {
 		cwd: fileURLToPath(new URL("../../..", import.meta.url)),
 		env: {
 			...process.env,

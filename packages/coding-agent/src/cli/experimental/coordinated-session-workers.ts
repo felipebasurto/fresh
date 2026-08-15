@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
@@ -6,8 +6,8 @@ import type { HostedHarnessHandle } from "@earendil-works/pi-server";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import type { CoordinatorServer, CoordinatorServerEvent } from "./coordinator-client.ts";
+import { spawnInternalProcess } from "./internal-process-launcher.ts";
 import {
-	createExperimentalSessionWorkerLaunchSpec,
 	SESSION_WORKER_CONTROL_ADDRESS_ENV,
 	SESSION_WORKER_CONTROL_TOKEN_ENV,
 	SESSION_WORKER_COORDINATED_ENV,
@@ -182,24 +182,17 @@ export class CoordinatedSessionWorkers {
 		const sessionKey = metadata.path;
 		const peerId = `worker-${randomUUID()}`;
 		const token = randomUUID();
-		const launch = createExperimentalSessionWorkerLaunchSpec(metadata, { sessionDir: this.#sessionDir });
 		let child: ChildProcess;
 		try {
-			child = spawn(launch.command, launch.args, {
-				cwd: launch.cwd,
-				detached: true,
+			child = spawnInternalProcess("session-worker", [this.#sessionDir, JSON.stringify(metadata)], {
 				env: {
-					...launch.env,
 					[SESSION_WORKER_CONTROL_ADDRESS_ENV]: this.#coordinator.controlPath,
 					[SESSION_WORKER_CONTROL_TOKEN_ENV]: token,
 					[SESSION_WORKER_SESSION_KEY_ENV]: Buffer.from(sessionKey).toString("base64url"),
 					[SESSION_WORKER_COORDINATED_ENV]: "1",
 					[SESSION_WORKER_PEER_ID_ENV]: peerId,
 				},
-				stdio: "ignore",
-				windowsHide: true,
 			});
-			child.unref();
 		} catch (error) {
 			return Promise.reject(error);
 		}

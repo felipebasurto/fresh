@@ -218,10 +218,10 @@ async function closeResources(resources: {
 	if (errors.length > 1) throw new AggregateError(errors, "Session worker cleanup failed");
 }
 
-async function run(): Promise<void> {
-	const sessionDir = process.argv[2];
+async function run(args: readonly string[]): Promise<void> {
+	const sessionDir = args[0];
 	if (!sessionDir || !isAbsolute(sessionDir)) throw new Error("Session worker requires an absolute session directory");
-	const metadata = parseMetadata(process.argv[3]);
+	const metadata = parseMetadata(args[1]);
 	const sessionId = metadata.id;
 	const control = await connectControl();
 	const token = process.env[SESSION_WORKER_CONTROL_TOKEN_ENV]!;
@@ -311,13 +311,17 @@ async function run(): Promise<void> {
 	}
 }
 
-void run().catch(async (error: unknown) => {
-	const message = error instanceof Error ? error.message : String(error);
-	const token = process.env[SESSION_WORKER_CONTROL_TOKEN_ENV];
-	const encodedSessionKey = process.env[SESSION_WORKER_SESSION_KEY_ENV];
-	if (token && encodedSessionKey) {
-		const sessionKey = Buffer.from(encodedSessionKey, "base64url").toString();
-		await failureControl?.send({ type: "worker_failed", token, sessionKey, message }).catch(() => {});
+export async function runSessionWorkerProcess(args: readonly string[]): Promise<void> {
+	try {
+		await run(args);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		const token = process.env[SESSION_WORKER_CONTROL_TOKEN_ENV];
+		const encodedSessionKey = process.env[SESSION_WORKER_SESSION_KEY_ENV];
+		if (token && encodedSessionKey) {
+			const sessionKey = Buffer.from(encodedSessionKey, "base64url").toString();
+			await failureControl?.send({ type: "worker_failed", token, sessionKey, message }).catch(() => {});
+		}
+		throw error;
 	}
-	process.exit(1);
-});
+}

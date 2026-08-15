@@ -1,12 +1,12 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, unlink } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
+import { spawnInternalProcess } from "./internal-process-launcher.ts";
 import { ensurePrivateServerDirectory, resolveExperimentalServerDirectory } from "./server-directory.ts";
 import type { SessionWorkerCommand, SessionWorkerEvent } from "./session-worker-process.ts";
 
@@ -38,45 +38,12 @@ export interface ExperimentalSessionWorker {
 	close(): Promise<void>;
 }
 
-export interface SessionWorkerLaunchSpec {
-	readonly command: string;
-	readonly args: readonly string[];
-	readonly cwd: string;
-	readonly env: Readonly<Record<string, string>>;
-}
-
 export interface StartExperimentalSessionWorkerOptions {
 	readonly sessionDir: string;
 	readonly controlDirectory?: string;
 	readonly startupTimeoutMs?: number;
 	readonly shutdownTimeoutMs?: number;
 	readonly workerUrl?: URL;
-}
-
-export function createExperimentalSessionWorkerLaunchSpec(
-	metadata: JsonlSessionMetadata,
-	options: Pick<StartExperimentalSessionWorkerOptions, "sessionDir" | "workerUrl">,
-): SessionWorkerLaunchSpec {
-	if (!isAbsolute(options.sessionDir)) throw new TypeError("Session worker sessionDir must be absolute");
-	const workerUrl =
-		options.workerUrl ??
-		new URL(
-			import.meta.url.endsWith(".js") ? "session-worker-process.js" : "session-worker-process.ts",
-			import.meta.url,
-		);
-	return {
-		command: process.execPath,
-		args: [
-			...(workerUrl.pathname.endsWith(".ts") ? ["--import", "tsx"] : []),
-			fileURLToPath(workerUrl),
-			options.sessionDir,
-			JSON.stringify(metadata),
-		],
-		cwd: process.cwd(),
-		env: Object.fromEntries(
-			Object.entries(process.env).flatMap(([name, value]) => (value === undefined ? [] : [[name, value]])),
-		),
-	};
 }
 
 export async function startExperimentalSessionWorker(
@@ -88,7 +55,7 @@ export async function startExperimentalSessionWorker(
 		options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
 		"shutdownTimeoutMs",
 	);
-	const launch = createExperimentalSessionWorkerLaunchSpec(metadata, options);
+	if (!isAbsolute(options.sessionDir)) throw new TypeError("Session worker sessionDir must be absolute");
 	const token = randomUUID();
 	const controlId = randomUUID();
 	let controlAddress: string;
@@ -102,19 +69,14 @@ export async function startExperimentalSessionWorker(
 	const control = await createWorkerControlServer(controlAddress, token, metadata.id);
 	let child: ChildProcess;
 	try {
-		child = spawn(launch.command, launch.args, {
-			cwd: launch.cwd,
-			detached: true,
+		child = spawnInternalProcess("session-worker", [options.sessionDir, JSON.stringify(metadata)], {
+			entryUrl: options.workerUrl,
 			env: {
-				...launch.env,
 				[SESSION_WORKER_CONTROL_ADDRESS_ENV]: controlAddress,
 				[SESSION_WORKER_CONTROL_TOKEN_ENV]: token,
 				[SESSION_WORKER_SESSION_KEY_ENV]: Buffer.from(metadata.path).toString("base64url"),
 			},
-			stdio: "ignore",
-			windowsHide: true,
 		});
-		child.unref();
 	} catch (error) {
 		await control.close();
 		throw error;

@@ -1,9 +1,8 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
-import { fileURLToPath } from "node:url";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
+import { spawnInternalProcess } from "./internal-process-launcher.ts";
 
 const COORDINATOR_PROTOCOL_VERSION = 1;
 const COORDINATOR_START_TIMEOUT_MS = 10_000;
@@ -182,27 +181,10 @@ export interface CoordinatorStartupLease {
 export async function ensureExperimentalCoordinator(
 	publicPath: string,
 	controlPath: string,
-	coordinatorUrl = new URL(
-		import.meta.url.endsWith(".js") ? "coordinator-process.js" : "coordinator-process.ts",
-		import.meta.url,
-	),
 ): Promise<CoordinatorStartupLease> {
 	const existing = await tryConnect(controlPath);
 	if (existing) return { close: () => existing.destroy() };
-	const args = [
-		...(coordinatorUrl.pathname.endsWith(".ts") ? ["--import", "tsx"] : []),
-		fileURLToPath(coordinatorUrl),
-		publicPath,
-		controlPath,
-	];
-	const child = spawn(process.execPath, args, {
-		cwd: process.cwd(),
-		detached: true,
-		env: process.env,
-		stdio: "ignore",
-		windowsHide: true,
-	});
-	child.unref();
+	const child = spawnInternalProcess("coordinator", [publicPath, controlPath]);
 	const deadline = Date.now() + COORDINATOR_START_TIMEOUT_MS;
 	while (true) {
 		const socket = await tryConnect(controlPath);

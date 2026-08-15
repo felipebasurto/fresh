@@ -30,9 +30,9 @@ interface ControlMessage {
 	readonly payload?: unknown;
 }
 
-const publicPath = process.argv[2];
-const controlPath = process.argv[3];
-if (!publicPath || !controlPath) throw new Error("Coordinator requires public and control socket paths");
+let publicPath: string;
+let controlPath: string;
+let running = false;
 
 const peers = new Map<string, RoutedPeer>();
 const controlConnections = new Set<Socket>();
@@ -43,6 +43,20 @@ let emptyTimer: NodeJS.Timeout | undefined;
 
 const publicServer = createServer((socket) => acceptPublicConnection(socket));
 const controlServer = createServer((socket) => acceptControlConnection(socket));
+
+export async function runCoordinatorProcess(args: readonly string[]): Promise<void> {
+	if (running) throw new Error("Coordinator process is already running");
+	const [requestedPublicPath, requestedControlPath] = args;
+	if (!requestedPublicPath || !requestedControlPath) {
+		throw new Error("Coordinator requires public and control socket paths");
+	}
+	publicPath = requestedPublicPath;
+	controlPath = requestedControlPath;
+	running = true;
+	process.once("SIGINT", () => void shutdownCoordinator());
+	process.once("SIGTERM", () => void shutdownCoordinator());
+	await main();
+}
 
 async function main(): Promise<void> {
 	await removeStaleSocket(controlPath);
@@ -320,10 +334,3 @@ async function cleanupSocket(path: string): Promise<void> {
 		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
 	});
 }
-
-process.once("SIGINT", () => void shutdownCoordinator());
-process.once("SIGTERM", () => void shutdownCoordinator());
-void main().catch((error: unknown) => {
-	console.error(error);
-	process.exit(1);
-});
