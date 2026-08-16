@@ -17,6 +17,7 @@ export interface ClientCommand {
 	readonly sessionId?: string;
 	readonly provider?: string;
 	readonly model?: string;
+	readonly prompt?: string;
 }
 
 export interface ClientCommandContext {
@@ -41,9 +42,20 @@ export const clientCommand = new Command<ClientCommand, ClientCommandContext>("c
 		const sessionId = input.value(sessionIdOption);
 		const provider = input.value(providerOption);
 		const model = input.value(modelOption);
+		const promptArgs = input.remainingArgs[0] === "--" ? input.remainingArgs.slice(1) : input.remainingArgs;
+		const prompt =
+			promptArgs.length === 1 &&
+			(input.remainingArgs[0] === "--" || !promptArgs[0]!.startsWith("-")) &&
+			promptArgs[0]!.length > 0
+				? promptArgs[0]
+				: undefined;
 		const { errors: optionErrors } = parseLegacyOptions(input);
 		const modelErrors = provider !== undefined && model === undefined ? ["--provider requires --model"] : [];
-		const errors = [...authErrors, ...optionErrors, ...modelErrors, ...unsupportedLegacyOptions("client", input)];
+		const promptErrors =
+			prompt !== undefined && sessionId === undefined ? ["Client prompt requires --session-id"] : [];
+		const unsupportedErrors =
+			input.remainingArgs.length === 0 || prompt !== undefined ? [] : unsupportedLegacyOptions("client", input);
+		const errors = [...authErrors, ...optionErrors, ...modelErrors, ...promptErrors, ...unsupportedErrors];
 		if (errors.length > 0) return { ok: false, errors };
 		return {
 			ok: true,
@@ -54,6 +66,7 @@ export const clientCommand = new Command<ClientCommand, ClientCommandContext>("c
 				...(sessionId === undefined ? {} : { sessionId }),
 				...(provider === undefined ? {} : { provider }),
 				...(model === undefined ? {} : { model }),
+				...(prompt === undefined ? {} : { prompt }),
 			},
 		};
 	})

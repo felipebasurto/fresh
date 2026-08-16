@@ -612,6 +612,10 @@ async function runClientCommand(command: ClientCommand): Promise<void> {
 		console.log(`${result.serverId}\t${result.sessionId}\tattached`);
 		return;
 	}
+	if (result.kind === "prompted") {
+		console.log(result.text);
+		return;
+	}
 	for (const session of result.sessions) console.log(`${session.serverId}\t${session.sessionId}`);
 }
 

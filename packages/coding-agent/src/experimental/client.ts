@@ -10,7 +10,8 @@ export type ClientResult =
 			readonly kind: "list";
 			readonly sessions: readonly { serverId: string; sessionId: string }[];
 	  }
-	| { readonly kind: "attached"; readonly serverId: string; readonly sessionId: string };
+	| { readonly kind: "attached"; readonly serverId: string; readonly sessionId: string }
+	| { readonly kind: "prompted"; readonly serverId: string; readonly sessionId: string; readonly text: string };
 
 export interface RunClientOptions {
 	/** Directory searched when --connect is omitted. Defaults to PI_SERVER_DIR or ~/.pi/server. */
@@ -87,7 +88,23 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 		if (matches.length > 1) throw new Error(`Session ${sessionId} is available from more than one server`);
 		const match = matches[0]!;
 		const attached = await match.client.attachSession(sessionId);
-		return { kind: "attached", serverId: match.route.serverId, sessionId: attached.sessionId };
+		if (command.prompt === undefined) {
+			return { kind: "attached", serverId: match.route.serverId, sessionId: attached.sessionId };
+		}
+		const result = await match.client.promptSession(attached.sessionId, command.prompt);
+		if (!result.ok) throw new Error(result.error.message);
+		if (result.value.kind === "failed") throw new Error(result.value.error.message);
+		if (result.value.kind !== "completed") throw new Error(`Remote prompt ${result.value.kind}`);
+		if (!("finalMessage" in result.value)) throw new Error("Remote prompt completed without an assistant message");
+		const text = result.value.finalMessage.content
+			.flatMap((part) => (part.type === "text" ? [part.text] : []))
+			.join("");
+		return {
+			kind: "prompted",
+			serverId: match.route.serverId,
+			sessionId: attached.sessionId,
+			text,
+		};
 	} finally {
 		await Promise.all([...openedClients].map((client) => client.dispose()));
 	}

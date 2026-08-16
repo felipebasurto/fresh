@@ -290,6 +290,41 @@ describe("experimental durable server composition", () => {
 		await expect(competing.attachSession("demo-1")).rejects.toMatchObject({ code: "session_in_use" });
 	});
 
+	test("runs a one-shot prompt through the client command", async ({ onTestFinished }) => {
+		const spawn = vi
+			.spyOn(processRuntime, "spawnInternalProcess")
+			.mockImplementation((role, args, options) =>
+				realSpawnInternalProcess(
+					role,
+					args,
+					role === "session-worker" ? { ...options, entryUrl: fauxWorkerEntryUrl } : options,
+				),
+			);
+		onTestFinished(() => spawn.mockRestore());
+		const { runtime } = await makeServer();
+
+		await expect(
+			runClient({
+				command: "client",
+				sessionId: "demo-1",
+				prompt: "question",
+				connect: { transport: "unix", path: runtime.socketPath },
+			}),
+		).resolves.toEqual({
+			kind: "prompted",
+			serverId: runtime.serverId,
+			sessionId: "demo-1",
+			text: "deterministic remote answer",
+		});
+		await expect.poll(() => runtime.workerPids.has("demo-1")).toBe(false);
+		const { branch } = await readExperimentalSessionState(runtime.sessionDir, "demo-1");
+		expect(branch).toHaveLength(2);
+		expect(branch[0]).toMatchObject({ message: { role: "user", content: [{ type: "text", text: "question" }] } });
+		expect(branch[1]).toMatchObject({
+			message: { role: "assistant", content: [{ type: "text", text: "deterministic remote answer" }] },
+		});
+	});
+
 	test("completes and persists a prompt through the worker-owned Harness", async ({ onTestFinished }) => {
 		const spawn = vi
 			.spyOn(processRuntime, "spawnInternalProcess")
