@@ -2,12 +2,13 @@
 
 Experimental local server for the new durable Session and Agent Harness interfaces.
 
-The current slice supports two client operations:
+The current slice supports three client operations:
 
 - `list` calls `SessionRepo.list()` without opening sessions.
 - `attach` finds the requested metadata, passes it to the host, and retains the returned Harness handle in the server.
+- `prompt` executes one serializable Harness prompt through the requesting client's attached handle.
 
-A Session permits one attached client connection at a time. Repeating `attach` from that connection is idempotent; another connection receives `session_in_use`. Losing the connection releases its attachment lease. The host decides when zero client demand and Harness activity permit worker retirement. Server shutdown closes every hosted Harness, releasing its Session writer ownership.
+A Session permits one attached client connection at a time. Repeating `attach` from that connection is idempotent; another connection receives `session_in_use`. Prompting requires that exact connection to own the targeted attachment. Losing the connection rejects the local response but releases its attachment lease only after accepted prompts settle. The host decides when zero client demand and Harness activity permit worker retirement. Server shutdown closes every hosted Harness, releasing its Session writer ownership.
 
 ```ts
 import { randomUUID } from "node:crypto";

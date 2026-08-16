@@ -2,15 +2,15 @@
 
 Runtime-neutral schemas, types, CBOR encoding, and byte-stream framing for the experimental Pi protocol.
 
-Protocol version `1` currently contains the first control-plane slice:
+Protocol version `1` currently contains the first Session-operation slice:
 
 - a version handshake that identifies the logical `serverId`;
-- a service RPC manifest with `list()` and `attach(sessionId)`;
+- a service RPC manifest with `list()`, `attach(sessionId)`, and `prompt(sessionId, arguments)`;
 - correlated responses and bounded protocol errors.
 
-The manifest generates typed client methods and validated server dispatch. The wire uses generic `{ serverId, method, args }` calls rather than a hand-written command union. `list()` returns the durable `SessionMetadata` values from `SessionRepo.list()`. `attach()` exclusively binds that Session to the client connection and returns only its `sessionId`; the real `Session` and `AgentHarness` remain hosted by the server. Disconnecting releases the attachment.
+The manifest generates typed client methods and validated server dispatch. The wire uses generic `{ serverId, method, args }` calls rather than a hand-written command union. `list()` returns durable `SessionMetadata`. `attach()` exclusively binds that Session to the client connection and returns only its `sessionId`. `prompt()` targets an explicitly identified Session attached to the requesting connection. The real `Session` and `AgentHarness` remain hosted by the server. Disconnecting releases the attachment after accepted work settles.
 
-The package also defines `PromptArguments`, a tuple containing a serializable `AgentLane.prompt()` overload. `PromptMessage` is the protocol's closed set of built-in message DTOs; application-defined `AgentMessage` extensions are not accepted implicitly. `RunResult` is the wire-safe structural equivalent of the Harness result and contains no JavaScript `Error` instances. These DTOs are not yet exposed through the service RPC manifest.
+`PromptArguments` contains one serializable `AgentLane.prompt()` overload. `PromptMessage` is the protocol's closed set of built-in message DTOs; application-defined `AgentMessage` extensions are not accepted implicitly. `RunResult` is the wire-safe structural equivalent of the Harness result and contains no JavaScript `Error` instances.
 
 Server and worker lifecycle is intentionally outside this public protocol. The experimental local coordinator is only an opaque message router; each replaceable server process owns the private lifecycle protocol.
 

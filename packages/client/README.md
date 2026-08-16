@@ -1,6 +1,6 @@
 # @earendil-works/pi-client
 
-Transport-neutral client for the initial Pi `list` and `attach` protocol slice.
+Transport-neutral client for Pi Session discovery, attachment, and prompting.
 
 ```ts
 import { PiClient, type ByteTransportFactory } from "@earendil-works/pi-client";
@@ -21,11 +21,12 @@ const client = await PiClient.connect({
 });
 const sessions = await client.listSessions();
 const attachment = await client.attachSession(sessions[0].id);
+const result = await client.promptSession(attachment.sessionId, "Summarize this session");
 ```
 
-The client verifies that the physical endpoint reports the expected logical `serverId`. Every list and attach request carries that ID again so the final server can reject misdelivery.
+The client verifies that the physical endpoint reports the expected logical `serverId`. Every Session request carries that ID again so the final server can reject misdelivery.
 
-`attachSession()` currently returns only `{ sessionId }`. The attachment is exclusive to that client connection and is released on disconnect or disposal. Remote Session and Harness methods will be added directly from the new shared interfaces in a later slice. The client does not reconnect or replay requests automatically. After disconnection, call `reconnect()` and explicitly repeat safe control-plane actions.
+`attachSession()` returns only `{ sessionId }`. The attachment is exclusive to that client connection. `promptSession()` accepts the protocol's serializable Harness prompt overloads and returns a structural `RunResult`. On disconnect or disposal, pending prompts reject locally, but accepted work may still complete remotely before the attachment is released. The client never reconnects or replays requests automatically. After disconnection, call `reconnect()` and explicitly repeat only operations known to be safe.
 
 The experimental local coordinator only provides a stable endpoint and relays traffic. Replaceable server processes own session and worker lifecycle outside the public client protocol.
 
