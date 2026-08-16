@@ -1,14 +1,14 @@
-import type { AuthInput } from "../auth.ts";
 import { Command, stringOption } from "../command.ts";
 import {
+	type AuthInput,
 	authTokenFileOption,
 	authTokenOption,
 	parseAuth,
 	parseLegacyOptions,
+	type TransportAddress,
 	transportOption,
 	unsupportedLegacyOptions,
 } from "../command-options.ts";
-import type { TransportAddress } from "../transport-address.ts";
 
 export interface ClientCommand {
 	readonly command: "client";

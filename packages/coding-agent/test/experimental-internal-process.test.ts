@@ -5,7 +5,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { spawnInternalProcess, terminateInternalProcess } from "../src/cli/experimental/internal-process-launcher.ts";
+import { spawnInternalProcess, terminateInternalProcess } from "../src/cli/experimental/process.ts";
 
 const children = new Set<ChildProcess>();
 const directories = new Set<string>();

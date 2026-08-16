@@ -1,10 +1,70 @@
+import { posix } from "node:path";
 import { type Args, parseArgs } from "../args.ts";
-import { type AuthInput, parseAuthInput } from "./auth.ts";
 import { type CommandOption, type ParsedCommandInput, stringOption, valueOption } from "./command.ts";
-import { parseTransportAddress, type TransportAddress } from "./transport-address.ts";
+
+export type AuthInput =
+	| { readonly type: "token"; readonly token: string }
+	| { readonly type: "file"; readonly path: string };
+
+interface UnixTransportAddress {
+	readonly transport: "unix";
+	readonly path: string;
+}
+
+export type TransportAddress = UnixTransportAddress;
 
 export const authTokenOption = stringOption("--auth-token");
 export const authTokenFileOption = stringOption("--auth-token-file");
+
+function parseAuthInput(options: { readonly authToken?: string; readonly authTokenFile?: string }): {
+	auth?: AuthInput;
+	errors: string[];
+} {
+	if (options.authToken !== undefined && options.authTokenFile !== undefined) {
+		return { errors: ["--auth-token and --auth-token-file are mutually exclusive"] };
+	}
+	if (options.authToken !== undefined) {
+		return { auth: { type: "token", token: options.authToken }, errors: [] };
+	}
+	if (options.authTokenFile !== undefined) {
+		return { auth: { type: "file", path: options.authTokenFile }, errors: [] };
+	}
+	return { errors: [] };
+}
+
+function parseTransportAddress(
+	value: string,
+	option: "--listen" | "--connect",
+): { address?: TransportAddress; error?: string } {
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return { error: `Invalid ${option} address "${value}"` };
+	}
+	if (url.protocol !== "unix:") return { error: `Unsupported ${option} transport "${url.protocol}"` };
+	if (url.hostname || url.port || url.username || url.password) {
+		return { error: "Unix transport address must not include an authority" };
+	}
+	if (
+		!value.startsWith("unix:///") ||
+		value.startsWith("unix:////") ||
+		value.includes("?") ||
+		value.includes("#") ||
+		url.href !== value
+	) {
+		return { error: `Invalid ${option} address "${value}"` };
+	}
+	let path: string;
+	try {
+		path = decodeURIComponent(url.pathname);
+	} catch {
+		return { error: `Invalid ${option} address "${value}"` };
+	}
+	if (path.includes("\0")) return { error: `Invalid ${option} address "${value}"` };
+	if (!posix.isAbsolute(path)) return { error: "Unix transport address requires an absolute path" };
+	return { address: { transport: "unix", path } };
+}
 
 export function transportOption(name: "--listen" | "--connect"): CommandOption<TransportAddress> {
 	return valueOption(name, (value) => {

@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { CoordinatedServerLifetime } from "../src/cli/experimental/server-lifetime.ts";
+import { ServerLifetime } from "../src/cli/experimental/server.ts";
 
 afterEach(() => {
 	vi.useRealTimers();
 });
 
-describe("coordinated server lifecycle", () => {
+describe("server lifecycle", () => {
 	test("holds a foreground server until explicit shutdown", () => {
 		vi.useFakeTimers();
 		const retire = vi.fn();
-		const lifetime = new CoordinatedServerLifetime(true);
+		const lifetime = new ServerLifetime(true);
 		lifetime.start(retire);
 		vi.advanceTimersByTime(60_000);
 		expect(retire).not.toHaveBeenCalled();
@@ -19,7 +19,7 @@ describe("coordinated server lifecycle", () => {
 	test("retires an automatic server if no first client arrives", () => {
 		vi.useFakeTimers();
 		const retire = vi.fn();
-		const lifetime = new CoordinatedServerLifetime(false);
+		const lifetime = new ServerLifetime(false);
 		lifetime.start(retire);
 		vi.advanceTimersByTime(10_999);
 		expect(retire).not.toHaveBeenCalled();
@@ -31,7 +31,7 @@ describe("coordinated server lifecycle", () => {
 	test("requires both client and worker demand to disappear", () => {
 		vi.useFakeTimers();
 		const retire = vi.fn();
-		const lifetime = new CoordinatedServerLifetime(false);
+		const lifetime = new ServerLifetime(false);
 		lifetime.start(retire);
 		lifetime.setConnectionCount(1);
 		lifetime.setWorkerCount(1);

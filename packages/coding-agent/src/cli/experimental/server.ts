@@ -1,0 +1,517 @@
+import { randomUUID } from "node:crypto";
+import { chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { type JsonlSessionMetadata, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
+import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { PiClient, PiDisconnectedError, PiServerError } from "@earendil-works/pi-client";
+import { createUnixTransportFactory, type UnixServerRoute } from "@earendil-works/pi-client/unix";
+import { isServerId, type ServerId } from "@earendil-works/pi-protocol";
+import type { PiServer, PiServerHost } from "@earendil-works/pi-server";
+import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
+import lockfile from "proper-lockfile";
+import { getAgentDir } from "../../config.ts";
+import { resolvePath } from "../../utils/paths.ts";
+import { CoordinatorConnection, type CoordinatorStartupLease, ensureCoordinator } from "./coordinator.ts";
+import { consumeInternalProcessRole, spawnInternalProcess, terminateInternalProcess } from "./process.ts";
+import { SessionWorkerManager } from "./session-worker-manager.ts";
+
+export const ENV_SERVER_DIR = "PI_SERVER_DIR";
+export const ENV_SERVER_ID = "PI_SERVER_ID";
+
+export function resolveServerDirectory(directory?: string): string {
+	return resolvePath(directory ?? process.env[ENV_SERVER_DIR] ?? join(homedir(), ".pi", "server"));
+}
+
+export async function ensurePrivateServerDirectory(directory: string): Promise<void> {
+	if (typeof process.getuid !== "function") throw new Error("Unix socket directory requires a POSIX user ID");
+	await mkdir(directory, { recursive: true, mode: 0o700 });
+	const stats = await lstat(directory);
+	if (!stats.isDirectory()) throw new Error(`Unix socket directory is not a directory: ${directory}`);
+	if (stats.uid !== process.getuid()) {
+		throw new Error(`Unix socket directory is not owned by the current user: ${directory}`);
+	}
+	await chmod(directory, 0o700);
+}
+
+export function resolveSessionDirectory(sessionDir?: string): string {
+	return resolvePath(sessionDir ?? join(getAgentDir(), "experimental", "sessions"));
+}
+
+const LOCK_STALE_MS = 30_000;
+const LOCK_RETRY_MS = 25;
+const LOCK_WAIT_MS = 30_000;
+const DEFAULT_SERVER_ID_FILE = "default-server-id";
+
+export interface ServerProfile {
+	readonly serverId: ServerId;
+	release(): Promise<void>;
+}
+
+/** Lock one logical server ID in a shared experimental server directory. */
+export async function acquireServerProfile(directory: string, requestedServerId?: string): Promise<ServerProfile> {
+	await mkdir(directory, { recursive: true, mode: 0o700 });
+	let serverId: ServerId;
+	if (requestedServerId !== undefined) {
+		if (!isServerId(requestedServerId)) throw new Error(`Invalid experimental server ID: ${requestedServerId}`);
+		serverId = requestedServerId;
+	} else {
+		const path = join(directory, DEFAULT_SERVER_ID_FILE);
+		try {
+			const value = (await readFile(path, "utf8")).trim();
+			if (!isServerId(value)) throw new Error(`Invalid default experimental server identity in ${path}`);
+			serverId = value;
+		} catch (error) {
+			const code = error instanceof Error && "code" in error ? error.code : undefined;
+			if (code !== "ENOENT") throw error;
+			const candidate = randomUUID();
+			try {
+				await writeFile(path, candidate, { encoding: "utf8", mode: 0o600, flag: "wx" });
+				serverId = candidate;
+			} catch (writeError) {
+				const writeCode = writeError instanceof Error && "code" in writeError ? writeError.code : undefined;
+				if (writeCode !== "EEXIST") throw writeError;
+				const value = (await readFile(path, "utf8")).trim();
+				if (!isServerId(value)) throw new Error(`Invalid default experimental server identity in ${path}`);
+				serverId = value;
+			}
+		}
+	}
+
+	const release = await lockfile.lock(join(directory, `launcher-${serverId}`), {
+		realpath: false,
+		stale: LOCK_STALE_MS,
+		update: LOCK_STALE_MS / 3,
+		retries: {
+			retries: Math.ceil(LOCK_WAIT_MS / LOCK_RETRY_MS),
+			factor: 1,
+			minTimeout: LOCK_RETRY_MS,
+			maxTimeout: LOCK_RETRY_MS,
+			maxRetryTime: LOCK_WAIT_MS,
+		},
+	});
+	return { serverId, release };
+}
+
+const ACTIVATION_TIMEOUT_MS = 10_000;
+const ACTIVATION_RETRY_MS = 10;
+
+export interface ActivatedServer {
+	readonly client: PiClient;
+	readonly route: UnixServerRoute;
+}
+
+export interface ActivateServerOptions {
+	readonly directory: string;
+	readonly requestedServerId?: ServerId | string;
+	readonly sessionDir: string;
+}
+
+/** Ensure the selected logical server is reachable, launching the current Pi installation if needed. */
+export async function activateServer(options: ActivateServerOptions): Promise<ActivatedServer> {
+	await ensurePrivateServerDirectory(options.directory);
+	const profile = await acquireServerProfile(options.directory, options.requestedServerId);
+	const serverId = profile.serverId;
+	await profile.release();
+	const route = { serverId, path: getUnixSocketPath(serverId, options.directory) };
+	const release = await acquireServerActivation(options.directory, serverId);
+	try {
+		const existing = await connect(route);
+		if (existing) return { client: existing, route };
+		const child = spawnInternalProcess("server", [options.directory, serverId, options.sessionDir]);
+		let spawnError: Error | undefined;
+		child.once("error", (error) => {
+			spawnError = error;
+		});
+		try {
+			const deadline = Date.now() + ACTIVATION_TIMEOUT_MS;
+			while (true) {
+				const client = await connect(route);
+				if (client) return { client, route };
+				if (spawnError) throw new Error("Failed to automatically activate Pi server", { cause: spawnError });
+				if (child.exitCode !== null || child.signalCode !== null) {
+					throw new Error("Automatically activated Pi server exited during startup");
+				}
+				if (Date.now() >= deadline) throw new Error("Timed out waiting for automatically activated Pi server");
+				await new Promise<void>((resolve) => setTimeout(resolve, ACTIVATION_RETRY_MS));
+			}
+		} catch (error) {
+			await terminateInternalProcess(child);
+			throw error;
+		}
+	} finally {
+		await release();
+	}
+}
+
+export function acquireServerActivation(directory: string, serverId: ServerId): Promise<() => Promise<void>> {
+	return lockfile.lock(join(directory, `activation-${serverId}`), {
+		realpath: false,
+		stale: ACTIVATION_TIMEOUT_MS * 2,
+		update: ACTIVATION_TIMEOUT_MS,
+		retries: {
+			retries: Math.ceil(ACTIVATION_TIMEOUT_MS / 25),
+			factor: 1,
+			minTimeout: 25,
+			maxTimeout: 25,
+			maxRetryTime: ACTIVATION_TIMEOUT_MS,
+		},
+	});
+}
+
+async function connect(route: UnixServerRoute): Promise<PiClient | undefined> {
+	const client = new PiClient({
+		serverId: route.serverId,
+		transportFactory: createUnixTransportFactory({ path: route.path }),
+	});
+	try {
+		await client.connect();
+		return client;
+	} catch (error) {
+		await client.dispose();
+		if (error instanceof PiDisconnectedError || (error instanceof PiServerError && error.code === "version")) {
+			return undefined;
+		}
+		let current = error;
+		const seen = new Set<unknown>();
+		while (current instanceof Error && !seen.has(current)) {
+			seen.add(current);
+			if (
+				"code" in current &&
+				["ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE", "ETIMEDOUT"].includes(String(current.code))
+			) {
+				return undefined;
+			}
+			current = current.cause;
+		}
+		throw error;
+	}
+}
+
+const AUTO_SERVER_STARTUP_GRACE_MS = 10_000;
+const AUTO_SERVER_IDLE_GRACE_MS = 1_000;
+
+/** Reconcile operator, startup, client, and worker holds for one server generation. */
+export class ServerLifetime {
+	readonly #keepAlive: boolean;
+	#connectionCount = 0;
+	#workerCount = 0;
+	#startupHeld: boolean;
+	#startupTimer: NodeJS.Timeout | undefined;
+	#retirementTimer: NodeJS.Timeout | undefined;
+	#retire: (() => void) | undefined;
+	#stopped = false;
+
+	constructor(keepAlive: boolean) {
+		this.#keepAlive = keepAlive;
+		this.#startupHeld = !keepAlive;
+	}
+
+	start(retire: () => void): void {
+		this.#retire = retire;
+		if (this.#startupHeld) {
+			this.#startupTimer = setTimeout(() => {
+				this.#startupTimer = undefined;
+				this.#startupHeld = false;
+				this.#reconcile();
+			}, AUTO_SERVER_STARTUP_GRACE_MS);
+			this.#startupTimer.unref();
+		}
+		this.#reconcile();
+	}
+
+	setConnectionCount(count: number): void {
+		this.#connectionCount = count;
+		if (count > 0 && this.#startupHeld) {
+			this.#startupHeld = false;
+			if (this.#startupTimer) clearTimeout(this.#startupTimer);
+			this.#startupTimer = undefined;
+		}
+		this.#reconcile();
+	}
+
+	setWorkerCount(count: number): void {
+		this.#workerCount = count;
+		this.#reconcile();
+	}
+
+	stop(): void {
+		this.#stopped = true;
+		if (this.#startupTimer) clearTimeout(this.#startupTimer);
+		if (this.#retirementTimer) clearTimeout(this.#retirementTimer);
+		this.#startupTimer = undefined;
+		this.#retirementTimer = undefined;
+	}
+
+	#reconcile(): void {
+		if (
+			this.#stopped ||
+			this.#keepAlive ||
+			this.#startupHeld ||
+			this.#connectionCount !== 0 ||
+			this.#workerCount !== 0
+		) {
+			if (this.#retirementTimer) clearTimeout(this.#retirementTimer);
+			this.#retirementTimer = undefined;
+			return;
+		}
+		const retire = this.#retire;
+		if (this.#retirementTimer || !retire) return;
+		this.#retirementTimer = setTimeout(() => {
+			this.#retirementTimer = undefined;
+			if (!this.#stopped && !this.#startupHeld && this.#connectionCount === 0 && this.#workerCount === 0) {
+				retire();
+			}
+		}, AUTO_SERVER_IDLE_GRACE_MS);
+		this.#retirementTimer.unref();
+	}
+}
+
+export interface RunningServer {
+	readonly serverId: string;
+	readonly sessionDir: string;
+	readonly socketPath: string;
+	readonly server: PiServer;
+	readonly workerPids: ReadonlyMap<string, number>;
+	readonly closed: Promise<void>;
+	close(): Promise<void>;
+}
+
+export interface StartServerOptions {
+	/** Server profile and socket directory. Defaults to PI_SERVER_DIR or ~/.pi/server. */
+	readonly directory?: string;
+	/** Logical service ID. Defaults to PI_SERVER_ID or the directory's default-server-id. */
+	readonly serverId?: ServerId;
+	/** Durable session directory. Defaults to the experimental directory under the configured agent directory. */
+	readonly sessionDir?: string;
+	/** Hold the server open without client or Session demand. Defaults to true for foreground servers. */
+	readonly keepAlive?: boolean;
+}
+
+interface StartServerBackendOptions {
+	readonly path: string;
+	readonly serverId: ServerId;
+	readonly sessionDir?: string;
+}
+
+async function startServerBackend(
+	options: StartServerBackendOptions,
+	workers: SessionWorkerManager,
+	onConnectionCountChanged?: (count: number) => void,
+): Promise<RunningServer> {
+	const serverId = options.serverId;
+	const sessionDir = resolveSessionDirectory(options.sessionDir);
+	const executionEnv = new NodeExecutionEnv({ cwd: process.cwd() });
+	const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot: sessionDir });
+	const host: PiServerHost<JsonlSessionMetadata> = {
+		sessions: {
+			list: async () => {
+				const sessions = new Map((await repo.list()).map((metadata) => [metadata.path, metadata]));
+				for (const metadata of workers.trackedSessions) sessions.set(metadata.path, metadata);
+				return [...sessions.values()];
+			},
+		},
+		createHarness: (metadata) => workers.createHarness(metadata),
+	};
+	const socketPath = options.path;
+	const closeCatalog = async (): Promise<void> => {
+		const cleanup = await Promise.allSettled([repo.close(), executionEnv.cleanup()]);
+		const errors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+		if (errors.length === 1) throw errors[0];
+		if (errors.length > 1) throw new AggregateError(errors, "Experimental session catalog cleanup failed");
+	};
+	const server = createUnixServer(host, {
+		serverId,
+		path: socketPath,
+		mode: 0o600,
+		onConnectionCountChanged,
+	});
+	try {
+		await server.start();
+	} catch (error) {
+		const cleanup = await Promise.allSettled([server.close(), closeCatalog()]);
+		const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+		if (cleanupErrors.length > 0) {
+			throw new AggregateError([error, ...cleanupErrors], "Experimental server startup and cleanup failed");
+		}
+		throw error;
+	}
+
+	let closePromise: Promise<void> | undefined;
+	const closed = server.closed.then(
+		() => closeCatalog(),
+		async (serverError: unknown) => {
+			try {
+				await closeCatalog();
+			} catch (repoError) {
+				throw new AggregateError([serverError, repoError], "Server and repository shutdown failed");
+			}
+			throw serverError;
+		},
+	);
+	return {
+		serverId,
+		sessionDir,
+		socketPath,
+		server,
+		workerPids: workers.workerPids,
+		closed,
+		close() {
+			closePromise ??= server.close().then(
+				() => closed,
+				() => closed,
+			);
+			return closePromise;
+		},
+	};
+}
+
+/** Start a replaceable experimental server behind the stable coordinator endpoint. */
+export async function startServer(options: StartServerOptions = {}): Promise<RunningServer> {
+	const directory = resolveServerDirectory(options.directory);
+	const { serverId, release } = await acquireServerProfile(directory, options.serverId ?? process.env[ENV_SERVER_ID]);
+	const lifetime = new ServerLifetime(options.keepAlive ?? true);
+	let backend: RunningServer | undefined;
+	let coordinator: CoordinatorConnection | undefined;
+	let startupLease: CoordinatorStartupLease | undefined;
+	let workers: SessionWorkerManager | undefined;
+	let released = false;
+	try {
+		await ensurePrivateServerDirectory(directory);
+		const socketPath = getUnixSocketPath(serverId, directory);
+		const controlPath = join(directory, `control-${serverId}.sock`);
+		const serverNonce = randomUUID().replaceAll("-", "").slice(0, 12);
+		const serverPath = join(directory, `server-${serverId}-${serverNonce}.sock`);
+		startupLease = await ensureCoordinator(socketPath, controlPath);
+		coordinator = new CoordinatorConnection({ controlPath, endpoint: serverPath });
+		const sessionDir = resolveSessionDirectory(options.sessionDir);
+		workers = new SessionWorkerManager(coordinator, sessionDir, (count) => lifetime.setWorkerCount(count));
+		backend = await startServerBackend(
+			{ path: serverPath, serverId, sessionDir: options.sessionDir },
+			workers,
+			(count) => lifetime.setConnectionCount(count),
+		);
+		await coordinator.connect();
+		startupLease.close();
+		startupLease = undefined;
+		await workers.discover(coordinator.peerIds);
+
+		const activeBackend = backend;
+		const activeCoordinator = coordinator;
+		const activeWorkers = workers;
+		void activeCoordinator.replaced
+			.then(async () => {
+				lifetime.stop();
+				activeWorkers.detach();
+				await activeBackend.close();
+			})
+			.finally(() => activeCoordinator.close())
+			.catch(() => {});
+		let closePromise: Promise<void> | undefined;
+		const runtime: RunningServer = {
+			serverId,
+			sessionDir: activeBackend.sessionDir,
+			socketPath,
+			server: activeBackend.server,
+			workerPids: activeWorkers.workerPids,
+			closed: activeBackend.closed,
+			close() {
+				lifetime.stop();
+				closePromise ??= (async () => {
+					try {
+						await activeBackend.close();
+					} finally {
+						try {
+							if (activeCoordinator.wasReplaced) activeWorkers.detach();
+							else await activeWorkers.shutdown();
+						} finally {
+							activeCoordinator.close();
+						}
+					}
+				})();
+				return closePromise;
+			},
+		};
+		lifetime.start(() => {
+			void runtime.close().catch(() => {});
+		});
+		released = true;
+		await release();
+		return runtime;
+	} catch (error) {
+		lifetime.stop();
+		startupLease?.close();
+		if (coordinator?.wasReplaced) workers?.detach();
+		const cleanup = await Promise.allSettled([
+			backend?.close(),
+			coordinator?.wasReplaced ? undefined : workers?.shutdown(),
+			Promise.resolve(coordinator?.close()),
+			released ? undefined : release(),
+		]);
+		const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+		if (cleanupErrors.length > 0) {
+			throw new AggregateError([error, ...cleanupErrors], "Server runtime startup and cleanup failed");
+		}
+		throw error;
+	}
+}
+
+/** Start an operator-held server while serializing against automatic cold activation. */
+export async function startForegroundServer(
+	options: Omit<StartServerOptions, "keepAlive"> = {},
+): Promise<RunningServer> {
+	const directory = resolveServerDirectory(options.directory);
+	await ensurePrivateServerDirectory(directory);
+	const profile = await acquireServerProfile(directory, options.serverId ?? process.env[ENV_SERVER_ID]);
+	const serverId = profile.serverId;
+	await profile.release();
+	const release = await acquireServerActivation(directory, serverId);
+	try {
+		return await startServer({
+			...options,
+			directory,
+			serverId,
+			keepAlive: true,
+		});
+	} finally {
+		await release();
+	}
+}
+
+/** Run an automatically activated server until its client and Session demand disappears. */
+export async function runServerProcess(args: readonly string[]): Promise<void> {
+	const [directory, serverId, sessionDir] = args;
+	if (!directory || !isAbsolute(directory)) throw new Error("Internal server requires an absolute server directory");
+	if (!isServerId(serverId)) throw new Error("Internal server requires a canonical server ID");
+	if (!sessionDir || !isAbsolute(sessionDir))
+		throw new Error("Internal server requires an absolute Session directory");
+
+	const runtime = await startServer({
+		directory,
+		serverId,
+		sessionDir,
+		keepAlive: false,
+	});
+	const close = (): void => {
+		void runtime.close().catch(() => {});
+	};
+	process.once("SIGINT", close);
+	process.once("SIGTERM", close);
+	try {
+		await runtime.closed;
+	} finally {
+		process.off("SIGINT", close);
+		process.off("SIGTERM", close);
+		await runtime.close();
+	}
+}
+
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	const role = consumeInternalProcessRole();
+	if (role !== "server") throw new Error("Server entrypoint requires an internal server invocation");
+	void runServerProcess(process.argv.slice(2)).catch((error: unknown) => {
+		console.error(error);
+		process.exit(1);
+	});
+}

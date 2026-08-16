@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { WorkerLifecycle } from "../src/cli/experimental/session-worker-lifecycle.ts";
+import { WorkerLifecycle } from "../src/cli/experimental/session-worker.ts";
 
 const GENERATION = "generation-1";
 
 function createLifecycle(options: { initialDemandGraceMs?: number; orphanDemandGraceMs?: number } = {}) {
 	const retire = vi.fn();
 	const lifecycle = new WorkerLifecycle({
-		enabled: true,
 		initialServerConnectionId: GENERATION,
 		initialDemandGraceMs: options.initialDemandGraceMs ?? 100,
 		orphanDemandGraceMs: options.orphanDemandGraceMs ?? 200,

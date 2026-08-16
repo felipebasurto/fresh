@@ -4,7 +4,7 @@ import { lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
-import { runExperimentalClient } from "../src/cli/experimental/runtime.ts";
+import { runClient } from "../src/cli/experimental/client.ts";
 import { configureExperimentalWorkerModel, createExperimentalSessions } from "./experimental-session-support.ts";
 
 const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
@@ -114,7 +114,7 @@ describe.skipIf(process.platform === "win32")("experimental CLI server replaceme
 		const firstSocket = await waitForOutput(first, /Socket: (.+\.sock)/);
 		expect(firstSocket[1]).toBe(join(serverDir, `${firstIdentity[1]}.sock`));
 		expect((await lstat(join(serverDir, `control-${firstIdentity[1]}.sock`))).isSocket()).toBe(true);
-		await runExperimentalClient({
+		await runClient({
 			command: "client",
 			sessionId: "demo-1",
 			connect: { transport: "unix", path: firstSocket[1]! },
@@ -132,7 +132,7 @@ describe.skipIf(process.platform === "win32")("experimental CLI server replaceme
 		expect(replacementSocket[1]).toBe(firstSocket[1]);
 		expect(replacement.child.pid).not.toBe(first.child.pid);
 		await expect(
-			runExperimentalClient({
+			runClient({
 				command: "client",
 				connect: { transport: "unix", path: replacementSocket[1]! },
 			}),
@@ -144,7 +144,7 @@ describe.skipIf(process.platform === "win32")("experimental CLI server replaceme
 			],
 		});
 		await expect(
-			runExperimentalClient({
+			runClient({
 				command: "client",
 				sessionId: "demo-1",
 				connect: { transport: "unix", path: replacementSocket[1]! },

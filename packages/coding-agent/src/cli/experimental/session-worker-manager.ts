@@ -3,65 +3,22 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
 import type { HostedHarnessAttachment, HostedHarnessHandle } from "@earendil-works/pi-server";
-import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
-import type { CoordinatorServer, CoordinatorServerEvent } from "./coordinator-client.ts";
-import { spawnInternalProcess } from "./internal-process-launcher.ts";
+import type { CoordinatorConnection, CoordinatorConnectionEvent } from "./coordinator.ts";
+import { spawnInternalProcess } from "./process.ts";
 import {
 	SESSION_WORKER_CONTROL_ADDRESS_ENV,
 	SESSION_WORKER_CONTROL_TOKEN_ENV,
-	SESSION_WORKER_COORDINATED_ENV,
 	SESSION_WORKER_PEER_ID_ENV,
 	SESSION_WORKER_SESSION_KEY_ENV,
+	type SessionWorkerEvent,
+	SessionWorkerEventSchema,
 } from "./session-worker.ts";
 
 const WORKER_STARTUP_TIMEOUT_MS = 15_000;
 const WORKER_SHUTDOWN_TIMEOUT_MS = 10_000;
 const WORKER_DISCOVERY_TIMEOUT_MS = 5_000;
 const WORKER_DEMAND_TIMEOUT_MS = 5_000;
-
-const JsonlSessionMetadataSchema = Type.Object({
-	id: Type.String({ minLength: 1 }),
-	createdAt: Type.Integer(),
-	storageVersion: Type.Integer(),
-	cwd: Type.String(),
-	path: Type.String(),
-	modifiedAt: Type.Number(),
-	parentSessionId: Type.Optional(Type.String()),
-	legacyParentSessionPath: Type.Optional(Type.String()),
-});
-
-const WorkerMessageSchema = Type.Union([
-	Type.Object({
-		type: Type.Literal("worker_ready"),
-		token: Type.String(),
-		sessionKey: Type.String(),
-		sessionId: Type.String(),
-		pid: Type.Integer({ minimum: 1 }),
-		metadata: JsonlSessionMetadataSchema,
-	}),
-	Type.Object({
-		type: Type.Literal("worker_failed"),
-		token: Type.String(),
-		sessionKey: Type.String(),
-		message: Type.String(),
-	}),
-	Type.Object({
-		type: Type.Literal("demand_applied"),
-		token: Type.String(),
-		sessionKey: Type.String(),
-		requestId: Type.String(),
-		attachmentId: Type.Union([Type.String(), Type.Null()]),
-	}),
-	Type.Object({
-		type: Type.Literal("demand_rejected"),
-		token: Type.String(),
-		sessionKey: Type.String(),
-		requestId: Type.String(),
-		message: Type.String(),
-	}),
-]);
-type WorkerMessage = Static<typeof WorkerMessageSchema>;
 
 interface WorkerRecord {
 	readonly peerId: string;
@@ -96,9 +53,12 @@ interface PendingLaunch {
 }
 
 /** Session and process bookkeeping owned by one replaceable Pi server process. */
-export class CoordinatedSessionWorkers {
+export class SessionWorkerManager {
 	readonly workerPids = new Map<string, number>();
-	readonly #coordinator: CoordinatorServer;
+	readonly #coordinator: Pick<
+		CoordinatorConnection,
+		"controlPath" | "serverConnectionId" | "wasReplaced" | "onEvent" | "send" | "broadcast"
+	>;
 	readonly #sessionDir: string;
 	readonly #workersBySession = new Map<string, WorkerRecord>();
 	readonly #workersByPeer = new Map<string, WorkerRecord>();
@@ -111,7 +71,14 @@ export class CoordinatedSessionWorkers {
 	#detached = false;
 	#shuttingDown = false;
 
-	constructor(coordinator: CoordinatorServer, sessionDir: string, onWorkerCountChanged?: (count: number) => void) {
+	constructor(
+		coordinator: Pick<
+			CoordinatorConnection,
+			"controlPath" | "serverConnectionId" | "wasReplaced" | "onEvent" | "send" | "broadcast"
+		>,
+		sessionDir: string,
+		onWorkerCountChanged?: (count: number) => void,
+	) {
 		this.#coordinator = coordinator;
 		this.#sessionDir = sessionDir;
 		this.#onWorkerCountChanged = onWorkerCountChanged;
@@ -298,7 +265,6 @@ export class CoordinatedSessionWorkers {
 					[SESSION_WORKER_CONTROL_ADDRESS_ENV]: this.#coordinator.controlPath,
 					[SESSION_WORKER_CONTROL_TOKEN_ENV]: token,
 					[SESSION_WORKER_SESSION_KEY_ENV]: Buffer.from(sessionKey).toString("base64url"),
-					[SESSION_WORKER_COORDINATED_ENV]: "1",
 					[SESSION_WORKER_PEER_ID_ENV]: peerId,
 				},
 			});
@@ -324,7 +290,7 @@ export class CoordinatedSessionWorkers {
 		return promise;
 	}
 
-	#handleCoordinatorEvent(event: CoordinatorServerEvent): void {
+	#handleCoordinatorEvent(event: CoordinatorConnectionEvent): void {
 		if (this.#detached) return;
 		if (event.type === "peer_disconnected") {
 			this.#markDiscovered(event.peerId);
@@ -341,8 +307,9 @@ export class CoordinatedSessionWorkers {
 			if (pending) this.#failPending(pending.sessionKey, new Error("Session worker disconnected during startup"));
 			return;
 		}
-		if (event.type !== "message" || !Check(WorkerMessageSchema, event.payload)) return;
-		const message: WorkerMessage = event.payload;
+		if (event.type !== "message") return;
+		if (!Check(SessionWorkerEventSchema, event.payload)) return;
+		const message: SessionWorkerEvent = event.payload;
 		if (message.type === "worker_failed") {
 			const pending = this.#pending.get(message.sessionKey);
 			if (pending?.peerId === event.from && pending.token === message.token) {
@@ -370,7 +337,7 @@ export class CoordinatedSessionWorkers {
 		this.#recordReadyWorker(event.from, message);
 	}
 
-	#recordReadyWorker(peerId: string, message: Extract<WorkerMessage, { type: "worker_ready" }>): void {
+	#recordReadyWorker(peerId: string, message: Extract<SessionWorkerEvent, { type: "worker_ready" }>): void {
 		if (
 			message.sessionKey !== message.metadata.path ||
 			message.sessionId !== message.metadata.id ||

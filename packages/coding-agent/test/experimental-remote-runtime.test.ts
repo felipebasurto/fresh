@@ -1,17 +1,13 @@
-import { chmod, lstat, mkdtemp, readdir, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import {
-	type ExperimentalServer,
-	runExperimentalClient,
-	startExperimentalCoordinatedServer,
-	startExperimentalServer,
-} from "../src/cli/experimental/runtime.ts";
+import { runClient } from "../src/cli/experimental/client.ts";
+import { type RunningServer, startServer } from "../src/cli/experimental/server.ts";
 import { configureExperimentalWorkerModel, createExperimentalSessions } from "./experimental-session-support.ts";
 
-const servers = new Set<ExperimentalServer>();
+const servers = new Set<RunningServer>();
 const clients = new Set<PiClient>();
 const directories = new Set<string>();
 let agentDir: string;
@@ -24,15 +20,15 @@ beforeEach(async () => {
 	await createExperimentalSessions(join(agentDir, "experimental", "sessions"), ["demo-1", "demo-2"]);
 });
 
-async function makeServer(): Promise<{ directory: string; runtime: ExperimentalServer }> {
+async function makeServer(): Promise<{ directory: string; runtime: RunningServer }> {
 	const directory = await mkdtemp(join("/tmp", "pes-"));
 	directories.add(directory);
-	const runtime = await startExperimentalServer({ directory });
+	const runtime = await startServer({ directory });
 	servers.add(runtime);
 	return { directory, runtime };
 }
 
-async function attachClient(runtime: ExperimentalServer, sessionId: string): Promise<PiClient> {
+async function attachClient(runtime: RunningServer, sessionId: string): Promise<PiClient> {
 	const client = await PiClient.connect({
 		serverId: runtime.serverId,
 		transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
@@ -53,30 +49,10 @@ afterEach(async () => {
 });
 
 describe("experimental durable server composition", () => {
-	test("does not change permissions on an explicit socket-path parent", async () => {
-		const directory = await mkdtemp(join("/tmp", "pep-"));
-		directories.add(directory);
-		await chmod(directory, 0o750);
-		const serverId = "00000000-0000-4000-8000-000000000001";
-		const runtime = await startExperimentalServer({
-			path: join(directory, `${serverId}.sock`),
-			serverId,
-		});
-		servers.add(runtime);
-
-		await expect(
-			runExperimentalClient({
-				command: "client",
-				connect: { transport: "unix", path: runtime.socketPath },
-			}),
-		).resolves.toMatchObject({ kind: "list" });
-		expect((await lstat(directory)).mode & 0o777).toBe(0o750);
-	});
-
 	test("resolves the configured session directory", async () => {
 		const directory = await mkdtemp(join("/tmp", "pes-"));
 		directories.add(directory);
-		const runtime = await startExperimentalServer({ directory, sessionDir: "relative/sessions" });
+		const runtime = await startServer({ directory, sessionDir: "relative/sessions" });
 		servers.add(runtime);
 
 		expect(runtime.sessionDir).toBe(resolve("relative/sessions"));
@@ -89,7 +65,7 @@ describe("experimental durable server composition", () => {
 		const serverId = "00000000-0000-4000-8000-000000000001";
 		vi.stubEnv("PI_SERVER_DIR", directory);
 		vi.stubEnv("PI_SERVER_ID", serverId);
-		const runtime = await startExperimentalCoordinatedServer();
+		const runtime = await startServer();
 		servers.add(runtime);
 
 		expect(runtime.serverId).toBe(serverId);
@@ -107,7 +83,7 @@ describe("experimental durable server composition", () => {
 		expect(entries).toContain(`${serverId}.sock`);
 		expect(entries).toContain(`control-${serverId}.sock`);
 		expect(entries).toContainEqual(expect.stringMatching(new RegExp(`^server-${serverId}-[0-9a-f]{12}\\.sock$`)));
-		await expect(runExperimentalClient({ command: "client" })).resolves.toMatchObject({
+		await expect(runClient({ command: "client" })).resolves.toMatchObject({
 			kind: "list",
 			sessions: [{ sessionId: "demo-1" }, { sessionId: "demo-2" }],
 		});
@@ -120,10 +96,7 @@ describe("experimental durable server composition", () => {
 		vi.stubEnv("PI_SERVER_DIR", directory);
 		vi.stubEnv("PI_SERVER_ID", serverId);
 
-		const results = await Promise.all([
-			runExperimentalClient({ command: "client" }),
-			runExperimentalClient({ command: "client" }),
-		]);
+		const results = await Promise.all([runClient({ command: "client" }), runClient({ command: "client" })]);
 		expect(results).toEqual([
 			{
 				kind: "list",
@@ -152,7 +125,7 @@ describe("experimental durable server composition", () => {
 		vi.stubEnv("PI_SERVER_DIR", directory);
 		vi.stubEnv("PI_SERVER_ID", serverId);
 
-		await expect(runExperimentalClient({ command: "client", sessionId: "demo-1" })).resolves.toEqual({
+		await expect(runClient({ command: "client", sessionId: "demo-1" })).resolves.toEqual({
 			kind: "attached",
 			serverId,
 			sessionId: "demo-1",
@@ -167,15 +140,15 @@ describe("experimental durable server composition", () => {
 		const firstId = "00000000-0000-4000-8000-000000000001";
 		const secondId = "00000000-0000-4000-8000-000000000002";
 		const [first, second] = await Promise.all([
-			startExperimentalCoordinatedServer({ directory, serverId: firstId }),
-			startExperimentalCoordinatedServer({ directory, serverId: secondId }),
+			startServer({ directory, serverId: firstId }),
+			startServer({ directory, serverId: secondId }),
 		]);
 		servers.add(first);
 		servers.add(second);
 
 		expect((await lstat(join(directory, `control-${firstId}.sock`))).isSocket()).toBe(true);
 		expect((await lstat(join(directory, `control-${secondId}.sock`))).isSocket()).toBe(true);
-		await expect(runExperimentalClient({ command: "client" }, { directory })).resolves.toEqual({
+		await expect(runClient({ command: "client" }, { directory })).resolves.toEqual({
 			kind: "list",
 			sessions: [
 				{ serverId: firstId, sessionId: "demo-1" },
@@ -187,7 +160,7 @@ describe("experimental durable server composition", () => {
 
 		await first.close();
 		await expect.poll(() => pathExists(first.socketPath)).toBe(false);
-		await expect(runExperimentalClient({ command: "client" }, { directory })).resolves.toEqual({
+		await expect(runClient({ command: "client" }, { directory })).resolves.toEqual({
 			kind: "list",
 			sessions: [
 				{ serverId: secondId, sessionId: "demo-1" },
@@ -199,7 +172,7 @@ describe("experimental durable server composition", () => {
 	test("discovers and lists seeded sessions without hosting either session", async () => {
 		const { directory, runtime } = await makeServer();
 
-		await expect(runExperimentalClient({ command: "client" }, { directory })).resolves.toEqual({
+		await expect(runClient({ command: "client" }, { directory })).resolves.toEqual({
 			kind: "list",
 			sessions: [
 				{ serverId: runtime.serverId, sessionId: "demo-1" },
@@ -241,21 +214,6 @@ describe("experimental durable server composition", () => {
 		expect(processExists(pid!)).toBe(false);
 	});
 
-	test("invalidates an exited worker and starts a replacement on the next attach", async () => {
-		const { runtime } = await makeServer();
-		const client = await attachClient(runtime, "demo-1");
-		const firstPid = runtime.workerPids.get("demo-1");
-		expect(firstPid).toEqual(expect.any(Number));
-
-		process.kill(firstPid!, "SIGKILL");
-		await expect.poll(() => runtime.workerPids.has("demo-1")).toBe(false);
-
-		await client.attachSession("demo-1");
-		const replacementPid = runtime.workerPids.get("demo-1");
-		expect(replacementPid).toEqual(expect.any(Number));
-		expect(replacementPid).not.toBe(firstPid);
-	});
-
 	test("starts one process per attached session and stops them during shutdown", async () => {
 		const { runtime } = await makeServer();
 		await Promise.all([attachClient(runtime, "demo-1"), attachClient(runtime, "demo-2")]);
@@ -270,10 +228,10 @@ describe("experimental durable server composition", () => {
 		for (const pid of pids) expect(processExists(pid)).toBe(false);
 	});
 
-	test("coordinated server replaces an exited worker on the next attach", async () => {
+	test("server runtime replaces an exited worker on the next attach", async () => {
 		const directory = await mkdtemp(join("/tmp", "pew-"));
 		directories.add(directory);
-		const runtime = await startExperimentalCoordinatedServer({ directory });
+		const runtime = await startServer({ directory });
 		servers.add(runtime);
 		const client = await attachClient(runtime, "demo-1");
 		const firstPid = runtime.workerPids.get("demo-1");
@@ -287,10 +245,10 @@ describe("experimental durable server composition", () => {
 		expect(replacementPid).not.toBe(firstPid);
 	});
 
-	test("normal coordinated shutdown stops detached workers", async () => {
+	test("normal server shutdown stops detached workers", async () => {
 		const directory = await mkdtemp(join("/tmp", "pes-"));
 		directories.add(directory);
-		const runtime = await startExperimentalCoordinatedServer({ directory });
+		const runtime = await startServer({ directory });
 		servers.add(runtime);
 		await attachClient(runtime, "demo-1");
 		const pid = runtime.workerPids.get("demo-1");
@@ -305,10 +263,7 @@ describe("experimental durable server composition", () => {
 	test("serializes concurrent launchers so only one server remains active", async () => {
 		const directory = await mkdtemp(join("/tmp", "pel-"));
 		directories.add(directory);
-		const runtimes = await Promise.all([
-			startExperimentalCoordinatedServer({ directory }),
-			startExperimentalCoordinatedServer({ directory }),
-		]);
+		const runtimes = await Promise.all([startServer({ directory }), startServer({ directory })]);
 		for (const runtime of runtimes) servers.add(runtime);
 
 		expect(runtimes[0].serverId).toBe(runtimes[1].serverId);
@@ -325,7 +280,7 @@ describe("experimental durable server composition", () => {
 				return closed.filter(Boolean).length;
 			})
 			.toBe(1);
-		await expect(runExperimentalClient({ command: "client" }, { directory })).resolves.toMatchObject({
+		await expect(runClient({ command: "client" }, { directory })).resolves.toMatchObject({
 			kind: "list",
 			sessions: [{ sessionId: "demo-1" }, { sessionId: "demo-2" }],
 		});
@@ -334,7 +289,7 @@ describe("experimental durable server composition", () => {
 	test("shuts down the replaced server without waiting for its clients", async () => {
 		const directory = await mkdtemp(join("/tmp", "peg-"));
 		directories.add(directory);
-		const first = await startExperimentalCoordinatedServer({ directory });
+		const first = await startServer({ directory });
 		servers.add(first);
 		const client = await PiClient.connect({
 			serverId: first.serverId,
@@ -342,10 +297,10 @@ describe("experimental durable server composition", () => {
 		});
 		await client.listSessions();
 
-		const replacement = await startExperimentalCoordinatedServer({ directory });
+		const replacement = await startServer({ directory });
 		servers.add(replacement);
 		await first.closed;
-		await expect(runExperimentalClient({ command: "client" }, { directory })).resolves.toMatchObject({
+		await expect(runClient({ command: "client" }, { directory })).resolves.toMatchObject({
 			kind: "list",
 			sessions: [{ sessionId: "demo-1" }, { sessionId: "demo-2" }],
 		});
@@ -355,13 +310,13 @@ describe("experimental durable server composition", () => {
 	test("discovers workers after replacing the server", async () => {
 		const firstDirectory = await mkdtemp(join("/tmp", "per-"));
 		directories.add(firstDirectory);
-		const first = await startExperimentalCoordinatedServer({ directory: firstDirectory });
+		const first = await startServer({ directory: firstDirectory });
 		servers.add(first);
 		await attachClient(first, "demo-1");
 		const firstWorkerPid = first.workerPids.get("demo-1");
 		expect(firstWorkerPid).toEqual(expect.any(Number));
 
-		const replacement = await startExperimentalCoordinatedServer({ directory: firstDirectory });
+		const replacement = await startServer({ directory: firstDirectory });
 		servers.add(replacement);
 		await first.closed;
 
@@ -370,7 +325,7 @@ describe("experimental durable server composition", () => {
 		await expect.poll(() => first.workerPids.size).toBe(0);
 		expect(processExists(firstWorkerPid!)).toBe(true);
 
-		await expect(runExperimentalClient({ command: "client" }, { directory: firstDirectory })).resolves.toMatchObject({
+		await expect(runClient({ command: "client" }, { directory: firstDirectory })).resolves.toMatchObject({
 			kind: "list",
 			sessions: [
 				{ serverId: first.serverId, sessionId: "demo-1" },
@@ -388,13 +343,13 @@ describe("experimental durable server composition", () => {
 		const directory = await mkdtemp(join("/tmp", "pi-orphan-worker-"));
 		directories.add(directory);
 		vi.stubEnv("__PI_SESSION_WORKER_ORPHAN_DEMAND_GRACE_MS", "50");
-		const first = await startExperimentalCoordinatedServer({ directory });
+		const first = await startServer({ directory });
 		servers.add(first);
 		await attachClient(first, "demo-1");
 		const workerPid = first.workerPids.get("demo-1");
 		expect(workerPid).toEqual(expect.any(Number));
 
-		const replacement = await startExperimentalCoordinatedServer({ directory });
+		const replacement = await startServer({ directory });
 		servers.add(replacement);
 		await first.closed;
 		expect(replacement.workerPids.get("demo-1")).toBe(workerPid);
@@ -408,19 +363,19 @@ describe("experimental durable server composition", () => {
 		const emptySessionDir = await mkdtemp(join("/tmp", "pet-sessions-"));
 		directories.add(directory);
 		directories.add(emptySessionDir);
-		const first = await startExperimentalCoordinatedServer({ directory });
+		const first = await startServer({ directory });
 		servers.add(first);
 		await attachClient(first, "demo-1");
 		const workerPid = first.workerPids.get("demo-1");
 
-		const replacement = await startExperimentalCoordinatedServer({
+		const replacement = await startServer({
 			directory,
 			sessionDir: emptySessionDir,
 		});
 		servers.add(replacement);
 		await first.closed;
 
-		await expect(runExperimentalClient({ command: "client" }, { directory })).resolves.toEqual({
+		await expect(runClient({ command: "client" }, { directory })).resolves.toEqual({
 			kind: "list",
 			sessions: [{ serverId: first.serverId, sessionId: "demo-1" }],
 		});
@@ -431,16 +386,22 @@ describe("experimental durable server composition", () => {
 	test("reports missing and ambiguous session selections", async () => {
 		const sharedDirectory = await mkdtemp(join("/tmp", "ped-"));
 		directories.add(sharedDirectory);
-		const firstShared = await startExperimentalServer({ directory: sharedDirectory });
-		const secondShared = await startExperimentalServer({ directory: sharedDirectory });
+		const firstShared = await startServer({
+			directory: sharedDirectory,
+			serverId: "00000000-0000-4000-8000-000000000001",
+		});
+		const secondShared = await startServer({
+			directory: sharedDirectory,
+			serverId: "00000000-0000-4000-8000-000000000002",
+		});
 		servers.add(firstShared);
 		servers.add(secondShared);
 
 		await expect(
-			runExperimentalClient({ command: "client", sessionId: "missing" }, { directory: sharedDirectory }),
+			runClient({ command: "client", sessionId: "missing" }, { directory: sharedDirectory }),
 		).rejects.toThrow("No discovered server contains session missing");
 		await expect(
-			runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory: sharedDirectory }),
+			runClient({ command: "client", sessionId: "demo-1" }, { directory: sharedDirectory }),
 		).rejects.toThrow("Session demo-1 is available from more than one server");
 	});
 	test("rejects a duplicate session ID within one durable repository", async () => {
@@ -451,9 +412,9 @@ describe("experimental durable server composition", () => {
 		);
 		const { directory } = await makeServer();
 
-		await expect(
-			runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory }),
-		).rejects.toMatchObject({ code: "session_ambiguous" });
+		await expect(runClient({ command: "client", sessionId: "demo-1" }, { directory })).rejects.toMatchObject({
+			code: "session_ambiguous",
+		});
 	});
 });
 

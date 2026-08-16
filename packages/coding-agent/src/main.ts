@@ -26,10 +26,11 @@ import {
 	validateAuthCommandArgs,
 } from "./cli/auth-command.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
-import { experimentalCli } from "./cli/experimental/cli.ts";
+import { cli as experimentalCli } from "./cli/experimental/cli.ts";
+import { runClient } from "./cli/experimental/client.ts";
 import type { ClientCommand } from "./cli/experimental/commands/client.ts";
 import type { ServerCommand } from "./cli/experimental/commands/server.ts";
-import { runExperimentalClient, startExperimentalForegroundServer } from "./cli/experimental/runtime.ts";
+import { startForegroundServer } from "./cli/experimental/server.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
@@ -590,7 +591,7 @@ async function waitForTermination(serverClosed: Promise<void>): Promise<void> {
 async function runExperimentalServerCommand(command: ServerCommand): Promise<void> {
 	if (command.auth !== undefined) throw new Error("Authentication is not supported by the local demo server");
 	if (command.listen !== undefined) throw new Error("The local demo server uses its server-addressed Unix socket");
-	const runtime = await startExperimentalForegroundServer({
+	const runtime = await startForegroundServer({
 		serverId: command.serverId,
 		sessionDir: command.sessionDir,
 	});
@@ -603,8 +604,8 @@ async function runExperimentalServerCommand(command: ServerCommand): Promise<voi
 	}
 }
 
-async function runExperimentalClientCommand(command: ClientCommand): Promise<void> {
-	const result = await runExperimentalClient(command);
+async function runClientCommand(command: ClientCommand): Promise<void> {
+	const result = await runClient(command);
 	if (result.kind === "attached") {
 		console.log(`${result.serverId}\t${result.sessionId}\tattached`);
 		return;
@@ -618,7 +619,7 @@ async function runExperimentalCommand(args: string[]): Promise<boolean> {
 		const result = await experimentalCli.execute(args, {
 			runPi: () => {},
 			runServer: runExperimentalServerCommand,
-			runClient: runExperimentalClientCommand,
+			runClient: runClientCommand,
 		});
 		if (!result.ok) {
 			for (const error of result.errors) console.error(chalk.red(`Error: ${error}`));

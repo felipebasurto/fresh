@@ -1,15 +1,15 @@
 import { isServerId, type ServerId } from "@earendil-works/pi-protocol";
-import type { AuthInput } from "../auth.ts";
 import { Command, stringOption, valueOption } from "../command.ts";
 import {
+	type AuthInput,
 	authTokenFileOption,
 	authTokenOption,
 	parseAuth,
 	parseLegacyOptions,
+	type TransportAddress,
 	transportOption,
 	unsupportedLegacyOptions,
 } from "../command-options.ts";
-import type { TransportAddress } from "../transport-address.ts";
 
 export interface ServerCommand {
 	readonly command: "server";

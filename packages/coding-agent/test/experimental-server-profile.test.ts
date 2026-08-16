@@ -2,7 +2,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { acquireExperimentalServerProfile } from "../src/cli/experimental/server-profile.ts";
+import { acquireServerProfile } from "../src/cli/experimental/server.ts";
 
 const directories = new Set<string>();
 const FIRST_SERVER_ID = "00000000-0000-4000-8000-000000000001";
@@ -22,9 +22,9 @@ afterEach(async () => {
 describe("experimental server profile", () => {
 	test("serializes launchers and preserves the server identity", async () => {
 		const directory = await makeDirectory();
-		const first = await acquireExperimentalServerProfile(directory);
+		const first = await acquireServerProfile(directory);
 		let secondAcquired = false;
-		const pendingSecond = acquireExperimentalServerProfile(directory).then((profile) => {
+		const pendingSecond = acquireServerProfile(directory).then((profile) => {
 			secondAcquired = true;
 			return profile;
 		});
@@ -43,8 +43,8 @@ describe("experimental server profile", () => {
 	test("does not serialize different server IDs in one directory", async () => {
 		const directory = await makeDirectory();
 		const [first, second] = await Promise.all([
-			acquireExperimentalServerProfile(directory, FIRST_SERVER_ID),
-			acquireExperimentalServerProfile(directory, SECOND_SERVER_ID),
+			acquireServerProfile(directory, FIRST_SERVER_ID),
+			acquireServerProfile(directory, SECOND_SERVER_ID),
 		]);
 		expect(first.serverId).toBe(FIRST_SERVER_ID);
 		expect(second.serverId).toBe(SECOND_SERVER_ID);
@@ -60,8 +60,8 @@ describe("experimental server profile", () => {
 		const secondDirectory = await makeDirectory();
 
 		const [first, second] = await Promise.all([
-			acquireExperimentalServerProfile(firstDirectory),
-			acquireExperimentalServerProfile(secondDirectory),
+			acquireServerProfile(firstDirectory),
+			acquireServerProfile(secondDirectory),
 		]);
 		expect(first.serverId).not.toBe(second.serverId);
 		await Promise.all([first.release(), second.release()]);
@@ -71,15 +71,11 @@ describe("experimental server profile", () => {
 		const directory = await makeDirectory();
 		await writeFile(join(directory, "default-server-id"), "invalid\n");
 
-		await expect(acquireExperimentalServerProfile(directory)).rejects.toThrow(
-			/Invalid default experimental server identity/,
-		);
+		await expect(acquireServerProfile(directory)).rejects.toThrow(/Invalid default experimental server identity/);
 	});
 
 	test("rejects an invalid explicit server ID", async () => {
 		const directory = await makeDirectory();
-		await expect(acquireExperimentalServerProfile(directory, "invalid")).rejects.toThrow(
-			"Invalid experimental server ID",
-		);
+		await expect(acquireServerProfile(directory, "invalid")).rejects.toThrow("Invalid experimental server ID");
 	});
 });

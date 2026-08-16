@@ -1,14 +1,14 @@
 import type { Args } from "../../args.ts";
-import type { AuthInput } from "../auth.ts";
 import { Command } from "../command.ts";
 import {
+	type AuthInput,
 	authTokenFileOption,
 	authTokenOption,
 	parseAuth,
 	parseLegacyOptions,
+	type TransportAddress,
 	transportOption,
 } from "../command-options.ts";
-import type { TransportAddress } from "../transport-address.ts";
 
 export interface PiCommand {
 	readonly command: "pi";

@@ -1,330 +1,556 @@
-import type { ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { chmod, unlink } from "node:fs/promises";
-import { createServer, type Server, type Socket } from "node:net";
-import { isAbsolute, join } from "node:path";
-import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
+import { createConnection, type Socket } from "node:net";
+import { isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+	AgentHarness,
+	type AgentHarness as AgentHarnessInstance,
+	type JsonlSessionMetadata,
+	JsonlSessionRepo,
+	type Session,
+} from "@earendil-works/pi-agent-core";
+import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import lockfile from "proper-lockfile";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
-import { spawnInternalProcess } from "./internal-process-launcher.ts";
-import { ensurePrivateServerDirectory, resolveExperimentalServerDirectory } from "./server-directory.ts";
-import type { SessionWorkerCommand, SessionWorkerEvent } from "./session-worker-process.ts";
+import { ModelRuntime } from "../../core/model-runtime.ts";
+import { consumeInternalProcessRole, encodeControlLine, MAX_CONTROL_LINE_BYTES } from "./process.ts";
 
-const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
-const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
-const WorkerControlInputSchema = Type.Union([
-	Type.Object({ type: Type.Literal("worker_failed"), message: Type.String() }),
-	Type.Object({ type: Type.Literal("worker_ready"), sessionId: Type.String(), pid: Type.Integer({ minimum: 1 }) }),
-	Type.Object({
-		type: Type.Literal("register_worker"),
-		protocol: Type.Literal(1),
-		token: Type.String(),
-		sessionId: Type.String(),
-		pid: Type.Integer({ minimum: 1 }),
-	}),
-]);
-type WorkerControlInput = Static<typeof WorkerControlInputSchema>;
 export const SESSION_WORKER_CONTROL_ADDRESS_ENV = "PI_SESSION_WORKER_CONTROL_ADDRESS";
 export const SESSION_WORKER_CONTROL_TOKEN_ENV = "PI_SESSION_WORKER_CONTROL_TOKEN";
 export const SESSION_WORKER_SESSION_KEY_ENV = "PI_SESSION_WORKER_SESSION_KEY_BASE64";
-export const SESSION_WORKER_COORDINATED_ENV = "PI_SESSION_WORKER_COORDINATED";
 export const SESSION_WORKER_PEER_ID_ENV = "PI_SESSION_WORKER_PEER_ID";
 
-export interface ExperimentalSessionWorker {
-	readonly sessionId: string;
-	readonly pid: number;
-	readonly terminated: Promise<Error | undefined>;
-	close(): Promise<void>;
-}
+export const SessionWorkerMetadataSchema = Type.Object({
+	id: Type.String({ minLength: 1 }),
+	createdAt: Type.Integer(),
+	storageVersion: Type.Integer(),
+	cwd: Type.String(),
+	path: Type.String(),
+	modifiedAt: Type.Number(),
+	parentSessionId: Type.Optional(Type.String()),
+	legacyParentSessionPath: Type.Optional(Type.String()),
+});
 
-export interface StartExperimentalSessionWorkerOptions {
-	readonly sessionDir: string;
-	readonly controlDirectory?: string;
-	readonly startupTimeoutMs?: number;
-	readonly shutdownTimeoutMs?: number;
-	readonly workerUrl?: URL;
-}
+export const SessionWorkerCommandSchema = Type.Union([
+	Type.Object({ type: Type.Literal("shutdown") }),
+	Type.Object({ type: Type.Literal("discover_workers") }),
+	Type.Object({
+		type: Type.Literal("session_demand"),
+		serverConnectionId: Type.String(),
+		requestId: Type.String(),
+		attachmentId: Type.Union([Type.String(), Type.Null()]),
+	}),
+]);
+export type SessionWorkerCommand = Static<typeof SessionWorkerCommandSchema>;
 
-export async function startExperimentalSessionWorker(
-	metadata: JsonlSessionMetadata,
-	options: StartExperimentalSessionWorkerOptions,
-): Promise<ExperimentalSessionWorker> {
-	const startupTimeoutMs = validateTimeout(options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS, "startupTimeoutMs");
-	const shutdownTimeoutMs = validateTimeout(
-		options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
-		"shutdownTimeoutMs",
-	);
-	if (!isAbsolute(options.sessionDir)) throw new TypeError("Session worker sessionDir must be absolute");
-	const token = randomUUID();
-	const controlId = randomUUID();
-	let controlAddress: string;
-	if (process.platform === "win32") {
-		controlAddress = `\\\\.\\pipe\\pi-worker-${controlId}`;
-	} else {
-		const controlDirectory = resolveExperimentalServerDirectory(options.controlDirectory);
-		await ensurePrivateServerDirectory(controlDirectory);
-		controlAddress = join(controlDirectory, `worker-${controlId}.sock`);
+export const SessionWorkerEventSchema = Type.Union([
+	Type.Object({
+		type: Type.Literal("worker_ready"),
+		token: Type.String(),
+		sessionKey: Type.String(),
+		sessionId: Type.String(),
+		pid: Type.Integer({ minimum: 1 }),
+		metadata: SessionWorkerMetadataSchema,
+	}),
+	Type.Object({
+		type: Type.Literal("worker_failed"),
+		token: Type.String(),
+		sessionKey: Type.String(),
+		message: Type.String(),
+	}),
+	Type.Object({
+		type: Type.Literal("demand_applied"),
+		token: Type.String(),
+		sessionKey: Type.String(),
+		requestId: Type.String(),
+		attachmentId: Type.Union([Type.String(), Type.Null()]),
+	}),
+	Type.Object({
+		type: Type.Literal("demand_rejected"),
+		token: Type.String(),
+		sessionKey: Type.String(),
+		requestId: Type.String(),
+		message: Type.String(),
+	}),
+]);
+export type SessionWorkerEvent = Static<typeof SessionWorkerEventSchema>;
+
+/** Worker-local reconciliation of server-generation demand and Harness activity. */
+export class WorkerLifecycle {
+	readonly #initialDemandGraceMs: number;
+	readonly #orphanDemandGraceMs: number;
+	readonly #onRetire: () => void;
+	readonly #demands = new Map<string, { attachmentId: string; timer?: NodeJS.Timeout }>();
+	readonly #activeOperations = new Set<string>();
+	#currentServerConnectionId: string | undefined;
+	#initialTimer: NodeJS.Timeout | undefined;
+	#demandInitialized: boolean;
+	#retirementHolds = 0;
+	#retiring = false;
+
+	constructor(options: {
+		initialServerConnectionId?: string;
+		initialDemandGraceMs: number;
+		orphanDemandGraceMs: number;
+		onRetire(): void;
+	}) {
+		this.#currentServerConnectionId = options.initialServerConnectionId;
+		this.#initialDemandGraceMs = options.initialDemandGraceMs;
+		this.#orphanDemandGraceMs = options.orphanDemandGraceMs;
+		this.#onRetire = options.onRetire;
+		this.#demandInitialized = false;
+		this.#initialTimer = setTimeout(() => {
+			this.#initialTimer = undefined;
+			this.#demandInitialized = true;
+			this.#reconcile();
+		}, this.#initialDemandGraceMs);
+		this.#initialTimer.unref();
 	}
-	const control = await createWorkerControlServer(controlAddress, token, metadata.id);
-	let child: ChildProcess;
-	try {
-		child = spawnInternalProcess("session-worker", [options.sessionDir, JSON.stringify(metadata)], {
-			entryUrl: options.workerUrl,
-			env: {
-				[SESSION_WORKER_CONTROL_ADDRESS_ENV]: controlAddress,
-				[SESSION_WORKER_CONTROL_TOKEN_ENV]: token,
-				[SESSION_WORKER_SESSION_KEY_ENV]: Buffer.from(metadata.path).toString("base64url"),
-			},
-		});
-	} catch (error) {
-		await control.close();
-		throw error;
+
+	serverConnected(serverConnectionId: string): void {
+		this.#currentServerConnectionId = serverConnectionId;
+		const demand = this.#demands.get(serverConnectionId);
+		if (demand?.timer) {
+			clearTimeout(demand.timer);
+			delete demand.timer;
+		}
 	}
 
-	try {
-		const ready = await waitForReady(child, control, metadata.id, startupTimeoutMs);
-		return new SpawnedSessionWorker(child, control, ready.sessionId, ready.pid, shutdownTimeoutMs);
-	} catch (error) {
-		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-		await waitForExit(child);
-		await control.close();
-		throw error;
+	serverDisconnected(serverConnectionId: string): void {
+		if (this.#currentServerConnectionId === serverConnectionId) this.#currentServerConnectionId = undefined;
+		const demand = this.#demands.get(serverConnectionId);
+		if (!demand || demand.timer) return;
+		demand.timer = setTimeout(() => {
+			if (this.#demands.get(serverConnectionId) !== demand) return;
+			this.#demands.delete(serverConnectionId);
+			this.#reconcile();
+		}, this.#orphanDemandGraceMs);
+		demand.timer.unref();
 	}
-}
 
-function validateTimeout(value: number, name: string): number {
-	if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_TIMER_DELAY_MS) {
-		throw new TypeError(`Session worker ${name} must be an integer between 1 and ${MAX_TIMER_DELAY_MS}`);
+	holdRetirement(): () => void {
+		this.#retirementHolds += 1;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.#retirementHolds -= 1;
+			this.#reconcile();
+		};
 	}
-	return value;
-}
 
-type WorkerControllerEvent = SessionWorkerEvent | { type: "hello"; token: string; sessionId: string; pid: number };
+	setDemand(serverConnectionId: string, attachmentId: string | null): void {
+		if (this.#retiring) throw new Error("Session worker is retiring");
+		if (serverConnectionId !== this.#currentServerConnectionId) {
+			throw new Error("Session worker received demand from a stale server generation");
+		}
+		this.#demandInitialized = true;
+		if (this.#initialTimer) {
+			clearTimeout(this.#initialTimer);
+			this.#initialTimer = undefined;
+		}
+		const previous = this.#demands.get(serverConnectionId);
+		if (previous?.timer) clearTimeout(previous.timer);
+		if (attachmentId === null) this.#demands.delete(serverConnectionId);
+		else this.#demands.set(serverConnectionId, { attachmentId });
+		this.#reconcile();
+	}
 
-interface WorkerControlServer {
-	readonly connected: Promise<Socket>;
-	readonly events: AsyncIterable<WorkerControllerEvent>;
-	send(message: SessionWorkerCommand): Promise<void>;
-	close(): Promise<void>;
-}
+	operationStarted(kind: "run" | "compaction" | "navigation", lane: string, operationId: string): void {
+		this.#activeOperations.add(`${kind}\0${lane}\0${operationId}`);
+	}
 
-async function createWorkerControlServer(
-	address: string,
-	token: string,
-	expectedSessionId: string,
-): Promise<WorkerControlServer> {
-	let accepted: Socket | undefined;
-	let resolveConnected!: (socket: Socket) => void;
-	const connected = new Promise<Socket>((resolve) => {
-		resolveConnected = resolve;
-	});
-	const messages: WorkerControllerEvent[] = [];
-	const waiters: ((message: WorkerControllerEvent) => void)[] = [];
-	const server = createServer((socket) => {
-		if (accepted) {
-			socket.destroy();
+	operationStopped(kind: "run" | "compaction" | "navigation", lane: string, operationId: string): void {
+		this.#activeOperations.delete(`${kind}\0${lane}\0${operationId}`);
+		this.#reconcile();
+	}
+
+	close(): void {
+		if (this.#initialTimer) clearTimeout(this.#initialTimer);
+		for (const demand of this.#demands.values()) {
+			if (demand.timer) clearTimeout(demand.timer);
+		}
+		this.#demands.clear();
+	}
+
+	#reconcile(): void {
+		if (
+			this.#retiring ||
+			!this.#demandInitialized ||
+			this.#retirementHolds !== 0 ||
+			this.#activeOperations.size !== 0 ||
+			this.#demands.size !== 0
+		) {
 			return;
 		}
-		accepted = socket;
-		resolveConnected(socket);
-		attachJsonLineReader(socket, (value) => {
-			if (!Check(WorkerControlInputSchema, value)) {
-				socket.destroy(new Error("Session worker sent an invalid control message"));
-				return;
-			}
-			const message: WorkerControlInput = value;
-			let event: WorkerControllerEvent;
-			if (message.type === "worker_failed") {
-				event = { type: "failed", message: message.message };
-			} else if (message.type === "worker_ready") {
-				event = { type: "ready", sessionId: message.sessionId, pid: message.pid };
-			} else {
-				event = {
-					type: "hello",
-					token: message.token,
-					sessionId: message.sessionId,
-					pid: message.pid,
-				};
-			}
-			if (event.type === "hello" && (event.token !== token || event.sessionId !== expectedSessionId)) {
-				socket.destroy(new Error("Session worker sent invalid control credentials"));
-				return;
-			}
-			const waiter = waiters.shift();
-			if (waiter) waiter(event);
-			else messages.push(event);
-		});
-	});
-	await listen(server, address);
-	if (process.platform !== "win32") await chmod(address, 0o600);
+		this.#retiring = true;
+		this.#onRetire();
+	}
+}
 
-	let closePromise: Promise<void> | undefined;
+const DEFAULT_INITIAL_DEMAND_GRACE_MS = 10_000;
+const DEFAULT_ORPHAN_DEMAND_GRACE_MS = 30_000;
+export const SESSION_WORKER_INITIAL_DEMAND_GRACE_ENV = "__PI_SESSION_WORKER_INITIAL_DEMAND_GRACE_MS";
+export const SESSION_WORKER_ORPHAN_DEMAND_GRACE_ENV = "__PI_SESSION_WORKER_ORPHAN_DEMAND_GRACE_MS";
+
+const CoordinatorInputSchema = Type.Union([
+	Type.Object({
+		type: Type.Literal("peer_registered"),
+		peerId: Type.String(),
+		serverConnectionId: Type.Optional(Type.String()),
+	}),
+	Type.Object({ type: Type.Literal("server_connected"), serverConnectionId: Type.String() }),
+	Type.Object({ type: Type.Literal("server_disconnected"), serverConnectionId: Type.String() }),
+	Type.Object({ type: Type.Literal("message"), from: Type.Literal("server"), payload: Type.Unknown() }),
+]);
+type CoordinatorInput = Static<typeof CoordinatorInputSchema>;
+
+interface WorkerControl {
+	readonly initialServerConnectionId?: string;
+	readonly messages: AsyncIterable<unknown>;
+	readonly socket: Socket;
+	send(event: SessionWorkerEvent): Promise<void>;
+}
+
+let failureControl: WorkerControl | undefined;
+
+async function connectControl(): Promise<WorkerControl> {
+	const address = process.env[SESSION_WORKER_CONTROL_ADDRESS_ENV];
+	const token = process.env[SESSION_WORKER_CONTROL_TOKEN_ENV];
+	const encodedSessionKey = process.env[SESSION_WORKER_SESSION_KEY_ENV];
+	if (!address || !token || !encodedSessionKey) throw new Error("Session worker requires a control address");
+	const peerId = process.env[SESSION_WORKER_PEER_ID_ENV];
+	if (!peerId) throw new Error("Session worker requires a peer ID");
+	const socket = createConnection(address);
+	await new Promise<void>((resolve, reject) => {
+		socket.once("connect", resolve);
+		socket.once("error", reject);
+	});
+	const messages = createJsonLineMessages(socket);
+	await writeJsonLine(socket, { type: "register_peer", protocol: 1, peerId });
+	const registered = await messages[Symbol.asyncIterator]().next();
+	if (
+		registered.done ||
+		!Check(CoordinatorInputSchema, registered.value) ||
+		registered.value.type !== "peer_registered"
+	) {
+		throw new Error("Coordinator rejected the session worker registration");
+	}
 	return {
-		connected,
-		events: {
-			[Symbol.asyncIterator]() {
-				return {
-					next: async () => {
-						const message =
-							messages.shift() ??
-							(await new Promise<(typeof messages)[number]>((resolve) => waiters.push(resolve)));
-						return { done: false as const, value: message };
-					},
-				};
-			},
-		},
-		async send(message) {
-			const socket = await connected;
-			await new Promise<void>((resolve, reject) => {
-				socket.write(`${JSON.stringify(message)}\n`, (error) => {
-					if (error) reject(error);
-					else resolve();
-				});
-			});
-		},
-		close() {
-			closePromise ??= closeWorkerControl(server, accepted, address);
-			return closePromise;
-		},
+		...(registered.value.serverConnectionId === undefined
+			? {}
+			: { initialServerConnectionId: registered.value.serverConnectionId }),
+		messages,
+		socket,
+		send: (event) => writeJsonLine(socket, { type: "send", to: "server", payload: event }),
 	};
 }
 
-async function waitForReady(
-	child: ChildProcess,
-	control: WorkerControlServer,
-	expectedSessionId: string,
-	startupTimeoutMs: number,
-): Promise<Extract<SessionWorkerEvent, { type: "ready" }>> {
-	const events = control.events[Symbol.asyncIterator]();
-	const startup = (async () => {
-		const hello = (await events.next()).value;
-		if (hello.type !== "hello" || hello.sessionId !== expectedSessionId || hello.pid !== child.pid) {
-			throw new Error("Session worker reported an invalid identity");
+async function readCommands(
+	control: WorkerControl,
+	handlers: {
+		onShutdown(): void;
+		onDiscovery(): void;
+		onDemand(command: Extract<SessionWorkerCommand, { type: "session_demand" }>): Promise<void>;
+		onServerConnected(serverConnectionId: string): void;
+		onServerDisconnected(serverConnectionId: string): void;
+	},
+): Promise<void> {
+	for await (const value of control.messages) {
+		if (!Check(CoordinatorInputSchema, value)) {
+			control.socket.destroy(new Error("Coordinator sent an invalid worker message"));
+			return;
 		}
-		const event = (await events.next()).value;
-		if (event.type === "failed") throw new Error(`Session worker failed: ${event.message}`);
-		if (event.type !== "ready" || event.sessionId !== expectedSessionId || event.pid !== child.pid) {
-			throw new Error("Session worker reported an invalid identity");
+		const message: CoordinatorInput = value;
+		if (message.type === "server_connected") {
+			handlers.onServerConnected(message.serverConnectionId);
+			continue;
 		}
-		return event;
-	})();
-	const exited = waitForExit(child).then(({ code, signal }) => {
-		throw new Error(`Session worker exited before readiness (${signal ?? code ?? "unknown"})`);
-	});
-	let timeout: NodeJS.Timeout | undefined;
-	const timedOut = new Promise<never>((_, reject) => {
-		timeout = setTimeout(
-			() => reject(new Error(`Session worker startup timed out after ${startupTimeoutMs}ms`)),
-			startupTimeoutMs,
-		);
-		timeout.unref();
-	});
-	try {
-		return await Promise.race([startup, exited, timedOut]);
-	} finally {
-		if (timeout) clearTimeout(timeout);
+		if (message.type === "server_disconnected") {
+			handlers.onServerDisconnected(message.serverConnectionId);
+			continue;
+		}
+		if (message.type !== "message" || !Check(SessionWorkerCommandSchema, message.payload)) continue;
+		const command: SessionWorkerCommand = message.payload;
+		if (command.type === "shutdown") handlers.onShutdown();
+		else if (command.type === "discover_workers") handlers.onDiscovery();
+		else await handlers.onDemand(command);
 	}
 }
 
-class SpawnedSessionWorker implements ExperimentalSessionWorker {
-	readonly terminated: Promise<Error | undefined>;
-	readonly sessionId: string;
-	readonly pid: number;
-	readonly #child: ChildProcess;
-	readonly #control: WorkerControlServer;
-	readonly #exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
-	readonly #shutdownTimeoutMs: number;
-	#closePromise?: Promise<void>;
-	#closeRequested = false;
-
-	constructor(
-		child: ChildProcess,
-		control: WorkerControlServer,
-		sessionId: string,
-		pid: number,
-		shutdownTimeoutMs: number,
-	) {
-		this.#child = child;
-		this.#control = control;
-		this.sessionId = sessionId;
-		this.pid = pid;
-		this.#shutdownTimeoutMs = shutdownTimeoutMs;
-		this.#exit = waitForExit(child);
-		this.terminated = this.#exit.then(async ({ code, signal }) => {
-			await this.#control.close();
-			return this.#closeRequested
-				? undefined
-				: new Error(`Session worker ${sessionId} exited unexpectedly (${signal ?? code ?? "unknown"})`);
-		});
-	}
-
-	close(): Promise<void> {
-		this.#closeRequested = true;
-		this.#closePromise ??= this.#close();
-		return this.#closePromise;
-	}
-
-	async #close(): Promise<void> {
-		if (this.#child.exitCode === null && this.#child.signalCode === null) {
-			await this.#control.send({ type: "shutdown" }).catch(() => this.#child.kill("SIGKILL"));
-			const timeout = setTimeout(() => this.#child.kill("SIGKILL"), this.#shutdownTimeoutMs);
-			timeout.unref();
-			try {
-				await this.#exit;
-			} finally {
-				clearTimeout(timeout);
-			}
-		}
-		await this.#control.close();
-	}
-}
-
-function attachJsonLineReader(socket: Socket, onMessage: (message: unknown) => void): void {
+function createJsonLineMessages(socket: Socket): AsyncIterable<unknown> {
+	const queued: unknown[] = [];
+	const waiters: ((value: unknown) => void)[] = [];
 	let buffered = "";
 	socket.setEncoding("utf8");
 	socket.on("data", (chunk: string) => {
 		buffered += chunk;
+		if (Buffer.byteLength(buffered) > MAX_CONTROL_LINE_BYTES) {
+			socket.destroy(new Error("Session worker control message is too large"));
+			return;
+		}
 		while (true) {
 			const newline = buffered.indexOf("\n");
 			if (newline === -1) return;
 			const line = buffered.slice(0, newline);
 			buffered = buffered.slice(newline + 1);
 			try {
-				onMessage(JSON.parse(line));
+				const value: unknown = JSON.parse(line);
+				const waiter = waiters.shift();
+				if (waiter) waiter(value);
+				else queued.push(value);
 			} catch {
-				socket.destroy(new Error("Session worker sent invalid JSON"));
+				socket.destroy(new Error("Session worker received invalid control JSON"));
 				return;
 			}
 		}
 	});
+	return {
+		[Symbol.asyncIterator]() {
+			return {
+				next: async () => {
+					const value = queued.shift() ?? (await new Promise<unknown>((resolve) => waiters.push(resolve)));
+					return { done: false as const, value };
+				},
+			};
+		},
+	};
 }
 
-function listen(server: Server, address: string): Promise<void> {
+function writeJsonLine(socket: Socket, message: unknown): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const onError = (error: Error): void => {
-			server.off("listening", onListening);
-			reject(error);
-		};
-		const onListening = (): void => {
-			server.off("error", onError);
-			resolve();
-		};
-		server.once("error", onError);
-		server.once("listening", onListening);
-		server.listen(address);
+		socket.write(encodeControlLine(message), (error) => {
+			if (error) reject(error);
+			else resolve();
+		});
 	});
 }
 
-async function closeWorkerControl(server: Server, socket: Socket | undefined, address: string): Promise<void> {
-	socket?.destroy();
-	if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
-	if (process.platform !== "win32") await unlink(address).catch(() => undefined);
+function parseMetadata(value: string | undefined): JsonlSessionMetadata {
+	if (value === undefined) throw new Error("Session worker requires session metadata");
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value);
+	} catch (error) {
+		throw new Error("Session worker received invalid session metadata", { cause: error });
+	}
+	if (!Check(SessionWorkerMetadataSchema, parsed) || !isAbsolute(parsed.cwd) || !isAbsolute(parsed.path)) {
+		throw new Error("Session worker received invalid session metadata");
+	}
+	return parsed;
 }
 
-function waitForExit(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-	if (child.exitCode !== null || child.signalCode !== null) {
-		return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+function lifecycleDelay(name: string, fallback: number): number {
+	const value = process.env[name];
+	if (value === undefined) return fallback;
+	const parsed = Number(value);
+	if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${name} must be a non-negative safe integer`);
+	return parsed;
+}
+
+async function closeResources(resources: {
+	harness?: AgentHarnessInstance;
+	session?: Session<JsonlSessionMetadata>;
+	repo: JsonlSessionRepo;
+	executionEnv: NodeExecutionEnv;
+	releaseOwnership: () => Promise<void>;
+}): Promise<void> {
+	const errors: unknown[] = [];
+	try {
+		if (resources.harness) await resources.harness.close();
+		else await resources.session?.close();
+	} catch (error) {
+		errors.push(error);
 	}
-	return new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+	try {
+		await resources.repo.close();
+	} catch (error) {
+		errors.push(error);
+	}
+	try {
+		await resources.executionEnv.cleanup();
+	} catch (error) {
+		errors.push(error);
+	}
+	try {
+		await resources.releaseOwnership();
+	} catch (error) {
+		errors.push(error);
+	}
+	if (errors.length === 1) throw errors[0];
+	if (errors.length > 1) throw new AggregateError(errors, "Session worker cleanup failed");
+}
+
+async function run(args: readonly string[]): Promise<void> {
+	const sessionDir = args[0];
+	if (!sessionDir || !isAbsolute(sessionDir)) throw new Error("Session worker requires an absolute session directory");
+	const metadata = parseMetadata(args[1]);
+	const sessionId = metadata.id;
+	const control = await connectControl();
+	const token = process.env[SESSION_WORKER_CONTROL_TOKEN_ENV]!;
+	const sessionKey = Buffer.from(process.env[SESSION_WORKER_SESSION_KEY_ENV]!, "base64url").toString();
+	failureControl = control;
+	const releaseOwnership = await lockfile.lock(metadata.path, {
+		realpath: true,
+		stale: 2_000,
+		update: 1_000,
+		retries: { retries: 320, factor: 1, minTimeout: 25, maxTimeout: 25, maxRetryTime: 8_000 },
+	});
+	const executionEnv = new NodeExecutionEnv({ cwd: metadata.cwd });
+	const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot: sessionDir });
+	let session: Session<JsonlSessionMetadata> | undefined;
+	let harness: AgentHarnessInstance | undefined;
+	try {
+		session = await repo.open(metadata);
+		const modelRuntime = await ModelRuntime.create();
+		const model = modelRuntime.getAvailableSnapshot()[0];
+		if (!model) throw new Error("Session worker could not find a configured model");
+		({ harness } = await AgentHarness.create({ session, models: modelRuntime, model, tools: [], resources: {} }));
+	} catch (error) {
+		try {
+			await closeResources({ harness, session, repo, executionEnv, releaseOwnership });
+		} catch (cleanupError) {
+			throw new AggregateError([error, cleanupError], "Session worker startup and cleanup failed");
+		}
+		throw error;
+	}
+
+	let lifecycle: WorkerLifecycle | undefined;
+	let removeLifecycleListeners: (() => void)[] = [];
+	let closing: Promise<void> | undefined;
+	const close = (): Promise<void> => {
+		if (closing) return closing;
+		lifecycle?.close();
+		for (const remove of removeLifecycleListeners) remove();
+		removeLifecycleListeners = [];
+		closing = closeResources({ harness, repo, executionEnv, releaseOwnership });
+		return closing;
+	};
+	const closeAndExit = (): void => {
+		void close().then(
+			() => process.exit(0),
+			(error: unknown) => {
+				console.error(error);
+				process.exit(1);
+			},
+		);
+	};
+
+	lifecycle = new WorkerLifecycle({
+		initialServerConnectionId: control.initialServerConnectionId,
+		initialDemandGraceMs: lifecycleDelay(SESSION_WORKER_INITIAL_DEMAND_GRACE_ENV, DEFAULT_INITIAL_DEMAND_GRACE_MS),
+		orphanDemandGraceMs: lifecycleDelay(SESSION_WORKER_ORPHAN_DEMAND_GRACE_ENV, DEFAULT_ORPHAN_DEMAND_GRACE_MS),
+		onRetire: closeAndExit,
+	});
+	removeLifecycleListeners = [
+		harness.events.on("run_start", (event) => lifecycle?.operationStarted("run", event.lane, event.runId)),
+		harness.events.on("run_resume", (event) => lifecycle?.operationStarted("run", event.lane, event.runId)),
+		harness.events.on("run_suspend", (event) => lifecycle?.operationStopped("run", event.lane, event.runId)),
+		harness.events.on("run_end", (event) => lifecycle?.operationStopped("run", event.lane, event.runId)),
+		harness.events.on("compaction_start", (event) =>
+			lifecycle?.operationStarted("compaction", event.lane, event.runId),
+		),
+		harness.events.on("compaction_suspend", (event) =>
+			lifecycle?.operationStopped("compaction", event.lane, event.runId),
+		),
+		harness.events.on("compaction_end", (event) =>
+			lifecycle?.operationStopped("compaction", event.lane, event.runId),
+		),
+		harness.events.on("navigation_start", (event) =>
+			lifecycle?.operationStarted("navigation", event.lane, event.runId),
+		),
+		harness.events.on("navigation_suspend", (event) =>
+			lifecycle?.operationStopped("navigation", event.lane, event.runId),
+		),
+		harness.events.on("navigation_end", (event) =>
+			lifecycle?.operationStopped("navigation", event.lane, event.runId),
+		),
+		harness.events.on("fault", closeAndExit),
+	];
+
+	let ready = false;
+	const announce = (): void => {
+		if (!ready) return;
+		void control
+			.send({
+				type: "worker_ready",
+				token,
+				sessionKey,
+				sessionId,
+				pid: process.pid,
+				metadata,
+			})
+			.catch(() => closeAndExit());
+	};
+	void readCommands(control, {
+		onShutdown: closeAndExit,
+		onDiscovery: announce,
+		onDemand: async (command) => {
+			const releaseRetirement = lifecycle?.holdRetirement() ?? (() => {});
+			try {
+				try {
+					lifecycle?.setDemand(command.serverConnectionId, command.attachmentId);
+				} catch (error) {
+					await control.send({
+						type: "demand_rejected",
+						token,
+						sessionKey,
+						requestId: command.requestId,
+						message: error instanceof Error ? error.message : String(error),
+					});
+					return;
+				}
+				await control.send({
+					type: "demand_applied",
+					token,
+					sessionKey,
+					requestId: command.requestId,
+					attachmentId: command.attachmentId,
+				});
+			} finally {
+				releaseRetirement();
+			}
+		},
+		onServerConnected: (serverConnectionId) => lifecycle?.serverConnected(serverConnectionId),
+		onServerDisconnected: (serverConnectionId) => lifecycle?.serverDisconnected(serverConnectionId),
+	}).catch(() => closeAndExit());
+	control.socket.once("close", closeAndExit);
+	control.socket.once("error", () => closeAndExit());
+	process.once("SIGTERM", closeAndExit);
+	process.once("SIGINT", closeAndExit);
+
+	try {
+		ready = true;
+		await control.send({ type: "worker_ready", token, sessionKey, sessionId, pid: process.pid, metadata });
+	} catch (error) {
+		try {
+			await close();
+		} catch (cleanupError) {
+			throw new AggregateError([error, cleanupError], "Session worker readiness and cleanup failed");
+		}
+		throw error;
+	}
+}
+
+export async function runSessionWorkerProcess(args: readonly string[]): Promise<void> {
+	try {
+		await run(args);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		const token = process.env[SESSION_WORKER_CONTROL_TOKEN_ENV];
+		const encodedSessionKey = process.env[SESSION_WORKER_SESSION_KEY_ENV];
+		if (token && encodedSessionKey) {
+			const sessionKey = Buffer.from(encodedSessionKey, "base64url").toString();
+			await failureControl?.send({ type: "worker_failed", token, sessionKey, message }).catch(() => {});
+		}
+		throw error;
+	}
+}
+
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	const role = consumeInternalProcessRole();
+	if (role !== "session-worker") {
+		throw new Error("Session worker entrypoint requires an internal session-worker invocation");
+	}
+	void runSessionWorkerProcess(process.argv.slice(2)).catch(() => process.exit(1));
 }

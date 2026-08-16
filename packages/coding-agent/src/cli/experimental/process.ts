@@ -1,7 +1,25 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isBunBinary } from "../../config.ts";
-import { INTERNAL_PROCESS_ENV, type InternalProcessRole } from "./internal-process.ts";
+
+export const INTERNAL_PROCESS_ENV = "__PI_INTERNAL_SPAWN";
+
+export type InternalProcessRole = "coordinator" | "server" | "session-worker";
+
+/** Read and validate an internal process role without consuming it. */
+export function getInternalProcessRole(): InternalProcessRole | undefined {
+	const role = process.env[INTERNAL_PROCESS_ENV];
+	if (role === undefined) return undefined;
+	if (role === "coordinator" || role === "server" || role === "session-worker") return role;
+	throw new Error(`Unsupported internal process role: ${role}`);
+}
+
+/** Read, validate, and remove the role so descendants do not inherit it. */
+export function consumeInternalProcessRole(): InternalProcessRole | undefined {
+	const role = getInternalProcessRole();
+	delete process.env[INTERNAL_PROCESS_ENV];
+	return role;
+}
 
 export interface InternalProcessSpawnOptions {
 	readonly entryUrl?: URL;
@@ -54,10 +72,18 @@ function defaultEntryUrl(role: InternalProcessRole, override: URL | undefined): 
 	if (override) return override;
 	const javaScript = import.meta.url.endsWith(".js");
 	if (role === "coordinator") {
-		return new URL(javaScript ? "coordinator-process-entry.js" : "coordinator-process-entry.ts", import.meta.url);
+		return new URL(javaScript ? "coordinator.js" : "coordinator.ts", import.meta.url);
 	}
 	if (role === "server") {
-		return new URL(javaScript ? "server-process-entry.js" : "server-process-entry.ts", import.meta.url);
+		return new URL(javaScript ? "server.js" : "server.ts", import.meta.url);
 	}
-	return new URL(javaScript ? "session-worker-process-entry.js" : "session-worker-process-entry.ts", import.meta.url);
+	return new URL(javaScript ? "session-worker.js" : "session-worker.ts", import.meta.url);
+}
+
+export const MAX_CONTROL_LINE_BYTES = 128 * 1024 * 1024;
+
+export function encodeControlLine(message: unknown): string {
+	const line = `${JSON.stringify(message)}\n`;
+	if (Buffer.byteLength(line) > MAX_CONTROL_LINE_BYTES) throw new Error("Internal control message is too large");
+	return line;
 }
