@@ -2,6 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
+import { createRpcClient } from "@earendil-works/pi-protocol";
 import type { HostedHarnessAttachment, HostedHarnessHandle } from "@earendil-works/pi-server";
 import { Check } from "typebox/value";
 import type { CoordinatorConnection, CoordinatorConnectionEvent } from "./coordinator.ts";
@@ -13,6 +14,10 @@ import {
 	SESSION_WORKER_SESSION_KEY_ENV,
 	type SessionWorkerEvent,
 	SessionWorkerEventSchema,
+	type SessionWorkerOperationCall,
+	SessionWorkerOperations,
+	type WorkerOperationResponse,
+	type WorkerOperationScope,
 } from "./session-worker.ts";
 
 const WORKER_STARTUP_TIMEOUT_MS = 15_000;
@@ -41,6 +46,13 @@ interface PendingDemand {
 	reject(error: Error): void;
 }
 
+interface PendingWorkerOperation {
+	readonly worker: WorkerRecord;
+	readonly scope: WorkerOperationScope;
+	resolve(result: unknown): void;
+	reject(error: Error): void;
+}
+
 interface PendingLaunch {
 	readonly sessionKey: string;
 	readonly peerId: string;
@@ -64,6 +76,7 @@ export class SessionWorkerManager {
 	readonly #workersByPeer = new Map<string, WorkerRecord>();
 	readonly #pending = new Map<string, PendingLaunch>();
 	readonly #pendingDemand = new Map<string, PendingDemand>();
+	readonly #pendingOperations = new Map<string, PendingWorkerOperation>();
 	readonly #removeListener: () => void;
 	readonly #onWorkerCountChanged: ((count: number) => void) | undefined;
 	#discoveryPeers?: Set<string>;
@@ -123,9 +136,11 @@ export class SessionWorkerManager {
 	}
 
 	#hostedHandle(worker: WorkerRecord): HostedHarnessHandle {
+		const operations = createRpcClient(SessionWorkerOperations, (call) => this.#invoke(worker, call));
 		return {
 			terminated: worker.terminated,
 			attachClient: () => this.#attachClient(worker),
+			prompt: (prompt) => operations.prompt(prompt),
 			close: () => this.#stopWorker(worker),
 		};
 	}
@@ -194,8 +209,37 @@ export class SessionWorkerManager {
 		return applied;
 	}
 
+	/** Worker operations have no wall-clock timeout: completion, disconnect, replacement, or shutdown settles them. */
+	#invoke(worker: WorkerRecord, call: SessionWorkerOperationCall): Promise<unknown> {
+		if (this.#detached || this.#shuttingDown || worker.stopping) {
+			return Promise.reject(new Error("Experimental Session worker is stopping"));
+		}
+		if (this.#workersByPeer.get(worker.peerId) !== worker || worker.attachmentId === undefined) {
+			return Promise.reject(new Error("Experimental Session worker has no active attachment"));
+		}
+		const requestId = randomUUID();
+		const scope: WorkerOperationScope = {
+			serverConnectionId: this.#coordinator.serverConnectionId,
+			attachmentId: worker.attachmentId,
+		};
+		let resolve!: (result: unknown) => void;
+		let reject!: (error: Error) => void;
+		const result = new Promise<unknown>((resolvePromise, rejectPromise) => {
+			resolve = resolvePromise;
+			reject = rejectPromise;
+		});
+		this.#pendingOperations.set(requestId, { worker, scope, resolve, reject });
+		void this.#coordinator
+			.send(worker.peerId, { type: "operation", requestId, scope, call })
+			.catch((error: unknown) =>
+				this.#rejectOperation(requestId, error instanceof Error ? error : new Error(String(error))),
+			);
+		return result;
+	}
+
 	async #stopWorker(worker: WorkerRecord): Promise<void> {
 		if (this.#detached || this.#workersByPeer.get(worker.peerId) !== worker) return;
+		this.#rejectWorkerOperations(worker, new Error("Session worker is stopping"));
 		if (!worker.stopping) {
 			worker.stopping = true;
 			worker.expectedStop = true;
@@ -250,6 +294,9 @@ export class SessionWorkerManager {
 		for (const pending of this.#pending.values()) {
 			clearTimeout(pending.timer);
 			pending.reject(new Error("Experimental server was replaced"));
+		}
+		for (const requestId of [...this.#pendingOperations.keys()]) {
+			this.#rejectOperation(requestId, new Error("Experimental server was replaced during a worker operation"));
 		}
 		this.#detachState();
 	}
@@ -308,7 +355,19 @@ export class SessionWorkerManager {
 			return;
 		}
 		if (event.type !== "message") return;
-		if (!Check(SessionWorkerEventSchema, event.payload)) return;
+		if (!Check(SessionWorkerEventSchema, event.payload)) {
+			if (
+				typeof event.payload === "object" &&
+				event.payload !== null &&
+				"type" in event.payload &&
+				event.payload.type === "operation_response"
+			) {
+				const worker = this.#workersByPeer.get(event.from);
+				if (worker)
+					this.#rejectWorkerOperations(worker, new Error("Session worker returned an invalid operation response"));
+			}
+			return;
+		}
 		const message: SessionWorkerEvent = event.payload;
 		if (message.type === "worker_failed") {
 			const pending = this.#pending.get(message.sessionKey);
@@ -334,7 +393,40 @@ export class SessionWorkerManager {
 			else pending.reject(new Error(`Session worker rejected demand: ${message.message}`));
 			return;
 		}
+		if (message.type === "operation_response") {
+			this.#handleOperationResponse(event.from, message.token, message.sessionKey, message.response);
+			return;
+		}
 		this.#recordReadyWorker(event.from, message);
+	}
+
+	#handleOperationResponse(
+		peerId: string,
+		token: string,
+		sessionKey: string,
+		response: WorkerOperationResponse,
+	): void {
+		const pending = this.#pendingOperations.get(response.requestId);
+		if (!pending) return;
+		if (
+			pending.worker.peerId !== peerId ||
+			pending.worker.token !== token ||
+			pending.worker.metadata.path !== sessionKey ||
+			response.scope.serverConnectionId !== pending.scope.serverConnectionId ||
+			response.scope.attachmentId !== pending.scope.attachmentId
+		) {
+			this.#rejectOperation(
+				response.requestId,
+				new Error("Session worker returned a mismatched operation response"),
+			);
+			return;
+		}
+		this.#pendingOperations.delete(response.requestId);
+		if (response.type === "operation_error") {
+			pending.reject(new Error(`Session worker operation failed: ${response.message}`));
+		} else {
+			pending.resolve(response.result);
+		}
 	}
 
 	#recordReadyWorker(peerId: string, message: Extract<SessionWorkerEvent, { type: "worker_ready" }>): void {
@@ -422,8 +514,22 @@ export class SessionWorkerManager {
 		pending.reject(error);
 	}
 
+	#rejectOperation(requestId: string, error: Error): void {
+		const pending = this.#pendingOperations.get(requestId);
+		if (!pending) return;
+		this.#pendingOperations.delete(requestId);
+		pending.reject(error);
+	}
+
+	#rejectWorkerOperations(worker: WorkerRecord, error: Error): void {
+		for (const [requestId, pending] of this.#pendingOperations) {
+			if (pending.worker === worker) this.#rejectOperation(requestId, error);
+		}
+	}
+
 	#removeWorker(worker: WorkerRecord, error: Error | undefined): void {
 		if (this.#workersByPeer.get(worker.peerId) !== worker) return;
+		this.#rejectWorkerOperations(worker, new Error("Session worker disconnected during an operation"));
 		for (const pending of [...this.#pendingDemand.values()]) {
 			if (pending.worker === worker) {
 				this.#rejectDemand(pending.requestId, new Error("Session worker disconnected during demand update"));
@@ -451,6 +557,9 @@ export class SessionWorkerManager {
 
 	#detachState(): void {
 		this.#removeListener();
+		for (const requestId of [...this.#pendingOperations.keys()]) {
+			this.#rejectOperation(requestId, new Error("Experimental server detached during a worker operation"));
+		}
 		for (const pending of [...this.#pendingDemand.values()]) {
 			this.#pendingDemand.delete(pending.requestId);
 			clearTimeout(pending.timer);

@@ -1,13 +1,21 @@
 import type { SessionMetadata } from "@earendil-works/pi-agent-core";
 import {
 	createRpcDispatcher,
+	type PromptArguments,
 	type SessionMetadata as ProtocolSessionMetadata,
 	ProtocolValidationError,
+	type RunResult,
 	ServiceRpc,
 	type ServiceRpcCall,
 	type ServiceRpcResultUnion,
 } from "@earendil-works/pi-protocol";
-import { ServerDrainingError, SessionAmbiguousError, SessionInUseError, SessionNotFoundError } from "./errors.ts";
+import {
+	ServerDrainingError,
+	SessionAmbiguousError,
+	SessionInUseError,
+	SessionNotAttachedError,
+	SessionNotFoundError,
+} from "./errors.ts";
 import type { HostedHarnessAttachment, HostedHarnessHandle, PiServerHost } from "./types.ts";
 
 class HarnessCleanupError extends AggregateError {}
@@ -28,6 +36,7 @@ function toProtocolSessionMetadata(metadata: SessionMetadata): ProtocolSessionMe
 interface ClientAttachment {
 	readonly client: object;
 	readonly session: HostedSession;
+	readonly prompts: Set<Promise<RunResult>>;
 	lease?: HostedHarnessAttachment;
 	releasing?: Promise<void>;
 }
@@ -63,6 +72,10 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 				attach: async (client, sessionId) => {
 					if (this.options.isClosing()) throw new ServerDrainingError();
 					return this.runForClient(client, () => this.attachClient(client, sessionId));
+				},
+				prompt: async (client, sessionId, prompt) => {
+					const admitted = await this.runForClient(client, () => this.startPrompt(client, sessionId, prompt));
+					return admitted.result;
 				},
 			},
 			(message) => new ProtocolValidationError(message),
@@ -156,7 +169,7 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 			return { sessionId };
 		}
 
-		const attachment: ClientAttachment = { client, session: hosted };
+		const attachment: ClientAttachment = { client, session: hosted, prompts: new Set() };
 		hosted.attachment = attachment;
 		try {
 			attachment.lease = hosted.harness.attachClient ? await hosted.harness.attachClient() : { release: () => {} };
@@ -172,9 +185,27 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 		return { sessionId };
 	}
 
+	private async startPrompt(
+		client: object,
+		sessionId: string,
+		prompt: PromptArguments,
+	): Promise<{ result: Promise<RunResult> }> {
+		if (this.options.isClosing() || this.disconnectedClients.has(client)) throw new ServerDrainingError();
+		const attachment = this.attachmentsByClient.get(client);
+		if (!attachment || attachment.session.id !== sessionId) throw new SessionNotAttachedError();
+		const result = attachment.session.harness.prompt(prompt);
+		attachment.prompts.add(result);
+		const remove = (): void => {
+			attachment.prompts.delete(result);
+		};
+		void result.then(remove, remove);
+		return { result };
+	}
+
 	private releaseAttachment(attachment: ClientAttachment): Promise<void> {
 		attachment.releasing ??= (async () => {
 			try {
+				await Promise.allSettled(attachment.prompts);
 				if (attachment.lease) await attachment.lease.release();
 			} finally {
 				if (attachment.session.attachment === attachment) attachment.session.attachment = undefined;

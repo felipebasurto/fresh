@@ -1,5 +1,6 @@
 import type { Session, SessionMetadata } from "@earendil-works/pi-agent-core";
 import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
+import type { PromptArguments, RunResult } from "@earendil-works/pi-protocol";
 import type { HostedHarnessHandle, PiServerHost } from "../types.ts";
 
 export class Deferred<T> {
@@ -29,8 +30,12 @@ export class TestHarness {
 	readonly terminated = this.#termination.promise;
 	attachedClients = 0;
 	closeCount = 0;
+	readonly promptCalls: PromptArguments[] = [];
 	failClose?: Error;
+	nextPromptError?: Error;
+	nextPromptResult?: RunResult;
 	private nextCloseGate?: OpenGate;
+	private nextPromptGate?: OpenGate;
 
 	constructor(session: Session) {
 		this.session = session;
@@ -46,6 +51,27 @@ export class TestHarness {
 				this.attachedClients -= 1;
 			},
 		};
+	}
+
+	async prompt(prompt: PromptArguments): Promise<RunResult> {
+		this.promptCalls.push(prompt);
+		if (this.nextPromptError) {
+			const error = this.nextPromptError;
+			this.nextPromptError = undefined;
+			throw error;
+		}
+		const gate = this.nextPromptGate;
+		if (gate) {
+			this.nextPromptGate = undefined;
+			gate.entered.resolve(undefined);
+			await gate.release.promise;
+		}
+		const result = this.nextPromptResult ?? {
+			ok: true,
+			value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+		};
+		this.nextPromptResult = undefined;
+		return result;
 	}
 
 	async close(): Promise<void> {
@@ -74,6 +100,12 @@ export class TestHarness {
 	gateNextClose(): OpenGate {
 		const gate = { entered: new Deferred<void>(), release: new Deferred<void>() };
 		this.nextCloseGate = gate;
+		return gate;
+	}
+
+	gateNextPrompt(): OpenGate {
+		const gate = { entered: new Deferred<void>(), release: new Deferred<void>() };
+		this.nextPromptGate = gate;
 		return gate;
 	}
 }

@@ -45,20 +45,33 @@ const metadata = {
 	parentSessionId: "parent-1",
 } as const satisfies SessionMetadata;
 
+const completedRunResult = {
+	ok: true,
+	value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+} as const satisfies RunResult;
+
 describe("RPC manifest", () => {
 	test("creates typed client methods from the manifest", async () => {
 		const calls: unknown[] = [];
 		const client = createRpcClient(ServiceRpc, async (call) => {
 			calls.push(call);
-			if (call.method === "list") return [metadata];
-			return { sessionId: call.args[0] };
+			switch (call.method) {
+				case "list":
+					return [metadata];
+				case "attach":
+					return { sessionId: call.args[0] };
+				case "prompt":
+					return completedRunResult;
+			}
 		});
 
 		await expect(client.list()).resolves.toEqual([metadata]);
 		await expect(client.attach("session-1")).resolves.toEqual({ sessionId: "session-1" });
+		await expect(client.prompt("session-1", ["Hello"])).resolves.toEqual(completedRunResult);
 		expect(calls).toEqual([
 			{ method: "list", args: [] },
 			{ method: "attach", args: ["session-1"] },
+			{ method: "prompt", args: ["session-1", ["Hello"]] },
 		]);
 	});
 
@@ -66,12 +79,19 @@ describe("RPC manifest", () => {
 		const dispatch = createRpcDispatcher(ServiceRpc, {
 			list: () => [metadata],
 			attach: (_context, sessionId) => ({ sessionId }),
+			prompt: () => completedRunResult,
 		});
 		await expect(dispatch({ method: "list", args: [] }, undefined)).resolves.toEqual([metadata]);
 		await expect(dispatch({ method: "attach", args: ["session-1"] }, undefined)).resolves.toEqual({
 			sessionId: "session-1",
 		});
+		await expect(dispatch({ method: "prompt", args: ["session-1", ["Hello"]] }, undefined)).resolves.toEqual(
+			completedRunResult,
+		);
 		await expect(dispatch({ method: "attach", args: [] } as never, undefined)).rejects.toThrow(/Invalid arguments/);
+		await expect(dispatch({ method: "prompt", args: ["session-1", []] } as never, undefined)).rejects.toThrow(
+			/Invalid arguments/,
+		);
 	});
 
 	test("rejects invalid results on both client and dispatcher boundaries", async () => {
@@ -81,8 +101,12 @@ describe("RPC manifest", () => {
 		const dispatch = createRpcDispatcher(ServiceRpc, {
 			list: () => [{ id: "session-1" }],
 			attach: (_context: undefined, sessionId: string) => ({ sessionId }),
+			prompt: () => completedRunResult,
 		} as never);
 		await expect(dispatch({ method: "list", args: [] }, undefined)).rejects.toThrow(/Invalid result.*list/);
+
+		const invalidPromptClient = createRpcClient(ServiceRpc, async () => ({ ok: true, value: {} }));
+		await expect(invalidPromptClient.prompt("session-1", ["Hello"])).rejects.toThrow(/Invalid result.*prompt/);
 	});
 
 	test("rejects empty manifests instead of creating unusable RPC clients", () => {
@@ -141,12 +165,22 @@ describe("protocol validation", () => {
 			serverId: "00000000-0000-4000-8000-000000000001",
 			call: { method: "attach", args: ["session-1"] },
 		};
+		const prompt: ClientMessage = {
+			type: "request",
+			id: "request-3",
+			serverId: "00000000-0000-4000-8000-000000000001",
+			call: { method: "prompt", args: ["session-1", ["Hello"]] },
+		};
 		expect(parseClientMessage(list)).toEqual(list);
 		expect(parseClientMessage(attach)).toEqual(attach);
+		expect(parseClientMessage(prompt)).toEqual(prompt);
 		expect(() => parseClientMessage({ ...attach, call: { method: "attach", args: [] } })).toThrow(
 			ProtocolValidationError,
 		);
 		expect(() => parseClientMessage({ ...attach, call: { method: "unknown", args: [] } })).toThrow(
+			ProtocolValidationError,
+		);
+		expect(() => parseClientMessage({ ...prompt, call: { method: "prompt", args: ["session-1", []] } })).toThrow(
 			ProtocolValidationError,
 		);
 	});
@@ -351,18 +385,22 @@ describe("protocol validation", () => {
 		expect(() => parseServerMessage(message)).toThrow(ProtocolValidationError);
 	});
 
-	test.each(["wrong_server", "session_not_found", "session_in_use", "server_draining", "internal_error"] as const)(
-		"accepts the %s error code",
-		(code) => {
-			const message: ServerMessage = {
-				type: "response",
-				id: "request-1",
-				ok: false,
-				error: { code, message: "safe" },
-			};
-			expect(parseServerMessage(message)).toEqual(message);
-		},
-	);
+	test.each([
+		"wrong_server",
+		"session_not_found",
+		"session_in_use",
+		"session_not_attached",
+		"server_draining",
+		"internal_error",
+	] as const)("accepts the %s error code", (code) => {
+		const message: ServerMessage = {
+			type: "response",
+			id: "request-1",
+			ok: false,
+			error: { code, message: "safe" },
+		};
+		expect(parseServerMessage(message)).toEqual(message);
+	});
 
 	test("rejects unknown messages and fields", () => {
 		expect(() => parseServerMessage({ ...serverHello, snapshot: {} })).toThrow(ProtocolValidationError);

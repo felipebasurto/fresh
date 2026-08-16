@@ -33,7 +33,7 @@ describe("PiClient service operations", () => {
 		await expect(connectClient(wrong)).rejects.toBeInstanceOf(ProtocolValidationError);
 	});
 
-	test("addresses list and attach requests to the configured server", async () => {
+	test("addresses Session operations to the configured server", async () => {
 		const server = new MemoryByteServer();
 		const client = await connectClient(server);
 		const listing = client.listSessions();
@@ -66,6 +66,71 @@ describe("PiClient service operations", () => {
 			result: { sessionId: "session-1" },
 		});
 		await expect(attaching).resolves.toEqual({ sessionId: "session-1" });
+
+		const prompting = client.promptSession("session-1", "Hello");
+		await server.waitForMessages(4);
+		expect(server.messages[3]).toMatchObject({
+			type: "request",
+			serverId: "00000000-0000-4000-8000-000000000001",
+			call: { method: "prompt", args: ["session-1", ["Hello"]] },
+		});
+		server.send({
+			type: "response",
+			id: "request-3",
+			ok: true,
+			result: { ok: true, value: { kind: "completed", runId: "run-1", leafId: "leaf-1" } },
+		});
+		await expect(prompting).resolves.toEqual({
+			ok: true,
+			value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+		});
+		await client.dispose();
+	});
+
+	test("serializes every supported prompt overload as one argument tuple", async () => {
+		const server = new MemoryByteServer();
+		const client = await connectClient(server);
+		const calls = [
+			client.promptSession("session-1", "text"),
+			client.promptSession("session-1", "image", [{ type: "image", data: "aW1n", mimeType: "image/png" }]),
+			client.promptSession("session-1", { role: "user", content: "message", timestamp: 1 }),
+			client.promptSession("session-1", [
+				{ role: "user", content: "first", timestamp: 1 },
+				{ role: "user", content: "second", timestamp: 2 },
+			]),
+		];
+		await server.waitForMessages(5);
+		expect(
+			server.messages.slice(1).map((message) => (message.type === "request" ? message.call : undefined)),
+		).toEqual([
+			{ method: "prompt", args: ["session-1", ["text"]] },
+			{
+				method: "prompt",
+				args: ["session-1", ["image", [{ type: "image", data: "aW1n", mimeType: "image/png" }]]],
+			},
+			{ method: "prompt", args: ["session-1", [{ role: "user", content: "message", timestamp: 1 }]] },
+			{
+				method: "prompt",
+				args: [
+					"session-1",
+					[
+						[
+							{ role: "user", content: "first", timestamp: 1 },
+							{ role: "user", content: "second", timestamp: 2 },
+						],
+					],
+				],
+			},
+		]);
+		for (let index = 0; index < calls.length; index++) {
+			server.send({
+				type: "response",
+				id: `request-${index + 1}`,
+				ok: true,
+				result: { ok: false, error: { _tag: "Closed", message: "closed" } },
+			});
+		}
+		await expect(Promise.all(calls)).resolves.toHaveLength(4);
 		await client.dispose();
 	});
 
@@ -196,8 +261,9 @@ describe("PiClient connection lifecycle", () => {
 		const states: string[] = [];
 		client.onConnectionStateChange(({ state }) => states.push(state));
 		await client.connect();
-		const pending = client.listSessions();
+		const pending = client.promptSession("session-1", "Hello");
 		await first.waitForMessages(2);
+		expect(first.messages[1]).toMatchObject({ call: { method: "prompt" } });
 		first.disconnect();
 
 		await expect(pending).rejects.toBeInstanceOf(PiDisconnectedError);
@@ -206,6 +272,7 @@ describe("PiClient connection lifecycle", () => {
 		});
 		expect(connection).toBe(2);
 		expect(client.connected).toBe(true);
+		expect(second.messages).toHaveLength(1);
 		expect(states).toEqual(["connecting", "connected", "disconnected", "connecting", "connected"]);
 		await client.dispose();
 	});

@@ -202,6 +202,17 @@ describe("experimental durable server composition", () => {
 		await expect(competing.attachSession("demo-1")).rejects.toMatchObject({ code: "session_in_use" });
 	});
 
+	test("prompts the worker-owned Harness through the server runtime", async () => {
+		const { runtime } = await makeServer();
+		const client = await attachClient(runtime, "demo-1");
+
+		await expect(client.promptSession("demo-1", [])).resolves.toMatchObject({
+			ok: false,
+			error: { _tag: "InvalidMessage", lane: "main" },
+		});
+		expect(runtime.workerPids.get("demo-1")).toEqual(expect.any(Number));
+	});
+
 	test("stops an idle Session worker after its client disconnects", async () => {
 		const { runtime } = await makeServer();
 		const client = await attachClient(runtime, "demo-1");

@@ -55,7 +55,7 @@ afterEach(async () => {
 	servers.clear();
 });
 
-describe("list and attach protocol", () => {
+describe("Session protocol", () => {
 	test("handshake identifies the logical server without listing sessions", async () => {
 		const host = new TestServerHost();
 		await host.seed();
@@ -97,7 +97,13 @@ describe("list and attach protocol", () => {
 			sessions: { list: async () => [metadata] },
 			createHarness: async (candidate) => {
 				received = candidate;
-				return { close: async () => {} };
+				return {
+					prompt: async () => ({
+						ok: true,
+						value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+					}),
+					close: async () => {},
+				};
 			},
 		};
 		const server = new PiServer(host, {
@@ -167,6 +173,132 @@ describe("list and attach protocol", () => {
 				args: ["session-1"],
 			}),
 		).resolves.toMatchObject({ ok: true, result: { sessionId: "session-1" } });
+	});
+
+	test("requires the requesting client to hold the targeted Session attachment", async () => {
+		const host = new TestServerHost();
+		await Promise.all([host.seed("session-1"), host.seed("session-2")]);
+		const server = createServer(host);
+		const attached = connect(server);
+		const unattached = connect(server);
+		await Promise.all([attached.hello(), unattached.hello()]);
+
+		await expect(
+			unattached.request("00000000-0000-4000-8000-000000000001", {
+				method: "prompt",
+				args: ["session-1", ["Hello"]],
+			}),
+		).resolves.toMatchObject({ ok: false, error: { code: "session_not_attached" } });
+		await attached.request("00000000-0000-4000-8000-000000000001", {
+			method: "attach",
+			args: ["session-1"],
+		});
+		await expect(
+			attached.request("00000000-0000-4000-8000-000000000001", {
+				method: "prompt",
+				args: ["session-2", ["Hello"]],
+			}),
+		).resolves.toMatchObject({ ok: false, error: { code: "session_not_attached" } });
+
+		await expect(
+			attached.request("00000000-0000-4000-8000-000000000001", {
+				method: "prompt",
+				args: ["session-1", ["Hello"]],
+			}),
+		).resolves.toEqual({
+			type: "response",
+			id: "request-3",
+			ok: true,
+			result: { ok: true, value: { kind: "completed", runId: "run-1", leafId: "leaf-1" } },
+		});
+		expect(host.latestHarness("session-1").promptCalls).toEqual([["Hello"]]);
+	});
+
+	test("preserves structural Harness failures and bounds adapter defects", async () => {
+		const host = new TestServerHost();
+		await host.seed("session-1");
+		const client = connect(createServer(host));
+		await client.hello();
+		await client.request("00000000-0000-4000-8000-000000000001", {
+			method: "attach",
+			args: ["session-1"],
+		});
+		const harness = host.latestHarness("session-1");
+		harness.nextPromptResult = { ok: false, error: { _tag: "Closed", message: "Harness closed" } };
+		await expect(
+			client.request("00000000-0000-4000-8000-000000000001", {
+				method: "prompt",
+				args: ["session-1", ["Hello"]],
+			}),
+		).resolves.toMatchObject({
+			ok: true,
+			result: { ok: false, error: { _tag: "Closed", message: "Harness closed" } },
+		});
+
+		harness.nextPromptError = new Error("private adapter detail");
+		await expect(
+			client.request("00000000-0000-4000-8000-000000000001", {
+				method: "prompt",
+				args: ["session-1", ["Hello"]],
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			error: { code: "internal_error", message: "Internal server error" },
+		});
+	});
+
+	test("admits concurrent prompts so the Harness owns lane-busy semantics", async () => {
+		const host = new TestServerHost();
+		await host.seed("session-1");
+		const client = connect(createServer(host));
+		await client.hello();
+		await client.request("00000000-0000-4000-8000-000000000001", {
+			method: "attach",
+			args: ["session-1"],
+		});
+		const harness = host.latestHarness("session-1");
+		const gate = harness.gateNextPrompt();
+		const first = client.request("00000000-0000-4000-8000-000000000001", {
+			method: "prompt",
+			args: ["session-1", ["first"]],
+		});
+		await gate.entered.promise;
+		const second = client.request("00000000-0000-4000-8000-000000000001", {
+			method: "prompt",
+			args: ["session-1", ["second"]],
+		});
+
+		await expect(second).resolves.toMatchObject({ ok: true, result: { ok: true } });
+		expect(harness.promptCalls).toEqual([["first"], ["second"]]);
+		gate.release.resolve(undefined);
+		await expect(first).resolves.toMatchObject({ ok: true, result: { ok: true } });
+	});
+
+	test("keeps attachment demand until an accepted prompt settles after disconnect", async () => {
+		const host = new TestServerHost();
+		await host.seed("session-1");
+		const server = createServer(host);
+		const client = connect(server);
+		await client.hello();
+		await client.request("00000000-0000-4000-8000-000000000001", {
+			method: "attach",
+			args: ["session-1"],
+		});
+		const harness = host.latestHarness("session-1");
+		const gate = harness.gateNextPrompt();
+		const prompting = client.request("00000000-0000-4000-8000-000000000001", {
+			method: "prompt",
+			args: ["session-1", ["Hello"]],
+		});
+		const disconnectedPrompt = expect(prompting).rejects.toThrow(/closed/i);
+		await gate.entered.promise;
+
+		await client.close();
+		expect(harness.attachedClients).toBe(1);
+		gate.release.resolve(undefined);
+		await disconnectedPrompt;
+		await expect.poll(() => harness.attachedClients).toBe(0);
+		expect(harness.promptCalls).toEqual([["Hello"]]);
 	});
 
 	test("rejects requests addressed to another server before repository access", async () => {

@@ -1,4 +1,5 @@
-import type { AgentHarness, SessionMetadata } from "@earendil-works/pi-agent-core";
+import type { SessionMetadata } from "@earendil-works/pi-agent-core";
+import type { PromptArguments, RunResult } from "@earendil-works/pi-protocol";
 import type { PiServerListener } from "./listener.ts";
 
 export interface PiServerOptions {
@@ -18,15 +19,18 @@ export interface HostedHarnessAttachment {
 	release(): MaybePromise<void>;
 }
 
-/** A handle that can optionally report when its hosted Harness can no longer serve its Session. */
-export interface HostedHarnessHandle extends Pick<AgentHarness, "close"> {
+/** A process-safe handle for the hosted Harness operations exposed by this server. */
+export interface HostedHarnessHandle {
 	/** Acquire the Session for one client connection. Sessions permit only one attachment at a time. */
 	attachClient?(): MaybePromise<HostedHarnessAttachment>;
+	/** Execute one serializable prompt against the hosted Harness. */
+	prompt(prompt: PromptArguments): Promise<RunResult>;
 	/** Resolves with an error for unexpected termination, or undefined after an expected close. */
 	readonly terminated?: Promise<Error | undefined>;
+	close(): Promise<void>;
 }
 
-/** Host capabilities used directly by the list and attach control-plane operations. */
+/** Host capabilities used directly by Session RPC operations. */
 export interface PiServerHost<TMetadata extends SessionMetadata = SessionMetadata> {
 	readonly sessions: { list(): Promise<TMetadata[]> };
 	createHarness(metadata: TMetadata): Promise<HostedHarnessHandle>;

@@ -1,5 +1,6 @@
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
+import { PromptArgumentsSchema, RunResultSchema } from "./harness.ts";
 import {
 	createRpcCallSchema,
 	createRpcResultSchema,
@@ -50,6 +51,10 @@ export const ServiceRpc = defineRpc({
 		args: Type.Tuple([SessionIdSchema]),
 		result: StrictObject({ sessionId: SessionIdSchema }),
 	},
+	prompt: {
+		args: Type.Tuple([SessionIdSchema, PromptArgumentsSchema]),
+		result: RunResultSchema,
+	},
 });
 export type ServiceRpcManifest = typeof ServiceRpc;
 export type ServiceRpcMethod = RpcMethodName<ServiceRpcManifest>;
@@ -71,6 +76,7 @@ export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("session_not_found"),
 	Type.Literal("session_ambiguous"),
 	Type.Literal("session_in_use"),
+	Type.Literal("session_not_attached"),
 	Type.Literal("server_draining"),
 	Type.Literal("invalid_request"),
 	Type.Literal("internal_error"),

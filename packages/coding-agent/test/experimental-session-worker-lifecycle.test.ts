@@ -72,6 +72,28 @@ describe("Session worker lifecycle", () => {
 		lifecycle.close();
 	});
 
+	test("holds retirement only for requests from the active attachment", () => {
+		vi.useFakeTimers();
+		const { lifecycle, retire } = createLifecycle();
+		lifecycle.setDemand(GENERATION, "attachment-1");
+		const release = lifecycle.beginRequest(GENERATION, "attachment-1");
+		lifecycle.setDemand(GENERATION, null);
+		expect(retire).not.toHaveBeenCalled();
+		release();
+		expect(retire).toHaveBeenCalledOnce();
+		expect(() => lifecycle.beginRequest(GENERATION, "attachment-1")).toThrow(/retiring/);
+		lifecycle.close();
+	});
+
+	test("rejects requests from stale generations and attachments", () => {
+		vi.useFakeTimers();
+		const { lifecycle } = createLifecycle();
+		lifecycle.setDemand(GENERATION, "attachment-1");
+		expect(() => lifecycle.beginRequest("stale", "attachment-1")).toThrow(/stale server generation/);
+		expect(() => lifecycle.beginRequest(GENERATION, "wrong-attachment")).toThrow(/active attachment/);
+		lifecycle.close();
+	});
+
 	test("retains disconnected-generation demand for the orphan grace", async () => {
 		vi.useFakeTimers();
 		const { lifecycle, retire } = createLifecycle();

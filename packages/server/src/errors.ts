@@ -2,7 +2,12 @@ import type { ProtocolErrorCode } from "@earendil-works/pi-protocol";
 
 type PiServerOperationErrorCode = Extract<
 	ProtocolErrorCode,
-	"wrong_server" | "session_not_found" | "session_ambiguous" | "session_in_use" | "server_draining"
+	| "wrong_server"
+	| "session_not_found"
+	| "session_ambiguous"
+	| "session_in_use"
+	| "session_not_attached"
+	| "server_draining"
 >;
 
 export const INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error";
@@ -43,6 +48,13 @@ export class SessionInUseError extends PiServerError {
 	constructor() {
 		super("session_in_use", "Session is attached to another client");
 		this.name = "SessionInUseError";
+	}
+}
+
+export class SessionNotAttachedError extends PiServerError {
+	constructor() {
+		super("session_not_attached", "Session is not attached to this client");
+		this.name = "SessionNotAttachedError";
 	}
 }
 

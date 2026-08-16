@@ -9,11 +9,25 @@ import {
 	type Session,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import {
+	createRpcCallSchema,
+	createRpcDispatcher,
+	createRpcResultSchema,
+	defineRpc,
+	PromptArgumentsSchema,
+	type RpcCall,
+	type RpcResultUnion,
+	RunResultSchema,
+} from "@earendil-works/pi-protocol";
 import lockfile from "proper-lockfile";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import { ModelRuntime } from "../../core/model-runtime.ts";
+import { toHarnessPromptArguments, toWireRunResult } from "./harness-wire-adapter.ts";
 import { consumeInternalProcessRole, encodeControlLine, MAX_CONTROL_LINE_BYTES } from "./process.ts";
+
+const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
+	Type.Object(properties, { additionalProperties: false });
 
 export const SESSION_WORKER_CONTROL_ADDRESS_ENV = "PI_SESSION_WORKER_CONTROL_ADDRESS";
 export const SESSION_WORKER_CONTROL_TOKEN_ENV = "PI_SESSION_WORKER_CONTROL_TOKEN";
@@ -31,6 +45,52 @@ export const SessionWorkerMetadataSchema = Type.Object({
 	legacyParentSessionPath: Type.Optional(Type.String()),
 });
 
+export const SessionWorkerOperations = defineRpc({
+	prompt: {
+		args: Type.Tuple([PromptArgumentsSchema]),
+		result: RunResultSchema,
+	},
+});
+export type SessionWorkerOperationCall = RpcCall<typeof SessionWorkerOperations>;
+type SessionWorkerOperationResult = RpcResultUnion<typeof SessionWorkerOperations>;
+
+const SessionWorkerOperationCallSchema = Type.Unsafe<SessionWorkerOperationCall>(
+	createRpcCallSchema(SessionWorkerOperations),
+);
+const SessionWorkerOperationResultSchema = Type.Unsafe<SessionWorkerOperationResult>(
+	createRpcResultSchema(SessionWorkerOperations),
+);
+
+export const WorkerOperationScopeSchema = StrictObject({
+	serverConnectionId: Type.String(),
+	attachmentId: Type.String(),
+});
+export type WorkerOperationScope = Static<typeof WorkerOperationScopeSchema>;
+
+export const WorkerOperationRequestSchema = StrictObject({
+	type: Type.Literal("operation"),
+	requestId: Type.String({ minLength: 1 }),
+	scope: WorkerOperationScopeSchema,
+	call: SessionWorkerOperationCallSchema,
+});
+export type WorkerOperationRequest = Static<typeof WorkerOperationRequestSchema>;
+
+export const WorkerOperationResponseSchema = Type.Union([
+	StrictObject({
+		type: Type.Literal("operation_result"),
+		requestId: Type.String({ minLength: 1 }),
+		scope: WorkerOperationScopeSchema,
+		result: SessionWorkerOperationResultSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("operation_error"),
+		requestId: Type.String({ minLength: 1 }),
+		scope: WorkerOperationScopeSchema,
+		message: Type.String(),
+	}),
+]);
+export type WorkerOperationResponse = Static<typeof WorkerOperationResponseSchema>;
+
 export const SessionWorkerCommandSchema = Type.Union([
 	Type.Object({ type: Type.Literal("shutdown") }),
 	Type.Object({ type: Type.Literal("discover_workers") }),
@@ -40,6 +100,7 @@ export const SessionWorkerCommandSchema = Type.Union([
 		requestId: Type.String(),
 		attachmentId: Type.Union([Type.String(), Type.Null()]),
 	}),
+	WorkerOperationRequestSchema,
 ]);
 export type SessionWorkerCommand = Static<typeof SessionWorkerCommandSchema>;
 
@@ -71,6 +132,12 @@ export const SessionWorkerEventSchema = Type.Union([
 		sessionKey: Type.String(),
 		requestId: Type.String(),
 		message: Type.String(),
+	}),
+	Type.Object({
+		type: Type.Literal("operation_response"),
+		token: Type.String(),
+		sessionKey: Type.String(),
+		response: WorkerOperationResponseSchema,
 	}),
 ]);
 export type SessionWorkerEvent = Static<typeof SessionWorkerEventSchema>;
@@ -126,6 +193,18 @@ export class WorkerLifecycle {
 			this.#reconcile();
 		}, this.#orphanDemandGraceMs);
 		demand.timer.unref();
+	}
+
+	beginRequest(serverConnectionId: string, attachmentId: string): () => void {
+		if (this.#retiring) throw new Error("Session worker is retiring");
+		if (serverConnectionId !== this.#currentServerConnectionId) {
+			throw new Error("Session worker received a request from a stale server generation");
+		}
+		const demand = this.#demands.get(serverConnectionId);
+		if (!demand || demand.timer || demand.attachmentId !== attachmentId) {
+			throw new Error("Session worker request does not match the active attachment");
+		}
+		return this.holdRetirement();
 	}
 
 	holdRetirement(): () => void {
@@ -252,6 +331,7 @@ async function readCommands(
 		onShutdown(): void;
 		onDiscovery(): void;
 		onDemand(command: Extract<SessionWorkerCommand, { type: "session_demand" }>): Promise<void>;
+		onOperation(command: WorkerOperationRequest): void;
 		onServerConnected(serverConnectionId: string): void;
 		onServerDisconnected(serverConnectionId: string): void;
 	},
@@ -274,7 +354,8 @@ async function readCommands(
 		const command: SessionWorkerCommand = message.payload;
 		if (command.type === "shutdown") handlers.onShutdown();
 		else if (command.type === "discover_workers") handlers.onDiscovery();
-		else await handlers.onDemand(command);
+		else if (command.type === "session_demand") await handlers.onDemand(command);
+		else handlers.onOperation(command);
 	}
 }
 
@@ -468,6 +549,42 @@ async function run(args: readonly string[]): Promise<void> {
 		harness.events.on("fault", closeAndExit),
 	];
 
+	const dispatchWorkerOperation = createRpcDispatcher(SessionWorkerOperations, {
+		prompt: async (_context, prompt) => {
+			const args = toHarnessPromptArguments(prompt);
+			const result =
+				typeof args[0] === "string" ? await harness.prompt(args[0], args[1]) : await harness.prompt(args[0]);
+			return toWireRunResult(result);
+		},
+	});
+	const handleOperation = async (request: WorkerOperationRequest): Promise<void> => {
+		let releaseRequest = (): void => {};
+		try {
+			releaseRequest = lifecycle!.beginRequest(request.scope.serverConnectionId, request.scope.attachmentId);
+			const result = await dispatchWorkerOperation(request.call, undefined);
+			await control.send({
+				type: "operation_response",
+				token,
+				sessionKey,
+				response: { type: "operation_result", requestId: request.requestId, scope: request.scope, result },
+			});
+		} catch (error) {
+			await control.send({
+				type: "operation_response",
+				token,
+				sessionKey,
+				response: {
+					type: "operation_error",
+					requestId: request.requestId,
+					scope: request.scope,
+					message: error instanceof Error ? error.message : String(error),
+				},
+			});
+		} finally {
+			releaseRequest();
+		}
+	};
+
 	let ready = false;
 	const announce = (): void => {
 		if (!ready) return;
@@ -510,6 +627,9 @@ async function run(args: readonly string[]): Promise<void> {
 			} finally {
 				releaseRetirement();
 			}
+		},
+		onOperation: (request) => {
+			void handleOperation(request).catch(() => closeAndExit());
 		},
 		onServerConnected: (serverConnectionId) => lifecycle?.serverConnected(serverConnectionId),
 		onServerDisconnected: (serverConnectionId) => lifecycle?.serverDisconnected(serverConnectionId),

@@ -2,6 +2,9 @@ import {
 	createRpcClient,
 	encodeClientMessage,
 	isServerId,
+	type PromptArguments,
+	type PromptImage,
+	type PromptMessage,
 	ProtocolValidationError,
 	type ResponseEnvelope,
 	type ServerHello,
@@ -106,6 +109,21 @@ export class PiClient {
 
 	attachSession(sessionId: string): Promise<ServiceRpcResult<"attach">> {
 		return this.#rpc.attach(sessionId);
+	}
+
+	promptSession(sessionId: string, text: string, images?: PromptImage[]): Promise<ServiceRpcResult<"prompt">>;
+	promptSession(sessionId: string, message: PromptMessage | PromptMessage[]): Promise<ServiceRpcResult<"prompt">>;
+	promptSession(
+		sessionId: string,
+		message: string | PromptMessage | PromptMessage[],
+		images?: PromptImage[],
+	): Promise<ServiceRpcResult<"prompt">> {
+		if (typeof message === "string") {
+			const prompt: PromptArguments = images === undefined ? [message] : [message, images];
+			return this.#rpc.prompt(sessionId, prompt);
+		}
+		if (Array.isArray(message)) return this.#rpc.prompt(sessionId, [message]);
+		return this.#rpc.prompt(sessionId, [message]);
 	}
 
 	#request(call: ServiceRpcCall): Promise<unknown> {
