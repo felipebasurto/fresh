@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import {
 	AgentHarness,
 	type AgentHarness as AgentHarnessInstance,
+	createBashTool,
+	createReadTool,
+	createWriteTool,
 	type JsonlSessionMetadata,
 	JsonlSessionRepo,
 	type Session,
@@ -461,6 +464,7 @@ async function closeResources(resources: {
 export type CreateSessionWorkerHarness = (
 	session: Session<JsonlSessionMetadata>,
 	options: SessionWorkerOptions,
+	executionEnv: NodeExecutionEnv,
 ) => Promise<AgentHarnessInstance>;
 
 async function run(options: SessionWorkerOptions, createHarness: CreateSessionWorkerHarness): Promise<void> {
@@ -482,7 +486,7 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 	let harness: AgentHarnessInstance | undefined;
 	try {
 		session = await repo.open(metadata);
-		harness = await createHarness(session, options);
+		harness = await createHarness(session, options, executionEnv);
 	} catch (error) {
 		try {
 			await closeResources({ harness, session, repo, executionEnv, releaseOwnership });
@@ -685,6 +689,7 @@ export async function runSessionWorkerWithHarness(
 async function createCodingAgentHarness(
 	session: Session<JsonlSessionMetadata>,
 	options: SessionWorkerOptions,
+	executionEnv: NodeExecutionEnv,
 ): Promise<AgentHarnessInstance> {
 	const modelRuntime = await ModelRuntime.create();
 	let resolved: Awaited<ReturnType<typeof findInitialModel>> | ReturnType<typeof resolveCliModel>;
@@ -707,17 +712,28 @@ async function createCodingAgentHarness(
 		if (resolved.error) throw new Error(`Session worker could not resolve model: ${resolved.error}`);
 	}
 	if (!resolved.model) throw new Error("Session worker could not resolve a model");
+	const tools = [createReadTool(), createWriteTool(), createBashTool()];
+	const activeToolNames = tools.map((tool) => tool.name);
 	const harness = (
 		await AgentHarness.create({
 			session,
 			models: modelRuntime,
 			model: resolved.model,
 			thinkingLevel: resolved.thinkingLevel,
-			tools: [],
+			tools,
+			activeToolNames,
+			toolContext: { env: executionEnv },
 			resources: {},
 		})
 	).harness;
 	try {
+		const currentActiveToolNames = await harness.getActiveTools();
+		if (
+			currentActiveToolNames.length !== activeToolNames.length ||
+			currentActiveToolNames.some((name, index) => name !== activeToolNames[index])
+		) {
+			await harness.setActiveTools(activeToolNames);
+		}
 		if (options.model !== undefined) {
 			const currentModel = await harness.getModel();
 			if (

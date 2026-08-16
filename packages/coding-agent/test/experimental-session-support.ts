@@ -37,6 +37,7 @@ export async function readExperimentalSessionState(
 ): Promise<{
 	branch: Entry[];
 	model: { provider: string; modelId: string } | undefined;
+	activeTools: string[];
 }> {
 	const fileSystem = new NodeExecutionEnv({ cwd: process.cwd() });
 	const repo = new JsonlSessionRepo({ fileSystem, sessionsRoot });
@@ -49,7 +50,7 @@ export async function readExperimentalSessionState(
 			session.findEntriesOnBranch({ order: "oldestFirst" }),
 			session.getRegister("lane.config", "main"),
 		]);
-		return { branch, model: configuration?.value.model };
+		return { branch, model: configuration?.value.model, activeTools: configuration?.value.activeToolNames ?? [] };
 	} finally {
 		await session?.close();
 		await repo.close();

@@ -21,6 +21,10 @@ export interface RunClientOptions {
 /** Discover servers, then list Sessions or attach to one selected Session. */
 export async function runClient(command: ClientCommand, options: RunClientOptions = {}): Promise<ClientResult> {
 	if (command.auth !== undefined) throw new Error("Authentication is not supported by the experimental local server");
+	// TODO: Create a Session for one-shot prompts once the client protocol supports session creation.
+	if (command.prompt !== undefined && command.sessionId === undefined) {
+		throw new Error("Client prompt requires a session ID");
+	}
 	if (command.provider !== undefined && command.model === undefined) {
 		throw new Error("Server model provider requires a model");
 	}

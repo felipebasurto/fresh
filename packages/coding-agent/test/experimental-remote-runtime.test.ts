@@ -119,6 +119,7 @@ describe("experimental durable server composition", () => {
 		await expect.poll(() => runtime.workerPids.has("demo-1")).toBe(false);
 		const state = await readExperimentalSessionState(runtime.sessionDir, "demo-1");
 		expect(state.model).toEqual({ provider: "anthropic", modelId: "claude-opus-4-6" });
+		expect(state.activeTools).toEqual(["read", "write", "bash"]);
 	});
 
 	test("applies an explicit model when opening an existing Session", async () => {
@@ -288,6 +289,14 @@ describe("experimental durable server composition", () => {
 		});
 		clients.add(competing);
 		await expect(competing.attachSession("demo-1")).rejects.toMatchObject({ code: "session_in_use" });
+	});
+
+	test("rejects a one-shot prompt without a session selection", async () => {
+		const { directory } = await makeServer();
+
+		await expect(runClient({ command: "client", prompt: "question" }, { directory })).rejects.toThrow(
+			"Client prompt requires a session ID",
+		);
 	});
 
 	test("runs a one-shot prompt through the client command", async ({ onTestFinished }) => {
