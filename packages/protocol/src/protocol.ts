@@ -1,4 +1,3 @@
-import type { SessionMetadata as AgentSessionMetadata } from "@earendil-works/pi-agent-core";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import {
@@ -30,18 +29,16 @@ export function isServerId(value: unknown): value is ServerId {
 	return Check(ServerIdSchema, value);
 }
 
-/** The durable metadata returned directly by SessionRepo.list(). */
-export type SessionMetadata = AgentSessionMetadata;
-export const SessionMetadataSchema = Type.Unsafe<SessionMetadata>(
-	StrictObject({
-		id: SessionIdSchema,
-		createdAt: TimestampSchema,
-		storageVersion: Type.Integer({ minimum: 1 }),
-		cwd: Type.Optional(Type.String({ minLength: 1 })),
-		parentSessionId: Type.Optional(SessionIdSchema),
-		legacyParentSessionPath: Type.Optional(Type.String({ minLength: 1 })),
-	}),
-);
+/** Durable Session metadata exposed by the wire protocol. */
+export const SessionMetadataSchema = StrictObject({
+	id: SessionIdSchema,
+	createdAt: TimestampSchema,
+	storageVersion: Type.Integer({ minimum: 1 }),
+	cwd: Type.Optional(Type.String({ minLength: 1 })),
+	parentSessionId: Type.Optional(SessionIdSchema),
+	legacyParentSessionPath: Type.Optional(Type.String({ minLength: 1 })),
+});
+export type SessionMetadata = Static<typeof SessionMetadataSchema>;
 
 /** Session operations available to normal Pi clients in protocol v1. */
 export const ServiceRpc = defineRpc({

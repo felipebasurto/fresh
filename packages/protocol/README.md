@@ -10,6 +10,8 @@ Protocol version `1` currently contains the first control-plane slice:
 
 The manifest generates typed client methods and validated server dispatch. The wire uses generic `{ serverId, method, args }` calls rather than a hand-written command union. `list()` returns the durable `SessionMetadata` values from `SessionRepo.list()`. `attach()` exclusively binds that Session to the client connection and returns only its `sessionId`; the real `Session` and `AgentHarness` remain hosted by the server. Disconnecting releases the attachment.
 
+The package also defines `PromptArguments`, a tuple containing a serializable `AgentLane.prompt()` overload. `PromptMessage` is the protocol's closed set of built-in message DTOs; application-defined `AgentMessage` extensions are not accepted implicitly. `RunResult` is the wire-safe structural equivalent of the Harness result and contains no JavaScript `Error` instances. These DTOs are not yet exposed through the service RPC manifest.
+
 Server and worker lifecycle is intentionally outside this public protocol. The experimental local coordinator is only an opaque message router; each replaceable server process owns the private lifecycle protocol.
 
 Each wire frame consists of a four-byte unsigned big-endian payload length followed by one definite-length CBOR item. `encodeClientMessage()` and `encodeServerMessage()` validate and encode complete frames. `ClientMessageDecoder` and `ServerMessageDecoder` accept arbitrary stream fragmentation and coalescing.

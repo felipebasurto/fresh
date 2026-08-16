@@ -1,3 +1,4 @@
+import { Check } from "typebox/value";
 import { describe, expect, test } from "vitest";
 import {
 	type ClientHello,
@@ -13,14 +14,20 @@ import {
 	encodeServerMessage,
 	FrameDecoder,
 	isSupportedProtocolVersion,
+	type JsonValue,
+	JsonValueSchema,
 	PROTOCOL_VERSION,
+	PromptArgumentsSchema,
 	ProtocolValidationError,
 	parseClientMessage,
 	parseServerMessage,
+	type RunResult,
+	RunResultSchema,
 	type ServerHello,
 	type ServerMessage,
 	ServerMessageDecoder,
 	ServiceRpc,
+	type SessionMetadata,
 } from "../src/index.ts";
 
 const clientHello: ClientHello = { type: "hello", version: PROTOCOL_VERSION };
@@ -36,7 +43,7 @@ const metadata = {
 	storageVersion: 1,
 	cwd: "/workspace",
 	parentSessionId: "parent-1",
-} as const;
+} as const satisfies SessionMetadata;
 
 describe("RPC manifest", () => {
 	test("creates typed client methods from the manifest", async () => {
@@ -144,7 +151,81 @@ describe("protocol validation", () => {
 		);
 	});
 
-	test("validates SessionRepo metadata without a presentation projection", () => {
+	test("validates recursively nested JSON values", () => {
+		const values = [
+			null,
+			true,
+			1,
+			"value",
+			[1, { nested: [false] }],
+			{ nested: { value: "ok" } },
+		] satisfies JsonValue[];
+		for (const value of values) expect(Check(JsonValueSchema, value)).toBe(true);
+	});
+
+	test.each([undefined, 1n, Symbol("value"), () => {}])("rejects non-JSON value %s", (value) => {
+		expect(Check(JsonValueSchema, value)).toBe(false);
+	});
+
+	test.each([
+		["CBOR byte array", decodeCbor(encodeCbor(new Uint8Array([1, 2, 3])))],
+		["date", new Date(0)],
+		["map", new Map([["key", "value"]])],
+		["class instance", new (class JsonValueTestClass {})()],
+		["nested class instance", { nested: new (class JsonValueTestClass {})() }],
+	] as const)("rejects non-plain JSON value: %s", (_label, value) => {
+		expect(Check(JsonValueSchema, value)).toBe(false);
+	});
+
+	test("rejects cyclic JSON values", () => {
+		const value: { self?: unknown } = {};
+		value.self = value;
+		expect(Check(JsonValueSchema, value)).toBe(false);
+	});
+
+	test.each([
+		["text", ["Hello"]],
+		["text and images", ["Describe", [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }]]],
+		["one message", [{ role: "user", content: "Hello", timestamp: 1 }]],
+		[
+			"multiple messages",
+			[
+				[
+					{ role: "user", content: "Question", timestamp: 1 },
+					{
+						role: "assistant",
+						content: [{ type: "text", text: "Answer" }],
+						api: "test",
+						provider: "test",
+						model: "test",
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "stop",
+						timestamp: 2,
+					},
+				],
+			],
+		],
+	] as const)("validates %s prompt arguments", (_label, promptArguments) => {
+		expect(Check(PromptArgumentsSchema, promptArguments)).toBe(true);
+	});
+
+	test.each([
+		["empty prompt tuple", []],
+		["missing image data", ["Describe", [{ type: "image", mimeType: "image/png" }]]],
+		["unknown message role", [{ role: "extension", content: "Hello", timestamp: 1 }]],
+		["extra text argument", ["Hello", [], "extra"]],
+	] as const)("rejects malformed prompt arguments: %s", (_label, promptArguments) => {
+		expect(Check(PromptArgumentsSchema, promptArguments)).toBe(false);
+	});
+
+	test("validates protocol Session metadata", () => {
 		const message: ServerMessage = {
 			type: "response",
 			id: "request-1",
@@ -165,6 +246,69 @@ describe("protocol validation", () => {
 			result: { sessionId: "session-1" },
 		};
 		expect(parseServerMessage(message)).toEqual(message);
+	});
+
+	test.each([
+		{ ok: true, value: { kind: "completed", runId: "run-1", leafId: "leaf-1" } },
+		{ ok: true, value: { kind: "aborted", runId: "run-1", leafId: "leaf-1" } },
+		{
+			ok: true,
+			value: {
+				kind: "failed",
+				runId: "run-1",
+				leafId: "leaf-1",
+				error: { code: "provider", message: "provider failed" },
+			},
+		},
+		{
+			ok: true,
+			value: {
+				kind: "suspended",
+				reason: "missing_identities",
+				runId: "run-1",
+				leafId: "leaf-1",
+				missing: { tools: ["tool"], models: [] },
+			},
+		},
+		{
+			ok: false,
+			error: {
+				_tag: "LaneBusy",
+				lane: "main",
+				operationId: "operation-1",
+				operationKind: "run",
+				message: "lane busy",
+			},
+		},
+		{ ok: false, error: { _tag: "Closed", message: "closed" } },
+	] satisfies RunResult[])("validates structural Harness RunResult", (result) => {
+		expect(Check(RunResultSchema, result)).toBe(true);
+	});
+
+	test.each([
+		{ ok: true, value: { kind: "failed", runId: "run-1", leafId: "leaf-1" } },
+		{ ok: true, value: { kind: "completed", runId: "run-1", leafId: "leaf-1", finalEntryId: "entry-1" } },
+		{ ok: false, error: { _tag: "Closed", message: "closed", extra: true } },
+	] as const)("rejects malformed structural Harness RunResult", (result) => {
+		expect(Check(RunResultSchema, result)).toBe(false);
+	});
+
+	test.each([
+		["bigint", 1n],
+		["byte array", new Uint8Array([1, 2, 3])],
+		["date", new Date(0)],
+	] as const)("rejects non-protocol %s nested in Harness DTOs", (_label, details) => {
+		expect(
+			Check(RunResultSchema, {
+				ok: true,
+				value: {
+					kind: "failed",
+					runId: "run-1",
+					leafId: "leaf-1",
+					error: { code: "provider", message: "failed", details },
+				},
+			}),
+		).toBe(false);
 	});
 
 	test.each([
