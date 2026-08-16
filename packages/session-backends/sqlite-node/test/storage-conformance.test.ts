@@ -19,8 +19,6 @@ const EMPTY_USAGE = {
 
 // Re-enable each case as the work-in-progress backend implements the missing contract behavior.
 const DISABLED_CASES = new Set([
-	"transactions/rolls back every store when a mixed transaction fails",
-	"transactions/enforces one shared entry and usage id namespace",
 	"branch queries/applies stops before filters and cursors before limits",
 	"lifecycle/seals admission, drains admitted commits, and closes idempotently",
 ]);

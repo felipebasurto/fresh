@@ -103,7 +103,6 @@ export class SqliteStorage implements Storage {
 		return this.db.transaction(() => {
 			const firstSeq = readNextSeq(this.db);
 			const prepared = prepareStorageCommit(transaction, firstSeq, this.now());
-			// TODO: Add SQLite-backed validation for duplicate ids and missing entry parents before applying writes.
 			for (const write of prepared.writes) {
 				switch (write.kind) {
 					case "entry": {

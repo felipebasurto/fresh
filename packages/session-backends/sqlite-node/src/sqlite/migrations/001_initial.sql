@@ -35,6 +35,33 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
 
 CREATE INDEX IF NOT EXISTS ix_usage_seq ON usage_ledger(seq);
 
+-- Storage-level integrity that spans rows/tables. Primary keys enforce
+-- same-table duplicate ids; these triggers enforce the shared entry/usage id
+-- namespace and ordered parent insertion without a TypeScript preflight pass.
+CREATE TRIGGER IF NOT EXISTS trg_entries_validate
+BEFORE INSERT ON entries
+BEGIN
+	SELECT RAISE(ABORT, 'missing parent entry')
+	WHERE NEW.parent_id IS NOT NULL
+		AND NOT EXISTS (
+			SELECT 1 FROM entries WHERE id = NEW.parent_id
+		);
+
+	SELECT RAISE(ABORT, 'duplicate entry or usage id')
+	WHERE EXISTS (
+		SELECT 1 FROM usage_ledger WHERE id = NEW.id
+	);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_usage_ledger_validate
+BEFORE INSERT ON usage_ledger
+BEGIN
+	SELECT RAISE(ABORT, 'duplicate entry or usage id')
+	WHERE EXISTS (
+		SELECT 1 FROM entries WHERE id = NEW.id
+	);
+END;
+
 -- Private branch index. Not registers; no equivalent in the other backends.
 CREATE TABLE IF NOT EXISTS branch_entries (
 	branch_id TEXT,
