@@ -101,7 +101,10 @@ function acceptControlConnection(socket: Socket): void {
 	});
 	const disconnect = (): void => {
 		controlConnections.delete(socket);
-		if (server && currentServer === server) currentServer = undefined;
+		if (server && currentServer === server) {
+			currentServer = undefined;
+			notifyPeers({ type: "server_disconnected", serverConnectionId: server.serverConnectionId });
+		}
 		if (peer && peers.get(peer.peerId) === peer) {
 			peers.delete(peer.peerId);
 			if (currentServer) writeJsonLine(currentServer.socket, { type: "peer_disconnected", peerId: peer.peerId });
@@ -132,8 +135,10 @@ function registerServer(socket: Socket, message: ControlMessage): ServerPeer {
 	});
 	if (previous && previous !== server) {
 		closePublicConnections();
+		notifyPeers({ type: "server_disconnected", serverConnectionId: previous.serverConnectionId });
 		writeJsonLine(previous.socket, { type: "server_replaced" });
 	}
+	notifyPeers({ type: "server_connected", serverConnectionId });
 	return server;
 }
 
@@ -147,11 +152,19 @@ function registerPeer(socket: Socket, message: ControlMessage): RoutedPeer {
 	const peer = { peerId, socket };
 	peers.set(peerId, peer);
 	cancelEmptyShutdown();
-	writeJsonLine(socket, { type: "peer_registered", peerId });
+	writeJsonLine(socket, {
+		type: "peer_registered",
+		peerId,
+		...(currentServer === undefined ? {} : { serverConnectionId: currentServer.serverConnectionId }),
+	});
 	if (currentServer) {
 		writeJsonLine(currentServer.socket, { type: "peer_connected", peerId });
 	}
 	return peer;
+}
+
+function notifyPeers(message: unknown): void {
+	for (const peer of peers.values()) writeJsonLine(peer.socket, message);
 }
 
 function handleRoutedMessage(from: string, message: ControlMessage): void {

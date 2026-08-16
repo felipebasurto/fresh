@@ -129,7 +129,7 @@ describe("list and attach protocol", () => {
 		expect(received).toBe(metadata);
 	});
 
-	test("attach creates one hosted Harness for concurrent callers", async () => {
+	test("permits only one client attachment per Session", async () => {
 		const host = new TestServerHost();
 		await host.seed("session-1");
 		const server = createServer(host);
@@ -137,23 +137,36 @@ describe("list and attach protocol", () => {
 		const second = connect(server);
 		await Promise.all([first.hello(), second.hello()]);
 
-		const delay = host.delayNextList();
-		const firstAttach = first.request("00000000-0000-4000-8000-000000000001", {
-			method: "attach",
-			args: ["session-1"],
-		});
-		await delay.entered.promise;
-		const secondAttach = second.request("00000000-0000-4000-8000-000000000001", {
-			method: "attach",
-			args: ["session-1"],
-		});
-		delay.release.resolve(undefined);
-
-		await expect(Promise.all([firstAttach, secondAttach])).resolves.toMatchObject([
-			{ ok: true, result: { sessionId: "session-1" } },
-			{ ok: true, result: { sessionId: "session-1" } },
-		]);
+		await expect(
+			first.request("00000000-0000-4000-8000-000000000001", {
+				method: "attach",
+				args: ["session-1"],
+			}),
+		).resolves.toMatchObject({ ok: true, result: { sessionId: "session-1" } });
+		await expect(
+			first.request("00000000-0000-4000-8000-000000000001", {
+				method: "attach",
+				args: ["session-1"],
+			}),
+		).resolves.toMatchObject({ ok: true, result: { sessionId: "session-1" } });
+		expect(host.latestHarness("session-1").attachedClients).toBe(1);
+		await expect(
+			second.request("00000000-0000-4000-8000-000000000001", {
+				method: "attach",
+				args: ["session-1"],
+			}),
+		).resolves.toMatchObject({ ok: false, error: { code: "session_in_use" } });
 		expect(host.harnesses.get("session-1")).toHaveLength(1);
+		expect(host.latestHarness("session-1").attachedClients).toBe(1);
+
+		await first.close();
+		await expect.poll(() => host.latestHarness("session-1").attachedClients).toBe(0);
+		await expect(
+			second.request("00000000-0000-4000-8000-000000000001", {
+				method: "attach",
+				args: ["session-1"],
+			}),
+		).resolves.toMatchObject({ ok: true, result: { sessionId: "session-1" } });
 	});
 
 	test("rejects requests addressed to another server before repository access", async () => {
@@ -229,7 +242,7 @@ describe("list and attach protocol", () => {
 		expect(host.harnesses.get("session-1")).toHaveLength(2);
 	});
 
-	test("connection loss does not close a hosted Harness, but server shutdown does", async () => {
+	test("connection loss releases its attachment, while server shutdown closes the Harness", async () => {
 		const host = new TestServerHost();
 		await host.seed("session-1");
 		const server = createServer(host);
@@ -239,6 +252,7 @@ describe("list and attach protocol", () => {
 		const harness = host.latestHarness("session-1");
 
 		await client.close();
+		await expect.poll(() => harness.attachedClients).toBe(0);
 		expect(harness.closeCount).toBe(0);
 		await server.close();
 		expect(harness.closeCount).toBe(1);

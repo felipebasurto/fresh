@@ -16,7 +16,9 @@ import {
 	type CoordinatorStartupLease,
 	ensureExperimentalCoordinator,
 } from "./coordinator-client.ts";
+import { acquireExperimentalServerActivation, activateExperimentalServer } from "./server-activator.ts";
 import { ENV_SERVER_ID, ensurePrivateServerDirectory, resolveExperimentalServerDirectory } from "./server-directory.ts";
+import { CoordinatedServerLifetime } from "./server-lifetime.ts";
 import { acquireExperimentalServerProfile } from "./server-profile.ts";
 import { startExperimentalSessionWorker } from "./session-worker.ts";
 
@@ -53,6 +55,8 @@ export interface StartExperimentalCoordinatedServerOptions {
 	readonly serverId?: ServerId;
 	/** Durable session directory. Defaults to the experimental directory under the configured agent directory. */
 	readonly sessionDir?: string;
+	/** Hold the server open without client or Session demand. Defaults to true for foreground servers. */
+	readonly keepAlive?: boolean;
 }
 
 export interface RunExperimentalClientOptions {
@@ -86,11 +90,25 @@ export async function startExperimentalServer(
 				controlDirectory: options.directory,
 			});
 			workerPids.set(sessionId, worker.pid);
+			let attached = false;
 			return {
 				terminated: worker.terminated.then((error) => {
 					if (workerPids.get(sessionId) === worker.pid) workerPids.delete(sessionId);
 					return error;
 				}),
+				attachClient: () => {
+					if (attached) throw new Error("Experimental Session is already attached");
+					attached = true;
+					let released = false;
+					return {
+						release: async () => {
+							if (released) return;
+							released = true;
+							attached = false;
+							await worker.close();
+						},
+					};
+				},
 				close: async () => {
 					try {
 						await worker.close();
@@ -107,6 +125,7 @@ export async function startExperimentalServer(
 async function startExperimentalServerBackend(
 	options: StartExperimentalServerOptions,
 	workers: ExperimentalWorkerController,
+	onConnectionCountChanged?: (count: number) => void,
 ): Promise<ExperimentalServer> {
 	const serverId = options.serverId ?? randomUUID();
 	const sessionDir = resolveExperimentalSessionDirectory(options.sessionDir);
@@ -134,7 +153,12 @@ async function startExperimentalServerBackend(
 		if (errors.length === 1) throw errors[0];
 		if (errors.length > 1) throw new AggregateError(errors, "Experimental session catalog cleanup failed");
 	};
-	const server = createUnixServer(host, { serverId, path: socketPath, mode: 0o600 });
+	const server = createUnixServer(host, {
+		serverId,
+		path: socketPath,
+		mode: 0o600,
+		onConnectionCountChanged,
+	});
 	try {
 		await server.start();
 	} catch (error) {
@@ -184,6 +208,7 @@ export async function startExperimentalCoordinatedServer(
 		directory,
 		options.serverId ?? process.env[ENV_SERVER_ID],
 	);
+	const lifetime = new CoordinatedServerLifetime(options.keepAlive ?? true);
 	let backend: ExperimentalServer | undefined;
 	let coordinator: CoordinatorServer | undefined;
 	let startupLease: CoordinatorStartupLease | undefined;
@@ -198,10 +223,11 @@ export async function startExperimentalCoordinatedServer(
 		startupLease = await ensureExperimentalCoordinator(socketPath, controlPath);
 		coordinator = new CoordinatorServer({ controlPath, endpoint: serverPath });
 		const sessionDir = resolveExperimentalSessionDirectory(options.sessionDir);
-		workers = new CoordinatedSessionWorkers(coordinator, sessionDir);
+		workers = new CoordinatedSessionWorkers(coordinator, sessionDir, (count) => lifetime.setWorkerCount(count));
 		backend = await startExperimentalServerBackend(
 			{ path: serverPath, serverId, sessionDir: options.sessionDir },
 			workers,
+			(count) => lifetime.setConnectionCount(count),
 		);
 		await coordinator.connect();
 		startupLease.close();
@@ -213,6 +239,7 @@ export async function startExperimentalCoordinatedServer(
 		const activeWorkers = workers;
 		void activeCoordinator.replaced
 			.then(async () => {
+				lifetime.stop();
 				activeWorkers.detach();
 				await activeBackend.close();
 			})
@@ -227,6 +254,7 @@ export async function startExperimentalCoordinatedServer(
 			workerPids: activeWorkers.workerPids,
 			closed: activeBackend.closed,
 			close() {
+				lifetime.stop();
 				closePromise ??= (async () => {
 					try {
 						await activeBackend.close();
@@ -242,10 +270,14 @@ export async function startExperimentalCoordinatedServer(
 				return closePromise;
 			},
 		};
+		lifetime.start(() => {
+			void runtime.close().catch(() => {});
+		});
 		released = true;
 		await release();
 		return runtime;
 	} catch (error) {
+		lifetime.stop();
 		startupLease?.close();
 		if (coordinator?.wasReplaced) workers?.detach();
 		const cleanup = await Promise.allSettled([
@@ -262,58 +294,92 @@ export async function startExperimentalCoordinatedServer(
 	}
 }
 
+/** Start an operator-held server while serializing against automatic cold activation. */
+export async function startExperimentalForegroundServer(
+	options: Omit<StartExperimentalCoordinatedServerOptions, "keepAlive"> = {},
+): Promise<ExperimentalServer> {
+	const directory = resolveExperimentalServerDirectory(options.directory);
+	await ensurePrivateServerDirectory(directory);
+	const profile = await acquireExperimentalServerProfile(directory, options.serverId ?? process.env[ENV_SERVER_ID]);
+	const serverId = profile.serverId;
+	await profile.release();
+	const release = await acquireExperimentalServerActivation(directory, serverId);
+	try {
+		return await startExperimentalCoordinatedServer({
+			...options,
+			directory,
+			serverId,
+			keepAlive: true,
+		});
+	} finally {
+		await release();
+	}
+}
+
 /** Discover local servers, then list sessions or attach to one selected session. */
 export async function runExperimentalClient(
 	command: ClientCommand,
 	options: RunExperimentalClientOptions = {},
 ): Promise<ExperimentalClientResult> {
 	if (command.auth !== undefined) throw new Error("Authentication is not supported by the experimental local server");
-	const routes = command.connect
-		? [routeFromExplicitPath(command.connect.path)]
-		: await discoverUnixServers({ directory: resolveExperimentalServerDirectory(options.directory) });
-	const discovered: { route: UnixServerRoute; sessionIds: string[] }[] = [];
-
-	for (const route of routes) {
-		const client = await PiClient.connect({
-			serverId: route.serverId,
-			transportFactory: createUnixTransportFactory({ path: route.path }),
-		});
-		try {
-			const sessions = await client.listSessions();
-			discovered.push({ route, sessionIds: sessions.map(({ id }) => id) });
-		} finally {
-			await client.dispose();
+	const directory = resolveExperimentalServerDirectory(options.directory);
+	let routes: UnixServerRoute[];
+	let activatedClient: PiClient | undefined;
+	if (command.connect) {
+		routes = [routeFromExplicitPath(command.connect.path)];
+	} else {
+		routes = await discoverUnixServers({ directory });
+		if (routes.length === 0) {
+			const activated = await activateExperimentalServer({
+				directory,
+				requestedServerId: process.env[ENV_SERVER_ID],
+				sessionDir: resolveExperimentalSessionDirectory(),
+			});
+			routes = [activated.route];
+			activatedClient = activated.client;
 		}
 	}
+	const openedClients = new Set<PiClient>();
+	if (activatedClient) openedClients.add(activatedClient);
+	const discovered: { route: UnixServerRoute; sessionIds: string[]; client: PiClient }[] = [];
 
-	const sessionId = command.sessionId;
-	if (sessionId === undefined) {
-		return {
-			kind: "list",
-			sessions: discovered
-				.flatMap(({ route, sessionIds }) =>
-					sessionIds.map((sessionId) => ({ serverId: route.serverId, sessionId })),
-				)
-				.sort(
-					(left, right) =>
-						left.serverId.localeCompare(right.serverId) || left.sessionId.localeCompare(right.sessionId),
-				),
-		};
-	}
-
-	const matches = discovered.filter((candidate) => candidate.sessionIds.includes(sessionId));
-	if (matches.length === 0) throw new Error(`No discovered server contains session ${sessionId}`);
-	if (matches.length > 1) throw new Error(`Session ${sessionId} is available from more than one server`);
-	const route = matches[0]!.route;
-	const client = await PiClient.connect({
-		serverId: route.serverId,
-		transportFactory: createUnixTransportFactory({ path: route.path }),
-	});
 	try {
-		const attached = await client.attachSession(sessionId);
-		return { kind: "attached", serverId: route.serverId, sessionId: attached.sessionId };
+		for (const route of routes) {
+			const client =
+				activatedClient ??
+				(await PiClient.connect({
+					serverId: route.serverId,
+					transportFactory: createUnixTransportFactory({ path: route.path }),
+				}));
+			activatedClient = undefined;
+			openedClients.add(client);
+			const sessions = await client.listSessions();
+			discovered.push({ route, sessionIds: sessions.map(({ id }) => id), client });
+		}
+
+		const sessionId = command.sessionId;
+		if (sessionId === undefined) {
+			return {
+				kind: "list",
+				sessions: discovered
+					.flatMap(({ route, sessionIds }) =>
+						sessionIds.map((sessionId) => ({ serverId: route.serverId, sessionId })),
+					)
+					.sort(
+						(left, right) =>
+							left.serverId.localeCompare(right.serverId) || left.sessionId.localeCompare(right.sessionId),
+					),
+			};
+		}
+
+		const matches = discovered.filter((candidate) => candidate.sessionIds.includes(sessionId));
+		if (matches.length === 0) throw new Error(`No discovered server contains session ${sessionId}`);
+		if (matches.length > 1) throw new Error(`Session ${sessionId} is available from more than one server`);
+		const match = matches[0]!;
+		const attached = await match.client.attachSession(sessionId);
+		return { kind: "attached", serverId: match.route.serverId, sessionId: attached.sessionId };
 	} finally {
-		await client.dispose();
+		await Promise.all([...openedClients].map((client) => client.dispose()));
 	}
 }
 

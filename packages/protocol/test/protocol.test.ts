@@ -207,7 +207,7 @@ describe("protocol validation", () => {
 		expect(() => parseServerMessage(message)).toThrow(ProtocolValidationError);
 	});
 
-	test.each(["wrong_server", "session_not_found", "server_draining", "internal_error"] as const)(
+	test.each(["wrong_server", "session_not_found", "session_in_use", "server_draining", "internal_error"] as const)(
 		"accepts the %s error code",
 		(code) => {
 			const message: ServerMessage = {

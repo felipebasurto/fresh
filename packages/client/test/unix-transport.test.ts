@@ -47,7 +47,6 @@ afterEach(async () => {
 
 test("rejects invalid Unix transport options", () => {
 	expect(() => createUnixTransportFactory({ path: "" })).toThrow(/must not be empty/);
-	expect(() => createUnixTransportFactory({ path: `/tmp/${"x".repeat(512)}` })).toThrow(/too long/);
 	expect(() => createUnixTransportFactory({ path: "/tmp/pi.sock", maxPendingBytes: 0 })).toThrow(/positive/);
 });
 

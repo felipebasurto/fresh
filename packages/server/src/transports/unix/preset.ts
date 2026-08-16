@@ -21,6 +21,7 @@ export function createUnixServer<TMetadata extends SessionMetadata>(
 		listeners: [listener],
 		maxFrameLength: options.maxFrameLength,
 		handshakeTimeoutMs: options.handshakeTimeoutMs,
+		onConnectionCountChanged: options.onConnectionCountChanged,
 		serverId: options.serverId,
 		onError: options.onError,
 	});

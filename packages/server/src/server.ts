@@ -40,6 +40,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 	private readonly listeners: readonly PiServerListener[];
 	private readonly maxFrameLength: number;
 	private readonly handshakeTimeoutMs: number;
+	private readonly onConnectionCountChanged: ((count: number) => void) | undefined;
 	private readonly onError: ((error: Error) => void) | undefined;
 	private readonly connections = new Set<ConnectionState>();
 	private readonly sessions: HostedHarnessManager<TMetadata>;
@@ -57,6 +58,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 		this.serverId = options.serverId;
 		this.maxFrameLength = resolved.maxFrameLength;
 		this.handshakeTimeoutMs = resolved.handshakeTimeoutMs;
+		this.onConnectionCountChanged = options.onConnectionCountChanged;
 		this.onError = options.onError;
 		this.sessions = new HostedHarnessManager({
 			host,
@@ -137,6 +139,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 			handshakeTimeout,
 		};
 		this.connections.add(state);
+		this.notifyConnectionCountChanged();
 
 		return {
 			onData: (chunk) => this.receive(state, chunk),
@@ -255,7 +258,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 	private async handleRequest(state: ConnectionState, envelope: RequestEnvelope): Promise<void> {
 		try {
 			if (envelope.serverId !== this.serverId) throw new WrongServerError();
-			const result: ProtocolRpcResult = await this.sessions.executeCall(envelope.call);
+			const result: ProtocolRpcResult = await this.sessions.executeCall(envelope.call, state);
 			await this.sendMessage(state, {
 				type: "response",
 				id: envelope.id,
@@ -288,7 +291,8 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 		connection.disconnected = true;
 		connection.stage = "closed";
 		clearTimeout(connection.handshakeTimeout);
-		this.connections.delete(connection);
+		if (this.connections.delete(connection)) this.notifyConnectionCountChanged();
+		void this.sessions.disconnect(connection).catch((error: unknown) => this.reportError(error));
 	}
 
 	private async sendMessage(connection: ConnectionState, message: ServerMessage): Promise<boolean> {
@@ -357,6 +361,14 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 		}
 		this.reportError(error);
 		return { code: "internal_error", message: INTERNAL_SERVER_ERROR_MESSAGE };
+	}
+
+	private notifyConnectionCountChanged(): void {
+		try {
+			this.onConnectionCountChanged?.(this.connections.size);
+		} catch (error) {
+			this.reportError(error);
+		}
 	}
 
 	private reportError(error: unknown): void {

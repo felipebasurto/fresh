@@ -1,12 +1,12 @@
 export const INTERNAL_PROCESS_ENV = "__PI_INTERNAL_SPAWN";
 
-export type InternalProcessRole = "coordinator" | "session-worker";
+export type InternalProcessRole = "coordinator" | "server" | "session-worker";
 
 /** Read and validate an internal process role without consuming it. */
 export function getInternalProcessRole(): InternalProcessRole | undefined {
 	const role = process.env[INTERNAL_PROCESS_ENV];
 	if (role === undefined) return undefined;
-	if (role === "coordinator" || role === "session-worker") return role;
+	if (role === "coordinator" || role === "server" || role === "session-worker") return role;
 	throw new Error(`Unsupported internal process role: ${role}`);
 }
 

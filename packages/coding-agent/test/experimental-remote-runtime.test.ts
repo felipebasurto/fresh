@@ -12,6 +12,7 @@ import {
 import { configureExperimentalWorkerModel, createExperimentalSessions } from "./experimental-session-support.ts";
 
 const servers = new Set<ExperimentalServer>();
+const clients = new Set<PiClient>();
 const directories = new Set<string>();
 let agentDir: string;
 
@@ -31,7 +32,19 @@ async function makeServer(): Promise<{ directory: string; runtime: ExperimentalS
 	return { directory, runtime };
 }
 
+async function attachClient(runtime: ExperimentalServer, sessionId: string): Promise<PiClient> {
+	const client = await PiClient.connect({
+		serverId: runtime.serverId,
+		transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
+	});
+	clients.add(client);
+	await client.attachSession(sessionId);
+	return client;
+}
+
 afterEach(async () => {
+	await Promise.all([...clients].map((client) => client.dispose()));
+	clients.clear();
 	await Promise.all([...servers].map((server) => server.close()));
 	servers.clear();
 	vi.unstubAllEnvs();
@@ -51,6 +64,12 @@ describe("experimental durable server composition", () => {
 		});
 		servers.add(runtime);
 
+		await expect(
+			runExperimentalClient({
+				command: "client",
+				connect: { transport: "unix", path: runtime.socketPath },
+			}),
+		).resolves.toMatchObject({ kind: "list" });
 		expect((await lstat(directory)).mode & 0o777).toBe(0o750);
 	});
 
@@ -92,6 +111,54 @@ describe("experimental durable server composition", () => {
 			kind: "list",
 			sessions: [{ sessionId: "demo-1" }, { sessionId: "demo-2" }],
 		});
+	});
+
+	test("serializes concurrent cold activation and retires after both clients leave", async () => {
+		const directory = await mkdtemp(join("/tmp", "pi-auto-server-"));
+		directories.add(directory);
+		const serverId = "00000000-0000-4000-8000-000000000001";
+		vi.stubEnv("PI_SERVER_DIR", directory);
+		vi.stubEnv("PI_SERVER_ID", serverId);
+
+		const results = await Promise.all([
+			runExperimentalClient({ command: "client" }),
+			runExperimentalClient({ command: "client" }),
+		]);
+		expect(results).toEqual([
+			{
+				kind: "list",
+				sessions: [
+					{ serverId, sessionId: "demo-1" },
+					{ serverId, sessionId: "demo-2" },
+				],
+			},
+			{
+				kind: "list",
+				sessions: [
+					{ serverId, sessionId: "demo-1" },
+					{ serverId, sessionId: "demo-2" },
+				],
+			},
+		]);
+		expect(await pathExists(join(directory, `${serverId}.sock`))).toBe(true);
+		await expect.poll(() => pathExists(join(directory, `${serverId}.sock`)), { timeout: 5_000 }).toBe(false);
+		await expect.poll(() => pathExists(join(directory, `control-${serverId}.sock`)), { timeout: 5_000 }).toBe(false);
+	});
+
+	test("retires a cold server after its only Session attachment disconnects", async () => {
+		const directory = await mkdtemp(join("/tmp", "pi-auto-session-"));
+		directories.add(directory);
+		const serverId = "00000000-0000-4000-8000-000000000001";
+		vi.stubEnv("PI_SERVER_DIR", directory);
+		vi.stubEnv("PI_SERVER_ID", serverId);
+
+		await expect(runExperimentalClient({ command: "client", sessionId: "demo-1" })).resolves.toEqual({
+			kind: "attached",
+			serverId,
+			sessionId: "demo-1",
+		});
+		await expect.poll(() => pathExists(join(directory, `${serverId}.sock`)), { timeout: 5_000 }).toBe(false);
+		await expect.poll(() => pathExists(join(directory, `control-${serverId}.sock`)), { timeout: 5_000 }).toBe(false);
 	});
 
 	test("runs and discovers multiple logical servers from one directory", async () => {
@@ -144,48 +211,54 @@ describe("experimental durable server composition", () => {
 		expect(socket.mode & 0o777).toBe(0o600);
 	});
 
-	test("attaches to a seeded session and reuses its hosted handle", async () => {
-		const { directory, runtime } = await makeServer();
+	test("keeps one worker for one connection-scoped Session attachment", async () => {
+		const { runtime } = await makeServer();
+		const client = await attachClient(runtime, "demo-1");
 
-		await expect(runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory })).resolves.toEqual({
-			kind: "attached",
-			serverId: runtime.serverId,
-			sessionId: "demo-1",
-		});
 		expect([...runtime.workerPids.keys()]).toEqual(["demo-1"]);
 		const firstPid = runtime.workerPids.get("demo-1");
 		expect(firstPid).toEqual(expect.any(Number));
-
-		await runExperimentalClient({
-			command: "client",
-			sessionId: "demo-1",
-			connect: { transport: "unix", path: runtime.socketPath },
-		});
-		expect([...runtime.workerPids.keys()]).toEqual(["demo-1"]);
+		await expect(client.attachSession("demo-1")).resolves.toEqual({ sessionId: "demo-1" });
 		expect(runtime.workerPids.get("demo-1")).toBe(firstPid);
+
+		const competing = await PiClient.connect({
+			serverId: runtime.serverId,
+			transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
+		});
+		clients.add(competing);
+		await expect(competing.attachSession("demo-1")).rejects.toMatchObject({ code: "session_in_use" });
+	});
+
+	test("stops an idle Session worker after its client disconnects", async () => {
+		const { runtime } = await makeServer();
+		const client = await attachClient(runtime, "demo-1");
+		const pid = runtime.workerPids.get("demo-1");
+		expect(pid).toEqual(expect.any(Number));
+
+		await client.dispose();
+		clients.delete(client);
+		await expect.poll(() => runtime.workerPids.has("demo-1")).toBe(false);
+		expect(processExists(pid!)).toBe(false);
 	});
 
 	test("invalidates an exited worker and starts a replacement on the next attach", async () => {
-		const { directory, runtime } = await makeServer();
-		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
+		const { runtime } = await makeServer();
+		const client = await attachClient(runtime, "demo-1");
 		const firstPid = runtime.workerPids.get("demo-1");
 		expect(firstPid).toEqual(expect.any(Number));
 
 		process.kill(firstPid!, "SIGKILL");
 		await expect.poll(() => runtime.workerPids.has("demo-1")).toBe(false);
 
-		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
+		await client.attachSession("demo-1");
 		const replacementPid = runtime.workerPids.get("demo-1");
 		expect(replacementPid).toEqual(expect.any(Number));
 		expect(replacementPid).not.toBe(firstPid);
 	});
 
 	test("starts one process per attached session and stops them during shutdown", async () => {
-		const { directory, runtime } = await makeServer();
-		await Promise.all([
-			runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory }),
-			runExperimentalClient({ command: "client", sessionId: "demo-2" }, { directory }),
-		]);
+		const { runtime } = await makeServer();
+		await Promise.all([attachClient(runtime, "demo-1"), attachClient(runtime, "demo-2")]);
 
 		const pids = [...runtime.workerPids.values()];
 		expect(pids).toHaveLength(2);
@@ -202,13 +275,13 @@ describe("experimental durable server composition", () => {
 		directories.add(directory);
 		const runtime = await startExperimentalCoordinatedServer({ directory });
 		servers.add(runtime);
-		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
+		const client = await attachClient(runtime, "demo-1");
 		const firstPid = runtime.workerPids.get("demo-1");
 		expect(firstPid).toEqual(expect.any(Number));
 
 		process.kill(firstPid!, "SIGKILL");
 		await expect.poll(() => runtime.workerPids.has("demo-1")).toBe(false);
-		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
+		await client.attachSession("demo-1");
 		const replacementPid = runtime.workerPids.get("demo-1");
 		expect(replacementPid).toEqual(expect.any(Number));
 		expect(replacementPid).not.toBe(firstPid);
@@ -219,7 +292,7 @@ describe("experimental durable server composition", () => {
 		directories.add(directory);
 		const runtime = await startExperimentalCoordinatedServer({ directory });
 		servers.add(runtime);
-		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
+		await attachClient(runtime, "demo-1");
 		const pid = runtime.workerPids.get("demo-1");
 		expect(pid).toEqual(expect.any(Number));
 
@@ -284,7 +357,7 @@ describe("experimental durable server composition", () => {
 		directories.add(firstDirectory);
 		const first = await startExperimentalCoordinatedServer({ directory: firstDirectory });
 		servers.add(first);
-		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory: firstDirectory });
+		await attachClient(first, "demo-1");
 		const firstWorkerPid = first.workerPids.get("demo-1");
 		expect(firstWorkerPid).toEqual(expect.any(Number));
 
@@ -304,11 +377,30 @@ describe("experimental durable server composition", () => {
 				{ serverId: first.serverId, sessionId: "demo-2" },
 			],
 		});
-		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory: firstDirectory });
+		await attachClient(replacement, "demo-1");
 		expect(replacement.workerPids.get("demo-1")).toBe(firstWorkerPid);
-		await runExperimentalClient({ command: "client", sessionId: "demo-2" }, { directory: firstDirectory });
+		await attachClient(replacement, "demo-2");
 		expect(replacement.workerPids.get("demo-2")).toEqual(expect.any(Number));
 		expect(replacement.workerPids.get("demo-2")).not.toBe(firstWorkerPid);
+	});
+
+	test("retires an unclaimed idle worker after replacement demand expires", async () => {
+		const directory = await mkdtemp(join("/tmp", "pi-orphan-worker-"));
+		directories.add(directory);
+		vi.stubEnv("__PI_SESSION_WORKER_ORPHAN_DEMAND_GRACE_MS", "50");
+		const first = await startExperimentalCoordinatedServer({ directory });
+		servers.add(first);
+		await attachClient(first, "demo-1");
+		const workerPid = first.workerPids.get("demo-1");
+		expect(workerPid).toEqual(expect.any(Number));
+
+		const replacement = await startExperimentalCoordinatedServer({ directory });
+		servers.add(replacement);
+		await first.closed;
+		expect(replacement.workerPids.get("demo-1")).toBe(workerPid);
+
+		await expect.poll(() => replacement.workerPids.has("demo-1"), { timeout: 5_000 }).toBe(false);
+		expect(processExists(workerPid!)).toBe(false);
 	});
 
 	test("restores tracked sessions that are outside the replacement catalog", async () => {
@@ -318,7 +410,7 @@ describe("experimental durable server composition", () => {
 		directories.add(emptySessionDir);
 		const first = await startExperimentalCoordinatedServer({ directory });
 		servers.add(first);
-		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
+		await attachClient(first, "demo-1");
 		const workerPid = first.workerPids.get("demo-1");
 
 		const replacement = await startExperimentalCoordinatedServer({
@@ -332,7 +424,7 @@ describe("experimental durable server composition", () => {
 			kind: "list",
 			sessions: [{ serverId: first.serverId, sessionId: "demo-1" }],
 		});
-		await runExperimentalClient({ command: "client", sessionId: "demo-1" }, { directory });
+		await attachClient(replacement, "demo-1");
 		expect(replacement.workerPids.get("demo-1")).toBe(workerPid);
 	});
 

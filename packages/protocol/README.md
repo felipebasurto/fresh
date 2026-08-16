@@ -8,7 +8,7 @@ Protocol version `1` currently contains the first control-plane slice:
 - a service RPC manifest with `list()` and `attach(sessionId)`;
 - correlated responses and bounded protocol errors.
 
-The manifest generates typed client methods and validated server dispatch. The wire uses generic `{ serverId, method, args }` calls rather than a hand-written command union. `list()` returns the durable `SessionMetadata` values from `SessionRepo.list()`. `attach()` returns only the attached `sessionId`; the real `Session` and `AgentHarness` remain hosted by the server.
+The manifest generates typed client methods and validated server dispatch. The wire uses generic `{ serverId, method, args }` calls rather than a hand-written command union. `list()` returns the durable `SessionMetadata` values from `SessionRepo.list()`. `attach()` exclusively binds that Session to the client connection and returns only its `sessionId`; the real `Session` and `AgentHarness` remain hosted by the server. Disconnecting releases the attachment.
 
 Server and worker lifecycle is intentionally outside this public protocol. The experimental local coordinator is only an opaque message router; each replaceable server process owns the private lifecycle protocol.
 

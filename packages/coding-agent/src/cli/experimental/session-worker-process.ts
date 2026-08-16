@@ -19,10 +19,23 @@ import {
 	SESSION_WORKER_PEER_ID_ENV,
 	SESSION_WORKER_SESSION_KEY_ENV,
 } from "./session-worker.ts";
+import { WorkerLifecycle } from "./session-worker-lifecycle.ts";
+
+const DEFAULT_INITIAL_DEMAND_GRACE_MS = 10_000;
+const DEFAULT_ORPHAN_DEMAND_GRACE_MS = 30_000;
+export const SESSION_WORKER_INITIAL_DEMAND_GRACE_ENV = "__PI_SESSION_WORKER_INITIAL_DEMAND_GRACE_MS";
+export const SESSION_WORKER_ORPHAN_DEMAND_GRACE_ENV = "__PI_SESSION_WORKER_ORPHAN_DEMAND_GRACE_MS";
 
 // Process lifecycle control only. Agent operations use the shared
 // transport-independent protocol rather than this channel.
-export type SessionWorkerCommand = { type: "shutdown" };
+export type SessionWorkerCommand =
+	| { type: "shutdown" }
+	| {
+			type: "session_demand";
+			serverConnectionId: string;
+			requestId: string;
+			attachmentId: string | null;
+	  };
 export type SessionWorkerEvent =
 	| { type: "ready"; sessionId: string; pid: number }
 	| { type: "failed"; message: string };
@@ -38,12 +51,24 @@ const WorkerMetadataSchema = Type.Object({
 	legacyParentSessionPath: Type.Optional(Type.String()),
 });
 const CoordinatorInputSchema = Type.Union([
-	Type.Object({ type: Type.Literal("peer_registered"), peerId: Type.String() }),
+	Type.Object({
+		type: Type.Literal("peer_registered"),
+		peerId: Type.String(),
+		serverConnectionId: Type.Optional(Type.String()),
+	}),
+	Type.Object({ type: Type.Literal("server_connected"), serverConnectionId: Type.String() }),
+	Type.Object({ type: Type.Literal("server_disconnected"), serverConnectionId: Type.String() }),
 	Type.Object({ type: Type.Literal("message"), from: Type.Literal("server"), payload: Type.Unknown() }),
 ]);
 const WorkerCommandSchema = Type.Union([
 	Type.Object({ type: Type.Literal("shutdown") }),
 	Type.Object({ type: Type.Literal("discover_workers") }),
+	Type.Object({
+		type: Type.Literal("session_demand"),
+		serverConnectionId: Type.String(),
+		requestId: Type.String(),
+		attachmentId: Type.Union([Type.String(), Type.Null()]),
+	}),
 ]);
 type CoordinatorInput = Static<typeof CoordinatorInputSchema>;
 type WorkerCommand = Static<typeof WorkerCommandSchema>;
@@ -65,10 +90,25 @@ type SessionWorkerControlEvent =
 			pid: number;
 			metadata: JsonlSessionMetadata;
 	  }
-	| { type: "worker_failed"; token: string; sessionKey: string; message: string };
+	| { type: "worker_failed"; token: string; sessionKey: string; message: string }
+	| {
+			type: "demand_applied";
+			token: string;
+			sessionKey: string;
+			requestId: string;
+			attachmentId: string | null;
+	  }
+	| {
+			type: "demand_rejected";
+			token: string;
+			sessionKey: string;
+			requestId: string;
+			message: string;
+	  };
 
 interface WorkerControl {
 	readonly coordinated: boolean;
+	readonly initialServerConnectionId?: string;
 	readonly messages: AsyncIterable<unknown>;
 	readonly socket: Socket;
 	send(event: SessionWorkerControlEvent): Promise<void>;
@@ -88,6 +128,7 @@ async function connectControl(): Promise<WorkerControl> {
 	});
 	const messages = createJsonLineMessages(socket);
 	const coordinated = process.env[SESSION_WORKER_COORDINATED_ENV] === "1";
+	let initialServerConnectionId: string | undefined;
 	if (coordinated) {
 		const peerId = process.env[SESSION_WORKER_PEER_ID_ENV];
 		if (!peerId) throw new Error("Coordinated session worker requires a peer ID");
@@ -100,19 +141,30 @@ async function connectControl(): Promise<WorkerControl> {
 		) {
 			throw new Error("Coordinator rejected the session worker registration");
 		}
+		initialServerConnectionId = registered.value.serverConnectionId;
 	}
 	return {
 		coordinated,
+		...(initialServerConnectionId === undefined ? {} : { initialServerConnectionId }),
 		messages,
 		socket,
 		send: (event) => writeJsonLine(socket, coordinated ? { type: "send", to: "server", payload: event } : event),
 	};
 }
 
-async function readCommands(control: WorkerControl, onShutdown: () => void, onDiscovery: () => void): Promise<void> {
+async function readCommands(
+	control: WorkerControl,
+	handlers: {
+		onShutdown(): void;
+		onDiscovery(): void;
+		onDemand(command: Extract<WorkerCommand, { type: "session_demand" }>): Promise<void>;
+		onServerConnected(serverConnectionId: string): void;
+		onServerDisconnected(serverConnectionId: string): void;
+	},
+): Promise<void> {
 	for await (const value of control.messages) {
 		if (!control.coordinated) {
-			if (Check(WorkerCommandSchema, value) && value.type === "shutdown") onShutdown();
+			if (Check(WorkerCommandSchema, value) && value.type === "shutdown") handlers.onShutdown();
 			continue;
 		}
 		if (!Check(CoordinatorInputSchema, value)) {
@@ -120,10 +172,19 @@ async function readCommands(control: WorkerControl, onShutdown: () => void, onDi
 			return;
 		}
 		const message: CoordinatorInput = value;
+		if (message.type === "server_connected") {
+			handlers.onServerConnected(message.serverConnectionId);
+			continue;
+		}
+		if (message.type === "server_disconnected") {
+			handlers.onServerDisconnected(message.serverConnectionId);
+			continue;
+		}
 		if (message.type !== "message" || !Check(WorkerCommandSchema, message.payload)) continue;
 		const command: WorkerCommand = message.payload;
-		if (command.type === "shutdown") onShutdown();
-		else onDiscovery();
+		if (command.type === "shutdown") handlers.onShutdown();
+		else if (command.type === "discover_workers") handlers.onDiscovery();
+		else await handlers.onDemand(command);
 	}
 }
 
@@ -182,6 +243,14 @@ function parseMetadata(value: string | undefined): JsonlSessionMetadata {
 	if (!Check(WorkerMetadataSchema, parsed) || !isAbsolute(parsed.cwd) || !isAbsolute(parsed.path)) {
 		throw new Error("Session worker received invalid session metadata");
 	}
+	return parsed;
+}
+
+function lifecycleDelay(name: string, fallback: number): number {
+	const value = process.env[name];
+	if (value === undefined) return fallback;
+	const parsed = Number(value);
+	if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${name} must be a non-negative safe integer`);
 	return parsed;
 }
 
@@ -263,9 +332,15 @@ async function run(args: readonly string[]): Promise<void> {
 		throw error;
 	}
 
+	let lifecycle: WorkerLifecycle | undefined;
+	let removeLifecycleListeners: (() => void)[] = [];
 	let closing: Promise<void> | undefined;
 	const close = (): Promise<void> => {
-		closing ??= closeResources({ harness, repo, executionEnv, releaseOwnership });
+		if (closing) return closing;
+		lifecycle?.close();
+		for (const remove of removeLifecycleListeners) remove();
+		removeLifecycleListeners = [];
+		closing = closeResources({ harness, repo, executionEnv, releaseOwnership });
 		return closing;
 	};
 	const closeAndExit = (): void => {
@@ -277,6 +352,39 @@ async function run(args: readonly string[]): Promise<void> {
 			},
 		);
 	};
+
+	lifecycle = new WorkerLifecycle({
+		enabled: control.coordinated,
+		initialServerConnectionId: control.initialServerConnectionId,
+		initialDemandGraceMs: lifecycleDelay(SESSION_WORKER_INITIAL_DEMAND_GRACE_ENV, DEFAULT_INITIAL_DEMAND_GRACE_MS),
+		orphanDemandGraceMs: lifecycleDelay(SESSION_WORKER_ORPHAN_DEMAND_GRACE_ENV, DEFAULT_ORPHAN_DEMAND_GRACE_MS),
+		onRetire: closeAndExit,
+	});
+	removeLifecycleListeners = [
+		harness.events.on("run_start", (event) => lifecycle?.operationStarted("run", event.lane, event.runId)),
+		harness.events.on("run_resume", (event) => lifecycle?.operationStarted("run", event.lane, event.runId)),
+		harness.events.on("run_suspend", (event) => lifecycle?.operationStopped("run", event.lane, event.runId)),
+		harness.events.on("run_end", (event) => lifecycle?.operationStopped("run", event.lane, event.runId)),
+		harness.events.on("compaction_start", (event) =>
+			lifecycle?.operationStarted("compaction", event.lane, event.runId),
+		),
+		harness.events.on("compaction_suspend", (event) =>
+			lifecycle?.operationStopped("compaction", event.lane, event.runId),
+		),
+		harness.events.on("compaction_end", (event) =>
+			lifecycle?.operationStopped("compaction", event.lane, event.runId),
+		),
+		harness.events.on("navigation_start", (event) =>
+			lifecycle?.operationStarted("navigation", event.lane, event.runId),
+		),
+		harness.events.on("navigation_suspend", (event) =>
+			lifecycle?.operationStopped("navigation", event.lane, event.runId),
+		),
+		harness.events.on("navigation_end", (event) =>
+			lifecycle?.operationStopped("navigation", event.lane, event.runId),
+		),
+		harness.events.on("fault", closeAndExit),
+	];
 
 	let ready = false;
 	const announce = (): void => {
@@ -292,7 +400,38 @@ async function run(args: readonly string[]): Promise<void> {
 			})
 			.catch(() => closeAndExit());
 	};
-	void readCommands(control, closeAndExit, announce);
+	void readCommands(control, {
+		onShutdown: closeAndExit,
+		onDiscovery: announce,
+		onDemand: async (command) => {
+			const releaseRetirement = lifecycle?.holdRetirement() ?? (() => {});
+			try {
+				try {
+					lifecycle?.setDemand(command.serverConnectionId, command.attachmentId);
+				} catch (error) {
+					await control.send({
+						type: "demand_rejected",
+						token,
+						sessionKey,
+						requestId: command.requestId,
+						message: error instanceof Error ? error.message : String(error),
+					});
+					return;
+				}
+				await control.send({
+					type: "demand_applied",
+					token,
+					sessionKey,
+					requestId: command.requestId,
+					attachmentId: command.attachmentId,
+				});
+			} finally {
+				releaseRetirement();
+			}
+		},
+		onServerConnected: (serverConnectionId) => lifecycle?.serverConnected(serverConnectionId),
+		onServerDisconnected: (serverConnectionId) => lifecycle?.serverDisconnected(serverConnectionId),
+	}).catch(() => closeAndExit());
 	control.socket.once("close", closeAndExit);
 	control.socket.once("error", () => closeAndExit());
 	process.once("SIGTERM", closeAndExit);

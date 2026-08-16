@@ -7,8 +7,8 @@ import {
 	type ServiceRpcCall,
 	type ServiceRpcResultUnion,
 } from "@earendil-works/pi-protocol";
-import { ServerDrainingError, SessionAmbiguousError, SessionNotFoundError } from "./errors.ts";
-import type { HostedHarnessHandle, PiServerHost } from "./types.ts";
+import { ServerDrainingError, SessionAmbiguousError, SessionInUseError, SessionNotFoundError } from "./errors.ts";
+import type { HostedHarnessAttachment, HostedHarnessHandle, PiServerHost } from "./types.ts";
 
 class HarnessCleanupError extends AggregateError {}
 
@@ -25,9 +25,17 @@ function toProtocolSessionMetadata(metadata: SessionMetadata): ProtocolSessionMe
 	};
 }
 
+interface ClientAttachment {
+	readonly client: object;
+	readonly session: HostedSession;
+	lease?: HostedHarnessAttachment;
+	releasing?: Promise<void>;
+}
+
 interface HostedSession {
 	readonly id: string;
 	readonly harness: HostedHarnessHandle;
+	attachment?: ClientAttachment;
 }
 
 interface HostedHarnessManagerOptions<TMetadata extends SessionMetadata> {
@@ -40,8 +48,11 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 	private readonly options: HostedHarnessManagerOptions<TMetadata>;
 	private readonly hostedSessions = new Map<string, HostedSession>();
 	private readonly openingSessions = new Map<string, Promise<HostedSession>>();
+	private readonly attachmentsByClient = new Map<object, ClientAttachment>();
+	private readonly disconnectedClients = new Set<object>();
+	private readonly clientOperations = new Map<object, Promise<void>>();
 	private closePromise?: Promise<void>;
-	private readonly dispatchRpc: (call: ServiceRpcCall, context: undefined) => Promise<ServiceRpcResultUnion>;
+	private readonly dispatchRpc: (call: ServiceRpcCall, client: object) => Promise<ServiceRpcResultUnion>;
 
 	constructor(options: HostedHarnessManagerOptions<TMetadata>) {
 		this.options = options;
@@ -49,18 +60,29 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 			ServiceRpc,
 			{
 				list: async () => (await this.options.host.sessions.list()).map(toProtocolSessionMetadata),
-				attach: async (_context, sessionId) => {
+				attach: async (client, sessionId) => {
 					if (this.options.isClosing()) throw new ServerDrainingError();
-					const hosted = await this.acquire(sessionId);
-					return { sessionId: hosted.id };
+					return this.runForClient(client, () => this.attachClient(client, sessionId));
 				},
 			},
 			(message) => new ProtocolValidationError(message),
 		);
 	}
 
-	executeCall(call: ServiceRpcCall): Promise<ServiceRpcResultUnion> {
-		return this.dispatchRpc(call, undefined);
+	executeCall(call: ServiceRpcCall, client: object): Promise<ServiceRpcResultUnion> {
+		return this.dispatchRpc(call, client);
+	}
+
+	async disconnect(client: object): Promise<void> {
+		this.disconnectedClients.add(client);
+		try {
+			await this.runForClient(client, async () => {
+				const attachment = this.attachmentsByClient.get(client);
+				if (attachment) await this.releaseAttachment(attachment);
+			});
+		} finally {
+			this.disconnectedClients.delete(client);
+		}
 	}
 
 	close(): Promise<void> {
@@ -69,12 +91,25 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 	}
 
 	private async closeInternal(): Promise<void> {
-		const openingResults = await Promise.allSettled(this.openingSessions.values());
+		const operationPromises = [...this.clientOperations.values()];
+		const openingPromises = [...this.openingSessions.values()];
+		const [operationResults, openingResults] = await Promise.all([
+			Promise.allSettled(operationPromises),
+			Promise.allSettled(openingPromises),
+		]);
 		const closeErrors: unknown[] = [];
-		for (const result of openingResults) {
+		for (const result of [...operationResults, ...openingResults]) {
 			if (result.status !== "rejected") continue;
 			this.options.reportError(result.reason);
 			if (result.reason instanceof HarnessCleanupError) closeErrors.push(result.reason);
+		}
+		const attachmentResults = await Promise.allSettled(
+			[...this.hostedSessions.values()].flatMap((session) =>
+				session.attachment ? [this.releaseAttachment(session.attachment)] : [],
+			),
+		);
+		for (const result of attachmentResults) {
+			if (result.status === "rejected") closeErrors.push(result.reason);
 		}
 		const hosted = [...this.hostedSessions.values()];
 		const closeResults = await Promise.allSettled(hosted.map(({ harness }) => harness.close()));
@@ -88,7 +123,67 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 			this.options.reportError(result.reason);
 			closeErrors.push(result.reason);
 		}
+		this.attachmentsByClient.clear();
+		this.clientOperations.clear();
 		if (closeErrors.length > 0) throw new AggregateError(closeErrors, "Failed to close hosted Harnesses");
+	}
+
+	private runForClient<T>(client: object, operation: () => Promise<T>): Promise<T> {
+		const previous = this.clientOperations.get(client) ?? Promise.resolve();
+		const result = previous.catch(() => {}).then(operation);
+		const tail = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.clientOperations.set(client, tail);
+		void tail.finally(() => {
+			if (this.clientOperations.get(client) === tail) this.clientOperations.delete(client);
+		});
+		return result;
+	}
+
+	private async attachClient(client: object, sessionId: string): Promise<{ sessionId: string }> {
+		if (this.options.isClosing() || this.disconnectedClients.has(client)) throw new ServerDrainingError();
+		const current = this.attachmentsByClient.get(client);
+		if (current?.session.id === sessionId) return { sessionId };
+		if (current) await this.releaseAttachment(current);
+
+		const hosted = await this.acquire(sessionId);
+		if (this.options.isClosing() || this.disconnectedClients.has(client)) throw new ServerDrainingError();
+		const occupied = hosted.attachment;
+		if (occupied) {
+			if (occupied.client !== client) throw new SessionInUseError();
+			return { sessionId };
+		}
+
+		const attachment: ClientAttachment = { client, session: hosted };
+		hosted.attachment = attachment;
+		try {
+			attachment.lease = hosted.harness.attachClient ? await hosted.harness.attachClient() : { release: () => {} };
+		} catch (error) {
+			if (hosted.attachment === attachment) hosted.attachment = undefined;
+			throw error;
+		}
+		if (hosted.attachment !== attachment || this.disconnectedClients.has(client) || this.options.isClosing()) {
+			await this.releaseAttachment(attachment);
+			throw new ServerDrainingError();
+		}
+		this.attachmentsByClient.set(client, attachment);
+		return { sessionId };
+	}
+
+	private releaseAttachment(attachment: ClientAttachment): Promise<void> {
+		attachment.releasing ??= (async () => {
+			try {
+				if (attachment.lease) await attachment.lease.release();
+			} finally {
+				if (attachment.session.attachment === attachment) attachment.session.attachment = undefined;
+				if (this.attachmentsByClient.get(attachment.client) === attachment) {
+					this.attachmentsByClient.delete(attachment.client);
+				}
+			}
+		})();
+		return attachment.releasing;
 	}
 
 	private async acquire(sessionId: string): Promise<HostedSession> {
@@ -137,6 +232,13 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 	private invalidate(hosted: HostedSession, error: Error | undefined): void {
 		if (this.hostedSessions.get(hosted.id) !== hosted) return;
 		this.hostedSessions.delete(hosted.id);
+		const attachment = hosted.attachment;
+		if (attachment) {
+			hosted.attachment = undefined;
+			if (this.attachmentsByClient.get(attachment.client) === attachment) {
+				this.attachmentsByClient.delete(attachment.client);
+			}
+		}
 		if (error) this.options.reportError(error);
 	}
 }

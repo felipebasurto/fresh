@@ -13,14 +13,6 @@ const DEFAULT_GRACEFUL_CLOSE_TIMEOUT_MS = 5_000;
 const MAX_UINT32 = 0xffff_ffff;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const SOCKET_PROBE_TIMEOUT_MS = 1_000;
-const MAX_UNIX_SOCKET_PATH_BYTES = process.platform === "linux" ? 107 : 103;
-
-export function validateUnixSocketPath(path: string, description = "Unix socket path"): void {
-	if (!path) throw new TypeError(`${description} must not be empty`);
-	if (Buffer.byteLength(path) > MAX_UNIX_SOCKET_PATH_BYTES) {
-		throw new TypeError(`${description} is too long; maximum is ${MAX_UNIX_SOCKET_PATH_BYTES} UTF-8 bytes`);
-	}
-}
 
 interface ResolvedUnixListenerOptions {
 	path: string;
@@ -58,7 +50,6 @@ class UnixListener implements PiServerListener {
 		this.accept = accept;
 
 		const ownedBindPath = getOwnedBindPath(this.path);
-		validateUnixSocketPath(ownedBindPath, "PiServer private Unix bind path");
 		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
 		await removeStaleSocket(this.path);
 		await removeStaleSocket(ownedBindPath);
@@ -399,7 +390,7 @@ export function createUnixListener(options: UnixListenerOptions): PiServerListen
 }
 
 function resolveUnixListenerOptions(options: UnixListenerOptions): ResolvedUnixListenerOptions {
-	validateUnixSocketPath(options.path, "PiServer Unix socket path");
+	if (!options.path) throw new TypeError("PiServer Unix socket path must not be empty");
 	const mode = options.mode ?? DEFAULT_SOCKET_MODE;
 	if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) {
 		throw new TypeError("PiServer Unix socket mode must be an integer between 0 and 0o777");

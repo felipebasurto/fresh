@@ -32,21 +32,6 @@ test("requires explicit listeners and a canonical UUIDv4 server identity", () =>
 	expect(() => new PiServer(host, { listeners: [], serverId: "invalid-server" })).toThrow(/serverId/);
 });
 
-test("rejects Unix socket paths that cannot fit in sockaddr_un", () => {
-	expect(() =>
-		createUnixServer(host, { path: `/tmp/${"x".repeat(512)}`, serverId: "00000000-0000-4000-8000-000000000001" }),
-	).toThrow(/too long/);
-});
-
-test("rejects an overlong derived private Unix bind path", async () => {
-	const maxLength = process.platform === "linux" ? 107 : 103;
-	const suffixLength = Buffer.byteLength("/tmp//s");
-	const path = `/tmp/${"x".repeat(maxLength - suffixLength)}/s`;
-	server = createUnixServer(host, { path, serverId: "00000000-0000-4000-8000-000000000001" });
-
-	await expect(server.start()).rejects.toThrow(/private Unix bind path.*too long/);
-});
-
 test("rejects concurrent start calls without leaking the Unix listener", async () => {
 	const path = await makeSocketPath();
 	server = createUnixServer(host, { path, serverId: "00000000-0000-4000-8000-000000000001" });

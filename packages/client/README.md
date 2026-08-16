@@ -25,7 +25,7 @@ const attachment = await client.attachSession(sessions[0].id);
 
 The client verifies that the physical endpoint reports the expected logical `serverId`. Every list and attach request carries that ID again so the final server can reject misdelivery.
 
-`attachSession()` currently returns only `{ sessionId }`. Remote Session and Harness methods will be added directly from the new shared interfaces in a later slice. The client does not reconnect or replay requests automatically. After disconnection, call `reconnect()` and explicitly repeat safe control-plane actions.
+`attachSession()` currently returns only `{ sessionId }`. The attachment is exclusive to that client connection and is released on disconnect or disposal. Remote Session and Harness methods will be added directly from the new shared interfaces in a later slice. The client does not reconnect or replay requests automatically. After disconnection, call `reconnect()` and explicitly repeat safe control-plane actions.
 
 The experimental local coordinator only provides a stable endpoint and relays traffic. Replaceable server processes own session and worker lifecycle outside the public client protocol.
 
@@ -61,7 +61,7 @@ const routes = await discoverUnixServers({ directory: "/run/user/1000/pi" });
 // [{ serverId: "...", path: "/run/user/1000/pi/<serverId>.sock" }]
 ```
 
-Malformed entries, non-sockets, stale or unresponsive endpoints, and server-ID mismatches are ignored. Discovery is read-only and probes at most 16 sockets concurrently. Unexpected filesystem and socket errors reject discovery. The caller must choose a short, private directory because Unix socket path limits are substantially lower than normal filesystem path limits.
+Malformed entries, non-sockets, stale or unresponsive endpoints, and server-ID mismatches are ignored. Discovery is read-only and probes at most 16 sockets concurrently. Unexpected filesystem and socket errors reject discovery.
 Pass `timeoutMs` to override the default probe timeout.
 
 `PiClientOptions.maxFrameLength` bounds protocol payloads. `maxPendingBytes` bounds queued Unix transport output. Configure matching limits on both peers.

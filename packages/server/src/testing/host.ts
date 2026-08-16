@@ -27,12 +27,25 @@ export class TestHarness {
 	readonly closed = new Deferred<void>();
 	readonly #termination = new Deferred<Error | undefined>();
 	readonly terminated = this.#termination.promise;
+	attachedClients = 0;
 	closeCount = 0;
 	failClose?: Error;
 	private nextCloseGate?: OpenGate;
 
 	constructor(session: Session) {
 		this.session = session;
+	}
+
+	attachClient(): { release(): void } {
+		this.attachedClients += 1;
+		let released = false;
+		return {
+			release: () => {
+				if (released) return;
+				released = true;
+				this.attachedClients -= 1;
+			},
+		};
 	}
 
 	async close(): Promise<void> {

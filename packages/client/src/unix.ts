@@ -11,7 +11,6 @@ import { PiClient } from "./client.ts";
 import { PiDisconnectedError, PiServerError } from "./errors.ts";
 import type { ByteTransport, ByteTransportFactory, ByteTransportHandlers } from "./transport.ts";
 
-const MAX_UNIX_SOCKET_PATH_BYTES = process.platform === "linux" ? 107 : 103;
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 1_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const UNIX_SOCKET_SUFFIX = ".sock";
@@ -93,9 +92,6 @@ export function createUnixTransportFactory(options: UnixTransportOptions): ByteT
 
 function validateUnixTransportOptions(options: UnixTransportOptions): number {
 	if (options.path.length === 0) throw new TypeError("Unix transport path must not be empty");
-	if (Buffer.byteLength(options.path) > MAX_UNIX_SOCKET_PATH_BYTES) {
-		throw new TypeError(`Unix transport path is too long; maximum is ${MAX_UNIX_SOCKET_PATH_BYTES} UTF-8 bytes`);
-	}
 	const maxPendingBytes = options.maxPendingBytes ?? DEFAULT_MAX_FRAME_LENGTH * 4;
 	if (!Number.isSafeInteger(maxPendingBytes) || maxPendingBytes <= 0) {
 		throw new TypeError("Unix transport maxPendingBytes must be a positive safe integer");

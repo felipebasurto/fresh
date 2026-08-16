@@ -7,7 +7,7 @@ The current slice supports two client operations:
 - `list` calls `SessionRepo.list()` without opening sessions.
 - `attach` finds the requested metadata, passes it to the host, and retains the returned Harness handle in the server.
 
-Concurrent attachments to one session reuse one hosted Harness. Attachment is a one-shot acquisition request, so losing the client connection does not close the Harness. Server shutdown closes every hosted Harness, releasing its Session writer ownership.
+A Session permits one attached client connection at a time. Repeating `attach` from that connection is idempotent; another connection receives `session_in_use`. Losing the connection releases its attachment lease. The host decides when zero client demand and Harness activity permit worker retirement. Server shutdown closes every hosted Harness, releasing its Session writer ownership.
 
 ```ts
 import { randomUUID } from "node:crypto";
@@ -58,4 +58,4 @@ Applications supply a session catalog and a Harness factory. The server only cal
 
 `PiServer` composes authenticated transports through `PiServerListener`. The Unix submodule provides `createUnixListener()` and `createUnixServer()`. Low-level CBOR framing and validation come from `@earendil-works/pi-protocol`.
 
-Server and worker lifecycle is managed by the replaceable application server rather than the public Pi protocol. The experimental coordinator only supplies stable routing between processes.
+Server and worker lifecycle is managed outside the public Pi protocol. The replaceable application server converts connection attachments into private demand updates; the worker combines generation-tagged demand with authoritative Harness activity. The experimental coordinator only supplies stable routing and reports generic server-generation connection changes.

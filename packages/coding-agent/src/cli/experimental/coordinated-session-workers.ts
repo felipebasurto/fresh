@@ -2,7 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
-import type { HostedHarnessHandle } from "@earendil-works/pi-server";
+import type { HostedHarnessAttachment, HostedHarnessHandle } from "@earendil-works/pi-server";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import type { CoordinatorServer, CoordinatorServerEvent } from "./coordinator-client.ts";
@@ -18,6 +18,7 @@ import {
 const WORKER_STARTUP_TIMEOUT_MS = 15_000;
 const WORKER_SHUTDOWN_TIMEOUT_MS = 10_000;
 const WORKER_DISCOVERY_TIMEOUT_MS = 5_000;
+const WORKER_DEMAND_TIMEOUT_MS = 5_000;
 
 const JsonlSessionMetadataSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
@@ -45,6 +46,20 @@ const WorkerMessageSchema = Type.Union([
 		sessionKey: Type.String(),
 		message: Type.String(),
 	}),
+	Type.Object({
+		type: Type.Literal("demand_applied"),
+		token: Type.String(),
+		sessionKey: Type.String(),
+		requestId: Type.String(),
+		attachmentId: Type.Union([Type.String(), Type.Null()]),
+	}),
+	Type.Object({
+		type: Type.Literal("demand_rejected"),
+		token: Type.String(),
+		sessionKey: Type.String(),
+		requestId: Type.String(),
+		message: Type.String(),
+	}),
 ]);
 type WorkerMessage = Static<typeof WorkerMessageSchema>;
 
@@ -52,9 +67,21 @@ interface WorkerRecord {
 	readonly peerId: string;
 	readonly metadata: JsonlSessionMetadata;
 	readonly pid: number;
+	readonly token: string;
 	readonly terminated: Promise<Error | undefined>;
 	resolveTerminated(error: Error | undefined): void;
+	attachmentId?: string;
 	expectedStop: boolean;
+	stopping: boolean;
+}
+
+interface PendingDemand {
+	readonly attachmentId: string | null;
+	readonly requestId: string;
+	readonly timer: NodeJS.Timeout;
+	readonly worker: WorkerRecord;
+	resolve(): void;
+	reject(error: Error): void;
 }
 
 interface PendingLaunch {
@@ -76,15 +103,18 @@ export class CoordinatedSessionWorkers {
 	readonly #workersBySession = new Map<string, WorkerRecord>();
 	readonly #workersByPeer = new Map<string, WorkerRecord>();
 	readonly #pending = new Map<string, PendingLaunch>();
+	readonly #pendingDemand = new Map<string, PendingDemand>();
 	readonly #removeListener: () => void;
+	readonly #onWorkerCountChanged: ((count: number) => void) | undefined;
 	#discoveryPeers?: Set<string>;
 	#resolveDiscovery?: () => void;
 	#detached = false;
 	#shuttingDown = false;
 
-	constructor(coordinator: CoordinatorServer, sessionDir: string) {
+	constructor(coordinator: CoordinatorServer, sessionDir: string, onWorkerCountChanged?: (count: number) => void) {
 		this.#coordinator = coordinator;
 		this.#sessionDir = sessionDir;
+		this.#onWorkerCountChanged = onWorkerCountChanged;
 		this.#removeListener = coordinator.onEvent((event) => this.#handleCoordinatorEvent(event));
 	}
 
@@ -119,14 +149,92 @@ export class CoordinatedSessionWorkers {
 	async createHarness(metadata: JsonlSessionMetadata): Promise<HostedHarnessHandle> {
 		if (this.#detached || this.#shuttingDown) throw new Error("Experimental server is shutting down");
 		const existing = this.#workersBySession.get(metadata.path);
-		if (existing) return { terminated: existing.terminated, close: async () => {} };
+		if (existing) return this.#hostedHandle(existing);
 		const pending = this.#pending.get(metadata.path);
-		if (pending) {
-			const worker = await pending.promise;
-			return { terminated: worker.terminated, close: async () => {} };
+		if (pending) return this.#hostedHandle(await pending.promise);
+		return this.#hostedHandle(await this.#launch(metadata));
+	}
+
+	#hostedHandle(worker: WorkerRecord): HostedHarnessHandle {
+		return {
+			terminated: worker.terminated,
+			attachClient: () => this.#attachClient(worker),
+			close: () => this.#stopWorker(worker),
+		};
+	}
+
+	async #attachClient(worker: WorkerRecord): Promise<HostedHarnessAttachment> {
+		if (this.#detached || this.#shuttingDown || worker.stopping) {
+			throw new Error("Experimental Session worker is stopping");
 		}
-		const worker = await this.#launch(metadata);
-		return { terminated: worker.terminated, close: async () => {} };
+		if (this.#workersByPeer.get(worker.peerId) !== worker) {
+			throw new Error("Experimental Session worker is no longer available");
+		}
+		if (worker.attachmentId !== undefined) throw new Error("Experimental Session is already attached");
+		const attachmentId = randomUUID();
+		worker.attachmentId = attachmentId;
+		try {
+			await this.#applyDemand(worker, attachmentId);
+		} catch (error) {
+			if (worker.attachmentId === attachmentId) worker.attachmentId = undefined;
+			throw error;
+		}
+		let released = false;
+		return {
+			release: async () => {
+				if (released) return;
+				released = true;
+				if (this.#detached || worker.attachmentId !== attachmentId) return;
+				try {
+					await this.#applyDemand(worker, null);
+				} catch (error) {
+					if (!this.#detached && !this.#coordinator.wasReplaced) throw error;
+				} finally {
+					if (worker.attachmentId === attachmentId) worker.attachmentId = undefined;
+				}
+			},
+		};
+	}
+
+	async #applyDemand(worker: WorkerRecord, attachmentId: string | null): Promise<void> {
+		if (worker.stopping || this.#workersByPeer.get(worker.peerId) !== worker) {
+			throw new Error("Experimental Session worker is stopping");
+		}
+		const requestId = randomUUID();
+		let resolve!: () => void;
+		let reject!: (error: Error) => void;
+		const applied = new Promise<void>((resolvePromise, rejectPromise) => {
+			resolve = resolvePromise;
+			reject = rejectPromise;
+		});
+		const timer = setTimeout(
+			() => this.#rejectDemand(requestId, new Error("Session worker demand update timed out")),
+			WORKER_DEMAND_TIMEOUT_MS,
+		);
+		timer.unref();
+		const pending = { attachmentId, requestId, timer, worker, resolve, reject };
+		this.#pendingDemand.set(requestId, pending);
+		try {
+			await this.#coordinator.send(worker.peerId, {
+				type: "session_demand",
+				serverConnectionId: this.#coordinator.serverConnectionId,
+				requestId,
+				attachmentId,
+			});
+		} catch (error) {
+			this.#rejectDemand(requestId, error instanceof Error ? error : new Error(String(error)));
+		}
+		return applied;
+	}
+
+	async #stopWorker(worker: WorkerRecord): Promise<void> {
+		if (this.#detached || this.#workersByPeer.get(worker.peerId) !== worker) return;
+		if (!worker.stopping) {
+			worker.stopping = true;
+			worker.expectedStop = true;
+			await this.#coordinator.send(worker.peerId, { type: "shutdown" }).catch(() => {});
+		}
+		await worker.terminated;
 	}
 
 	async shutdown(): Promise<void> {
@@ -138,6 +246,7 @@ export class CoordinatedSessionWorkers {
 		const workers = [...this.#workersBySession.values()];
 		for (const worker of workers) {
 			worker.expectedStop = true;
+			worker.stopping = true;
 			void this.#coordinator.send(worker.peerId, { type: "shutdown" }).catch(() => {});
 		}
 		const finished = Promise.all([
@@ -209,6 +318,7 @@ export class CoordinatedSessionWorkers {
 		timer.unref();
 		const pending = { sessionKey, peerId, token, child, timer, promise, resolve, reject };
 		this.#pending.set(sessionKey, pending);
+		this.#notifyWorkerCountChanged();
 		child.once("error", (error) => this.#failPending(sessionKey, error));
 		child.once("exit", (code, signal) => this.#childExited(pending, code, signal));
 		return promise;
@@ -238,6 +348,23 @@ export class CoordinatedSessionWorkers {
 			if (pending?.peerId === event.from && pending.token === message.token) {
 				this.#failPending(message.sessionKey, new Error(`Session worker failed: ${message.message}`));
 			}
+			return;
+		}
+		if (message.type === "demand_applied" || message.type === "demand_rejected") {
+			const pending = this.#pendingDemand.get(message.requestId);
+			if (
+				!pending ||
+				pending.worker.peerId !== event.from ||
+				pending.worker.token !== message.token ||
+				pending.worker.metadata.path !== message.sessionKey ||
+				(message.type === "demand_applied" && pending.attachmentId !== message.attachmentId)
+			) {
+				return;
+			}
+			this.#pendingDemand.delete(message.requestId);
+			clearTimeout(pending.timer);
+			if (message.type === "demand_applied") pending.resolve();
+			else pending.reject(new Error(`Session worker rejected demand: ${message.message}`));
 			return;
 		}
 		this.#recordReadyWorker(event.from, message);
@@ -274,9 +401,11 @@ export class CoordinatedSessionWorkers {
 			peerId,
 			metadata: message.metadata,
 			pid: message.pid,
+			token: message.token,
 			terminated,
 			resolveTerminated,
 			expectedStop: false,
+			stopping: false,
 		};
 		this.#workersBySession.set(message.sessionKey, worker);
 		this.#workersByPeer.set(peerId, worker);
@@ -286,6 +415,7 @@ export class CoordinatedSessionWorkers {
 			clearTimeout(pending.timer);
 			pending.resolve(worker);
 		}
+		this.#notifyWorkerCountChanged();
 	}
 
 	#childExited(pending: PendingLaunch, code: number | null, signal: NodeJS.Signals | null): void {
@@ -312,16 +442,35 @@ export class CoordinatedSessionWorkers {
 		if (!pending) return;
 		this.#pending.delete(sessionKey);
 		clearTimeout(pending.timer);
+		this.#notifyWorkerCountChanged();
 		if (pending.child.exitCode === null && pending.child.signalCode === null) pending.child.kill("SIGKILL");
+		pending.reject(error);
+	}
+
+	#rejectDemand(requestId: string, error: Error): void {
+		const pending = this.#pendingDemand.get(requestId);
+		if (!pending) return;
+		this.#pendingDemand.delete(requestId);
+		clearTimeout(pending.timer);
 		pending.reject(error);
 	}
 
 	#removeWorker(worker: WorkerRecord, error: Error | undefined): void {
 		if (this.#workersByPeer.get(worker.peerId) !== worker) return;
+		for (const pending of [...this.#pendingDemand.values()]) {
+			if (pending.worker === worker) {
+				this.#rejectDemand(pending.requestId, new Error("Session worker disconnected during demand update"));
+			}
+		}
 		this.#workersByPeer.delete(worker.peerId);
 		this.#workersBySession.delete(worker.metadata.path);
 		if (this.workerPids.get(worker.metadata.id) === worker.pid) this.workerPids.delete(worker.metadata.id);
 		worker.resolveTerminated(error);
+		this.#notifyWorkerCountChanged();
+	}
+
+	#notifyWorkerCountChanged(): void {
+		this.#onWorkerCountChanged?.(this.#workersBySession.size + this.#pending.size);
 	}
 
 	#pendingPeer(peerId: string): PendingLaunch | undefined {
@@ -335,6 +484,11 @@ export class CoordinatedSessionWorkers {
 
 	#detachState(): void {
 		this.#removeListener();
+		for (const pending of [...this.#pendingDemand.values()]) {
+			this.#pendingDemand.delete(pending.requestId);
+			clearTimeout(pending.timer);
+			pending.resolve();
+		}
 		this.#pending.clear();
 		this.#workersByPeer.clear();
 		this.#workersBySession.clear();
