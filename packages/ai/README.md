@@ -26,6 +26,7 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
   - [Streaming Tool Calls with Partial JSON](#streaming-tool-calls-with-partial-json)
   - [Validating Tool Arguments](#validating-tool-arguments)
   - [Complete Event Reference](#complete-event-reference)
+  - [Compact Assistant Message Frames](#compact-assistant-message-frames)
 - [Image Input](#image-input)
 - [Image Generation](#image-generation)
 - [Thinking/Reasoning](#thinkingreasoning)
@@ -664,11 +665,36 @@ All streaming events emitted during assistant message generation:
 | `thinking_end` | Thinking block complete | `content`: Full thinking, `contentIndex`: Position |
 | `toolcall_start` | Tool call begins | `contentIndex`: Position in content array |
 | `toolcall_delta` | Tool arguments streaming | `delta`: JSON chunk, `partial.content[contentIndex].arguments`: Partial parsed args |
-| `toolcall_end` | Tool call complete | `toolCall`: Complete validated tool call with `id`, `name`, `arguments` |
+| `toolcall_end` | Tool call complete | `toolCall`: Complete, but not schema-validated, tool call with `id`, `name`, `arguments` |
 | `done` | Stream complete | `reason`: Stop reason ("stop", "length", "toolUse"), `message`: Final assistant message |
 | `error` | Error occurred | `reason`: Error type ("error" or "aborted"), `error`: AssistantMessage with partial content |
 
 Streaming events for different content blocks are not guaranteed to be contiguous. Providers may emit deltas for text, thinking, and tool calls in the same upstream chunk, and pi may surface corresponding events interleaved, for example `text_start`, `text_delta`, `toolcall_start`, `text_delta`, `toolcall_delta`. Consumers must use `contentIndex` to associate each delta/end event with its block and must not assume that a block's `*_start`/`*_delta`/`*_end` sequence is uninterrupted by events for other blocks.
+
+### Compact Assistant Message Frames
+
+`assistantMessageEventToFrame()` converts stream events to compact, persistable `AssistantMessageFrame` values. It snapshots only public message/block fields, omits the growing `partial` message and provider scratch fields from later frames, and returns `undefined` for terminal `done` and `error` events because final message settlement is separate. End frames retain authoritative completed text, thinking, or tool arguments once; this permits provider end events to correct or supply content without repeated full-partial snapshots.
+
+`reduceAssistantMessageFrames()` is the canonical pure reducer for these frames. It reconstructs text, thinking, and tool-call arguments, including interleaved blocks identified by `contentIndex`, and rejects malformed block sequences. It returns `undefined` when there is no start frame to reduce. For an unfinished tool call, the reducer accumulates its JSON deltas and invokes `parseStreamingJson` once after consuming the iterable; a `toolcall_end` frame instead supplies authoritative final arguments. The reducer does not validate arguments against a tool's TypeBox schema. Call `validateToolCall` before execution where schema validation is required.
+
+Deltas reconstruct the latest unfinished block. An end frame replaces that block with the provider's authoritative completed content and metadata. Persist every frame in order; terminal `done`/`error` message settlement remains separate.
+
+```typescript
+import {
+  assistantMessageEventToFrame,
+  reduceAssistantMessageFrames,
+  type AssistantMessageFrame,
+} from '@earendil-works/pi-ai';
+
+const frames: AssistantMessageFrame[] = [];
+for await (const event of s) {
+  const frame = assistantMessageEventToFrame(event);
+  if (frame) frames.push(frame);
+}
+
+const reconstructedPartial = reduceAssistantMessageFrames(frames);
+const finalMessage = await s.result(); // Persist terminal settlement separately.
+```
 
 ## Image Input
 
