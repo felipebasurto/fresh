@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { ServerLifetime } from "../src/cli/experimental/server.ts";
+import { ServerLifetime } from "../src/experimental/server.ts";
 
 afterEach(() => {
 	vi.useRealTimers();

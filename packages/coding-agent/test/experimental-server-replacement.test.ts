@@ -4,7 +4,7 @@ import { lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
-import { runClient } from "../src/cli/experimental/client.ts";
+import { runClient } from "../src/experimental/client.ts";
 import { configureExperimentalWorkerModel, createExperimentalSessions } from "./experimental-session-support.ts";
 
 const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));

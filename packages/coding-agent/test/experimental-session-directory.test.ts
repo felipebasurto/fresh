@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { resolveSessionDirectory } from "../src/cli/experimental/server.ts";
+import { resolveSessionDirectory } from "../src/experimental/server.ts";
 
 afterEach(() => vi.unstubAllEnvs());
 

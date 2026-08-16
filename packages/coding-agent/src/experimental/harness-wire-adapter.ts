@@ -294,7 +294,10 @@ function toWireRunValue(value: Extract<HarnessRunResult, { ok: true }>["value"])
 				reason: "missing_identities",
 				runId: value.runId,
 				leafId: value.leafId,
-				missing: { tools: [...value.missing.tools], models: [...value.missing.models] },
+				missing: {
+					tools: [...value.missing.tools],
+					models: value.missing.model === undefined ? [] : [value.missing.model],
+				},
 			};
 		default:
 			return assertNever(value);
@@ -316,7 +319,7 @@ function toWireRunError(error: Extract<HarnessRunResult, { ok: false }>["error"]
 				_tag: "MissingIdentities",
 				lane: error.lane,
 				tools: [...error.tools],
-				models: [...error.models],
+				models: error.model === undefined ? [] : [error.model],
 				message: error.message,
 			};
 		case "InvalidMessage":

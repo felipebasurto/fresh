@@ -2,7 +2,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { acquireServerProfile } from "../src/cli/experimental/server.ts";
+import { acquireServerProfile } from "../src/experimental/server.ts";
 
 const directories = new Set<string>();
 const FIRST_SERVER_ID = "00000000-0000-4000-8000-000000000001";

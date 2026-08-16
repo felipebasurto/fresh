@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { runCoordinatorProcess } from "../cli/experimental/coordinator.ts";
-import { consumeInternalProcessRole, getInternalProcessRole } from "../cli/experimental/process.ts";
+import { runCoordinatorProcess } from "../experimental/coordinator.ts";
+import { consumeInternalProcessRole, getInternalProcessRole } from "../experimental/process.ts";
 import { restoreSandboxEnv } from "./restore-sandbox-env.ts";
 
 restoreSandboxEnv();

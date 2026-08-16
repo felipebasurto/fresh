@@ -1,7 +1,7 @@
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
 import { describe, expect, test } from "vitest";
-import type { CoordinatorConnectionEvent } from "../src/cli/experimental/coordinator.ts";
-import { SessionWorkerManager } from "../src/cli/experimental/session-worker-manager.ts";
+import type { CoordinatorConnectionEvent } from "../src/experimental/coordinator.ts";
+import { SessionWorkerManager } from "../src/experimental/session-worker-manager.ts";
 
 const metadata: JsonlSessionMetadata = {
 	id: "session-1",

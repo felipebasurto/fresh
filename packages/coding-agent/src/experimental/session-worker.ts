@@ -22,7 +22,7 @@ import {
 import lockfile from "proper-lockfile";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
-import { ModelRuntime } from "../../core/model-runtime.ts";
+import { ModelRuntime } from "../core/model-runtime.ts";
 import { toHarnessPromptArguments, toWireRunResult } from "./harness-wire-adapter.ts";
 import { consumeInternalProcessRole, encodeControlLine, MAX_CONTROL_LINE_BYTES } from "./process.ts";
 

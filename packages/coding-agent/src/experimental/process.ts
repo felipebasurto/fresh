@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { isBunBinary } from "../../config.ts";
+import { isBunBinary } from "../config.ts";
 
 export const INTERNAL_PROCESS_ENV = "__PI_INTERNAL_SPAWN";
 

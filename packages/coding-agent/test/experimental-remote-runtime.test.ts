@@ -3,8 +3,8 @@ import { join, resolve } from "node:path";
 import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { runClient } from "../src/cli/experimental/client.ts";
-import { type RunningServer, startServer } from "../src/cli/experimental/server.ts";
+import { runClient } from "../src/experimental/client.ts";
+import { type RunningServer, startServer } from "../src/experimental/server.ts";
 import { configureExperimentalWorkerModel, createExperimentalSessions } from "./experimental-session-support.ts";
 
 const servers = new Set<RunningServer>();

@@ -11,7 +11,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { type PromptArguments, type PromptMessage, RunResultSchema } from "@earendil-works/pi-protocol";
 import { Check } from "typebox/value";
 import { describe, expect, test } from "vitest";
-import { toHarnessPromptArguments, toWireRunResult } from "../src/cli/experimental/harness-wire-adapter.ts";
+import { toHarnessPromptArguments, toWireRunResult } from "../src/experimental/harness-wire-adapter.ts";
 
 const usage = {
 	input: 1,
@@ -165,20 +165,33 @@ describe("Harness wire adapter", () => {
 				deferred: { provider: "test", modelId: "model", api: "test", id: "deferred-1", data: { row: 1 } },
 			},
 		},
-		{
+	] satisfies HarnessRunResult[])("projects every Run outcome %#", (result) => {
+		const wire = toWireRunResult(result);
+		expect(Check(RunResultSchema, wire)).toBe(true);
+		expect(wire).toEqual(result);
+	});
+
+	test("projects singular Harness model identities to the wire list", () => {
+		const wire = toWireRunResult({
 			ok: true,
 			value: {
 				kind: "suspended",
 				reason: "missing_identities",
 				runId: "run-1",
 				leafId: "leaf-1",
-				missing: { tools: ["read"], models: [] },
+				missing: { tools: ["read"], model: "missing-model" },
 			},
-		},
-	] satisfies HarnessRunResult[])("projects every Run outcome %#", (result) => {
-		const wire = toWireRunResult(result);
-		expect(Check(RunResultSchema, wire)).toBe(true);
-		expect(wire).toEqual(result);
+		});
+		expect(wire).toEqual({
+			ok: true,
+			value: {
+				kind: "suspended",
+				reason: "missing_identities",
+				runId: "run-1",
+				leafId: "leaf-1",
+				missing: { tools: ["read"], models: ["missing-model"] },
+			},
+		});
 	});
 
 	test.each([
@@ -188,7 +201,7 @@ describe("Harness wire adapter", () => {
 			operationKind: "run",
 			message: "busy",
 		}),
-		new MissingIdentities({ lane: "main", tools: ["read"], models: [], message: "missing" }),
+		new MissingIdentities({ lane: "main", tools: ["read"], model: "missing-model", message: "missing" }),
 		new InvalidMessage({ lane: "main", reason: "invalid", message: "invalid" }),
 		new UnknownSkill({ name: "skill", message: "unknown" }),
 		new UnknownTemplate({ name: "template", message: "unknown" }),

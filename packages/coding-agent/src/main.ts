@@ -27,10 +27,8 @@ import {
 } from "./cli/auth-command.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
 import { cli as experimentalCli } from "./cli/experimental/cli.ts";
-import { runClient } from "./cli/experimental/client.ts";
 import type { ClientCommand } from "./cli/experimental/commands/client.ts";
 import type { ServerCommand } from "./cli/experimental/commands/server.ts";
-import { startForegroundServer } from "./cli/experimental/server.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
@@ -65,6 +63,8 @@ import { assertValidSessionId, SessionManager } from "./core/session-manager.ts"
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
+import { runClient } from "./experimental/client.ts";
+import { startForegroundServer } from "./experimental/server.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";

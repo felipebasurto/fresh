@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
 import { isServerId } from "@earendil-works/pi-protocol";
-import type { ClientCommand } from "./commands/client.ts";
+import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
 
 export type ClientResult =

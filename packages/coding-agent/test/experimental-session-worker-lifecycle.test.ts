@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { WorkerLifecycle } from "../src/cli/experimental/session-worker.ts";
+import { WorkerLifecycle } from "../src/experimental/session-worker.ts";
 
 const GENERATION = "generation-1";
 
