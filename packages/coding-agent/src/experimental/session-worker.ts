@@ -22,7 +22,9 @@ import {
 import lockfile from "proper-lockfile";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
+import { findInitialModel, resolveCliModel } from "../core/model-resolver.ts";
 import { ModelRuntime } from "../core/model-runtime.ts";
+import { SettingsManager } from "../core/settings-manager.ts";
 import { toHarnessPromptArguments, toWireRunResult } from "./harness-wire-adapter.ts";
 import { consumeInternalProcessRole, encodeControlLine, MAX_CONTROL_LINE_BYTES } from "./process.ts";
 
@@ -34,7 +36,7 @@ export const SESSION_WORKER_CONTROL_TOKEN_ENV = "PI_SESSION_WORKER_CONTROL_TOKEN
 export const SESSION_WORKER_SESSION_KEY_ENV = "PI_SESSION_WORKER_SESSION_KEY_BASE64";
 export const SESSION_WORKER_PEER_ID_ENV = "PI_SESSION_WORKER_PEER_ID";
 
-export const SessionWorkerMetadataSchema = Type.Object({
+export const SessionWorkerMetadataSchema = StrictObject({
 	id: Type.String({ minLength: 1 }),
 	createdAt: Type.Integer(),
 	storageVersion: Type.Integer(),
@@ -44,6 +46,14 @@ export const SessionWorkerMetadataSchema = Type.Object({
 	parentSessionId: Type.Optional(Type.String()),
 	legacyParentSessionPath: Type.Optional(Type.String()),
 });
+
+export const SessionWorkerOptionsSchema = StrictObject({
+	sessionDir: Type.String({ minLength: 1 }),
+	metadata: SessionWorkerMetadataSchema,
+	provider: Type.Optional(Type.String({ minLength: 1 })),
+	model: Type.Optional(Type.String({ minLength: 1 })),
+});
+export type SessionWorkerOptions = Static<typeof SessionWorkerOptionsSchema>;
 
 export const SessionWorkerOperations = defineRpc({
 	prompt: {
@@ -407,20 +417,6 @@ function writeJsonLine(socket: Socket, message: unknown): Promise<void> {
 	});
 }
 
-function parseMetadata(value: string | undefined): JsonlSessionMetadata {
-	if (value === undefined) throw new Error("Session worker requires session metadata");
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(value);
-	} catch (error) {
-		throw new Error("Session worker received invalid session metadata", { cause: error });
-	}
-	if (!Check(SessionWorkerMetadataSchema, parsed) || !isAbsolute(parsed.cwd) || !isAbsolute(parsed.path)) {
-		throw new Error("Session worker received invalid session metadata");
-	}
-	return parsed;
-}
-
 function lifecycleDelay(name: string, fallback: number): number {
 	const value = process.env[name];
 	if (value === undefined) return fallback;
@@ -462,10 +458,13 @@ async function closeResources(resources: {
 	if (errors.length > 1) throw new AggregateError(errors, "Session worker cleanup failed");
 }
 
-async function run(args: readonly string[]): Promise<void> {
-	const sessionDir = args[0];
-	if (!sessionDir || !isAbsolute(sessionDir)) throw new Error("Session worker requires an absolute session directory");
-	const metadata = parseMetadata(args[1]);
+export type CreateSessionWorkerHarness = (
+	session: Session<JsonlSessionMetadata>,
+	options: SessionWorkerOptions,
+) => Promise<AgentHarnessInstance>;
+
+async function run(options: SessionWorkerOptions, createHarness: CreateSessionWorkerHarness): Promise<void> {
+	const { sessionDir, metadata } = options;
 	const sessionId = metadata.id;
 	const control = await connectControl();
 	const token = process.env[SESSION_WORKER_CONTROL_TOKEN_ENV]!;
@@ -483,10 +482,7 @@ async function run(args: readonly string[]): Promise<void> {
 	let harness: AgentHarnessInstance | undefined;
 	try {
 		session = await repo.open(metadata);
-		const modelRuntime = await ModelRuntime.create();
-		const model = modelRuntime.getAvailableSnapshot()[0];
-		if (!model) throw new Error("Session worker could not find a configured model");
-		({ harness } = await AgentHarness.create({ session, models: modelRuntime, model, tools: [], resources: {} }));
+		harness = await createHarness(session, options);
 	} catch (error) {
 		try {
 			await closeResources({ harness, session, repo, executionEnv, releaseOwnership });
@@ -652,9 +648,28 @@ async function run(args: readonly string[]): Promise<void> {
 	}
 }
 
-export async function runSessionWorkerProcess(args: readonly string[]): Promise<void> {
+export async function runSessionWorkerWithHarness(
+	args: readonly string[],
+	createHarness: CreateSessionWorkerHarness,
+): Promise<void> {
 	try {
-		await run(args);
+		if (args.length !== 1) throw new Error("Session worker requires one options argument");
+		let options: unknown;
+		try {
+			options = JSON.parse(args[0]!);
+		} catch (error) {
+			throw new Error("Session worker received invalid options", { cause: error });
+		}
+		if (
+			!Check(SessionWorkerOptionsSchema, options) ||
+			!isAbsolute(options.sessionDir) ||
+			!isAbsolute(options.metadata.cwd) ||
+			!isAbsolute(options.metadata.path) ||
+			(options.provider !== undefined && options.model === undefined)
+		) {
+			throw new Error("Session worker received invalid options");
+		}
+		await run(options, createHarness);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		const token = process.env[SESSION_WORKER_CONTROL_TOKEN_ENV];
@@ -665,6 +680,70 @@ export async function runSessionWorkerProcess(args: readonly string[]): Promise<
 		}
 		throw error;
 	}
+}
+
+async function createCodingAgentHarness(
+	session: Session<JsonlSessionMetadata>,
+	options: SessionWorkerOptions,
+): Promise<AgentHarnessInstance> {
+	const modelRuntime = await ModelRuntime.create();
+	let resolved: Awaited<ReturnType<typeof findInitialModel>> | ReturnType<typeof resolveCliModel>;
+	if (options.model === undefined) {
+		const settingsManager = SettingsManager.create(session.metadata.cwd);
+		resolved = await findInitialModel({
+			scopedModels: [],
+			isContinuing: true,
+			defaultProvider: settingsManager.getDefaultProvider(),
+			defaultModelId: settingsManager.getDefaultModel(),
+			defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
+			modelRuntime,
+		});
+	} else {
+		resolved = resolveCliModel({
+			cliProvider: options.provider,
+			cliModel: options.model,
+			modelRuntime,
+		});
+		if (resolved.error) throw new Error(`Session worker could not resolve model: ${resolved.error}`);
+	}
+	if (!resolved.model) throw new Error("Session worker could not resolve a model");
+	const harness = (
+		await AgentHarness.create({
+			session,
+			models: modelRuntime,
+			model: resolved.model,
+			thinkingLevel: resolved.thinkingLevel,
+			tools: [],
+			resources: {},
+		})
+	).harness;
+	try {
+		if (options.model !== undefined) {
+			const currentModel = await harness.getModel();
+			if (
+				!currentModel ||
+				currentModel.provider !== resolved.model.provider ||
+				currentModel.id !== resolved.model.id
+			) {
+				await harness.setModel(resolved.model);
+			}
+			if (resolved.thinkingLevel !== undefined && (await harness.getThinkingLevel()) !== resolved.thinkingLevel) {
+				await harness.setThinkingLevel(resolved.thinkingLevel);
+			}
+		}
+		return harness;
+	} catch (error) {
+		try {
+			await harness.close();
+		} catch (cleanupError) {
+			throw new AggregateError([error, cleanupError], "Session worker model selection and cleanup failed");
+		}
+		throw error;
+	}
+}
+
+export function runSessionWorkerProcess(args: readonly string[]): Promise<void> {
+	return runSessionWorkerWithHarness(args, createCodingAgentHarness);
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

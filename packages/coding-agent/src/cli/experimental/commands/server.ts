@@ -15,6 +15,8 @@ export interface ServerCommand {
 	readonly command: "server";
 	readonly auth?: AuthInput;
 	readonly listen?: readonly TransportAddress[];
+	readonly provider?: string;
+	readonly model?: string;
 	readonly serverId?: ServerId;
 	readonly sessionDir?: string;
 }
@@ -30,11 +32,15 @@ const serverIdOption = valueOption("--server-id", (value) =>
 		: { ok: false, error: `Invalid --server-id "${value}"; expected a lowercase UUIDv4` },
 );
 const sessionDirOption = stringOption("--session-dir");
+const providerOption = stringOption("--provider");
+const modelOption = stringOption("--model");
 
 export const serverCommand = new Command<ServerCommand, ServerCommandContext>("server")
 	.option(listenOption)
 	.option(serverIdOption)
 	.option(sessionDirOption)
+	.option(providerOption)
+	.option(modelOption)
 	.option(authTokenOption)
 	.option(authTokenFileOption)
 	.build((input) => {
@@ -42,8 +48,11 @@ export const serverCommand = new Command<ServerCommand, ServerCommandContext>("s
 		const listen = input.values(listenOption);
 		const serverId = input.value(serverIdOption);
 		const sessionDir = input.value(sessionDirOption);
+		const provider = input.value(providerOption);
+		const model = input.value(modelOption);
 		const { errors: optionErrors } = parseLegacyOptions(input);
-		const errors = [...authErrors, ...optionErrors, ...unsupportedLegacyOptions("server", input)];
+		const modelErrors = provider !== undefined && model === undefined ? ["--provider requires --model"] : [];
+		const errors = [...authErrors, ...optionErrors, ...modelErrors, ...unsupportedLegacyOptions("server", input)];
 		if (errors.length > 0) return { ok: false, errors };
 		return {
 			ok: true,
@@ -51,6 +60,8 @@ export const serverCommand = new Command<ServerCommand, ServerCommandContext>("s
 				command: "server",
 				...(auth === undefined ? {} : { auth }),
 				...(listen.length === 0 ? {} : { listen }),
+				...(provider === undefined ? {} : { provider }),
+				...(model === undefined ? {} : { model }),
 				...(serverId === undefined ? {} : { serverId }),
 				...(sessionDir === undefined ? {} : { sessionDir }),
 			},

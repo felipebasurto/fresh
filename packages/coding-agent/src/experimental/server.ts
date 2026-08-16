@@ -106,10 +106,15 @@ export interface ActivateServerOptions {
 	readonly directory: string;
 	readonly requestedServerId?: ServerId | string;
 	readonly sessionDir: string;
+	readonly provider?: string;
+	readonly model?: string;
 }
 
 /** Ensure the selected logical server is reachable, launching the current Pi installation if needed. */
 export async function activateServer(options: ActivateServerOptions): Promise<ActivatedServer> {
+	if (options.provider !== undefined && options.model === undefined) {
+		throw new Error("Server model provider requires a model");
+	}
 	await ensurePrivateServerDirectory(options.directory);
 	const profile = await acquireServerProfile(options.directory, options.requestedServerId);
 	const serverId = profile.serverId;
@@ -118,8 +123,24 @@ export async function activateServer(options: ActivateServerOptions): Promise<Ac
 	const release = await acquireServerActivation(options.directory, serverId);
 	try {
 		const existing = await connect(route);
-		if (existing) return { client: existing, route };
-		const child = spawnInternalProcess("server", [options.directory, serverId, options.sessionDir]);
+		if (existing) {
+			// Another activator won the race, so this model selection can no longer be applied.
+			if (options.model !== undefined) {
+				await existing.dispose();
+				throw new Error("Model selection is only valid when automatically activating a new server");
+			}
+			return { client: existing, route };
+		}
+		const modelArgs =
+			options.model === undefined
+				? []
+				: [
+						JSON.stringify({
+							...(options.provider === undefined ? {} : { provider: options.provider }),
+							model: options.model,
+						}),
+					];
+		const child = spawnInternalProcess("server", [options.directory, serverId, options.sessionDir, ...modelArgs]);
 		let spawnError: Error | undefined;
 		child.once("error", (error) => {
 			spawnError = error;
@@ -285,6 +306,10 @@ export interface StartServerOptions {
 	readonly serverId?: ServerId;
 	/** Durable session directory. Defaults to the experimental directory under the configured agent directory. */
 	readonly sessionDir?: string;
+	/** Optional provider for an explicitly selected Session worker model. */
+	readonly provider?: string;
+	/** Optional model override for newly started Session workers. */
+	readonly model?: string;
 	/** Hold the server open without client or Session demand. Defaults to true for foreground servers. */
 	readonly keepAlive?: boolean;
 }
@@ -369,6 +394,13 @@ async function startServerBackend(
 
 /** Start a replaceable experimental server behind the stable coordinator endpoint. */
 export async function startServer(options: StartServerOptions = {}): Promise<RunningServer> {
+	if (options.provider !== undefined && options.model === undefined) {
+		throw new Error("Server model provider requires a model");
+	}
+	const workerModel =
+		options.model === undefined
+			? undefined
+			: { ...(options.provider === undefined ? {} : { provider: options.provider }), model: options.model };
 	const directory = resolveServerDirectory(options.directory);
 	const { serverId, release } = await acquireServerProfile(directory, options.serverId ?? process.env[ENV_SERVER_ID]);
 	const lifetime = new ServerLifetime(options.keepAlive ?? true);
@@ -386,7 +418,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 		startupLease = await ensureCoordinator(socketPath, controlPath);
 		coordinator = new CoordinatorConnection({ controlPath, endpoint: serverPath });
 		const sessionDir = resolveSessionDirectory(options.sessionDir);
-		workers = new SessionWorkerManager(coordinator, sessionDir, (count) => lifetime.setWorkerCount(count));
+		workers = new SessionWorkerManager(coordinator, sessionDir, workerModel, (count) =>
+			lifetime.setWorkerCount(count),
+		);
 		backend = await startServerBackend(
 			{ path: serverPath, serverId, sessionDir: options.sessionDir },
 			workers,
@@ -479,19 +513,47 @@ export async function startForegroundServer(
 	}
 }
 
+function parseServerModelOptions(value: string | undefined): { provider?: string; model: string } | undefined {
+	if (value === undefined) return undefined;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value);
+	} catch (error) {
+		throw new Error("Internal server received invalid model options", { cause: error });
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error("Internal server received invalid model options");
+	}
+	const keys = Object.keys(parsed);
+	const model = "model" in parsed ? parsed.model : undefined;
+	const provider = "provider" in parsed ? parsed.provider : undefined;
+	if (
+		keys.some((key) => key !== "provider" && key !== "model") ||
+		typeof model !== "string" ||
+		model.length === 0 ||
+		(provider !== undefined && (typeof provider !== "string" || provider.length === 0))
+	) {
+		throw new Error("Internal server received invalid model options");
+	}
+	return provider === undefined ? { model } : { provider, model };
+}
+
 /** Run an automatically activated server until its client and Session demand disappears. */
 export async function runServerProcess(args: readonly string[]): Promise<void> {
-	const [directory, serverId, sessionDir] = args;
+	const [directory, serverId, sessionDir, serializedModel] = args;
+	if (args.length > 4) throw new Error("Internal server received unexpected arguments");
 	if (!directory || !isAbsolute(directory)) throw new Error("Internal server requires an absolute server directory");
 	if (!isServerId(serverId)) throw new Error("Internal server requires a canonical server ID");
 	if (!sessionDir || !isAbsolute(sessionDir))
 		throw new Error("Internal server requires an absolute Session directory");
+	const workerModel = parseServerModelOptions(serializedModel);
 
 	const runtime = await startServer({
 		directory,
 		serverId,
 		sessionDir,
 		keepAlive: false,
+		...workerModel,
 	});
 	const close = (): void => {
 		void runtime.close().catch(() => {});

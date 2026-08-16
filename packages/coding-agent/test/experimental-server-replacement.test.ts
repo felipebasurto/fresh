@@ -18,17 +18,21 @@ interface RunningCli {
 }
 
 async function startServer(home: string, agentDir: string, serverDir: string): Promise<RunningCli> {
-	const child = spawn(process.execPath, ["--import", "tsx", cliPath, "server"], {
-		cwd: fileURLToPath(new URL("../../..", import.meta.url)),
-		env: {
-			...process.env,
-			HOME: home,
-			PI_CODING_AGENT_DIR: agentDir,
-			PI_EXPERIMENTAL: "1",
-			PI_SERVER_DIR: serverDir,
+	const child = spawn(
+		process.execPath,
+		["--import", "tsx", cliPath, "server", "--provider", "anthropic", "--model", "claude-sonnet-4-5"],
+		{
+			cwd: fileURLToPath(new URL("../../..", import.meta.url)),
+			env: {
+				...process.env,
+				HOME: home,
+				PI_CODING_AGENT_DIR: agentDir,
+				PI_EXPERIMENTAL: "1",
+				PI_SERVER_DIR: serverDir,
+			},
+			stdio: ["ignore", "pipe", "pipe"],
 		},
-		stdio: ["ignore", "pipe", "pipe"],
-	});
+	);
 	processes.add(child);
 	let output = "";
 	let errors = "";

@@ -58,6 +58,27 @@ describe("experimental CLI commands", () => {
 		});
 	});
 
+	test("parses an experimental server model", () => {
+		expect(cli.parse(["server", "--provider", "anthropic", "--model", "claude-sonnet-4-5"])).toEqual({
+			ok: true,
+			command: {
+				command: "server",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+			},
+		});
+	});
+
+	test("parses a provider-qualified server model", () => {
+		expect(cli.parse(["server", "--model", "anthropic/claude-sonnet-4-5:high"])).toEqual({
+			ok: true,
+			command: {
+				command: "server",
+				model: "anthropic/claude-sonnet-4-5:high",
+			},
+		});
+	});
+
 	test("leaves experimental-looking existing option values with the existing parser", () => {
 		expect(cli.parse(["--system-prompt", "--listen", "unix:///tmp/pi.sock"])).toMatchObject({
 			ok: true,
@@ -95,6 +116,27 @@ describe("experimental CLI commands", () => {
 			command: {
 				command: "client",
 				sessionId: "demo-1",
+			},
+		});
+	});
+
+	test("parses the model used for cold client activation", () => {
+		expect(cli.parse(["client", "--provider", "anthropic", "--model", "claude-sonnet-4-5"])).toEqual({
+			ok: true,
+			command: {
+				command: "client",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+			},
+		});
+	});
+
+	test("parses a provider-qualified model used for cold client activation", () => {
+		expect(cli.parse(["client", "--model", "anthropic/claude-sonnet-4-5:high"])).toEqual({
+			ok: true,
+			command: {
+				command: "client",
+				model: "anthropic/claude-sonnet-4-5:high",
 			},
 		});
 	});
@@ -159,6 +201,8 @@ describe("experimental CLI commands", () => {
 			"The experimental server command does not support existing CLI options yet",
 		],
 		[["client", "--connect", "ws://localhost:8080"], 'Unsupported --connect transport "ws:"'],
+		[["client", "--provider", "anthropic"], "--provider requires --model"],
+		[["server", "--provider", "anthropic"], "--provider requires --model"],
 		[["server", "--server-id", "not-a-uuid"], "Invalid --server-id"],
 		[["server", "--server-id"], "--server-id requires a value"],
 		[["server", "--session-dir"], "--session-dir requires a value"],

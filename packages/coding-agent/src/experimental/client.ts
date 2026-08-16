@@ -20,6 +20,13 @@ export interface RunClientOptions {
 /** Discover servers, then list Sessions or attach to one selected Session. */
 export async function runClient(command: ClientCommand, options: RunClientOptions = {}): Promise<ClientResult> {
 	if (command.auth !== undefined) throw new Error("Authentication is not supported by the experimental local server");
+	if (command.provider !== undefined && command.model === undefined) {
+		throw new Error("Server model provider requires a model");
+	}
+	// The current protocol cannot forward model selection to an already-running server or Session.
+	if (command.connect && command.model !== undefined) {
+		throw new Error("Model selection is only valid when automatically activating a new server");
+	}
 	const directory = resolveServerDirectory(options.directory);
 	let routes: UnixServerRoute[];
 	let activatedClient: PiClient | undefined;
@@ -27,11 +34,16 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 		routes = [routeFromExplicitPath(command.connect.path)];
 	} else {
 		routes = await discoverUnixServers({ directory });
+		if (routes.length > 0 && command.model !== undefined) {
+			throw new Error("Model selection is only valid when automatically activating a new server");
+		}
 		if (routes.length === 0) {
 			const activated = await activateServer({
 				directory,
 				requestedServerId: process.env[ENV_SERVER_ID],
 				sessionDir: resolveSessionDirectory(),
+				provider: command.provider,
+				model: command.model,
 			});
 			routes = [activated.route];
 			activatedClient = activated.client;

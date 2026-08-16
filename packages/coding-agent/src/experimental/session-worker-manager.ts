@@ -16,6 +16,7 @@ import {
 	SessionWorkerEventSchema,
 	type SessionWorkerOperationCall,
 	SessionWorkerOperations,
+	type SessionWorkerOptions,
 	type WorkerOperationResponse,
 	type WorkerOperationScope,
 } from "./session-worker.ts";
@@ -73,6 +74,7 @@ export class SessionWorkerManager {
 		"controlPath" | "serverConnectionId" | "wasReplaced" | "onEvent" | "send" | "broadcast"
 	>;
 	readonly #sessionDir: string;
+	readonly #model: { readonly provider?: string; readonly model: string } | undefined;
 	readonly #workersBySession = new Map<string, WorkerRecord>();
 	readonly #workersByPeer = new Map<string, WorkerRecord>();
 	readonly #pending = new Map<string, PendingLaunch>();
@@ -91,10 +93,12 @@ export class SessionWorkerManager {
 			"controlPath" | "serverConnectionId" | "wasReplaced" | "onEvent" | "send" | "broadcast"
 		>,
 		sessionDir: string,
+		model?: { readonly provider?: string; readonly model: string },
 		onWorkerCountChanged?: (count: number) => void,
 	) {
 		this.#coordinator = coordinator;
 		this.#sessionDir = sessionDir;
+		this.#model = model;
 		this.#onWorkerCountChanged = onWorkerCountChanged;
 		this.#removeListener = coordinator.onEvent((event) => this.#handleCoordinatorEvent(event));
 	}
@@ -321,7 +325,12 @@ export class SessionWorkerManager {
 		const token = randomUUID();
 		let child: ChildProcess;
 		try {
-			child = spawnInternalProcess("session-worker", [this.#sessionDir, JSON.stringify(metadata)], {
+			const options: SessionWorkerOptions = {
+				sessionDir: this.#sessionDir,
+				metadata,
+				...(this.#model ?? {}),
+			};
+			child = spawnInternalProcess("session-worker", [JSON.stringify(options)], {
 				env: {
 					[SESSION_WORKER_CONTROL_ADDRESS_ENV]: this.#coordinator.controlPath,
 					[SESSION_WORKER_CONTROL_TOKEN_ENV]: token,

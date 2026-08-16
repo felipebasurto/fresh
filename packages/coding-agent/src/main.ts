@@ -594,6 +594,8 @@ async function runExperimentalServerCommand(command: ServerCommand): Promise<voi
 	const runtime = await startForegroundServer({
 		serverId: command.serverId,
 		sessionDir: command.sessionDir,
+		provider: command.provider,
+		model: command.model,
 	});
 	console.log(`Server: ${runtime.serverId}`);
 	console.log(`Socket: ${runtime.socketPath}`);

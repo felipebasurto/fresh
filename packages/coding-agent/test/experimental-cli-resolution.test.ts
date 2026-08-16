@@ -52,10 +52,14 @@ describe("experimental CLI command composition", () => {
 		expect(cli.parse([command, option])).toEqual({ ok: false, errors: [error] });
 	});
 
-	test("rejects existing options that the server command does not support yet", () => {
-		expect(cli.parse(["server", "--model", "claude-sonnet", "prompt"])).toEqual({
-			ok: false,
-			errors: [UNSUPPORTED_SERVER_OPTIONS],
+	test("accepts provider and model options for the server command", () => {
+		expect(cli.parse(["server", "--provider", "anthropic", "--model", "claude-sonnet-4-5"])).toEqual({
+			ok: true,
+			command: {
+				command: "server",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+			},
 		});
 	});
 
@@ -83,7 +87,17 @@ describe("experimental CLI command composition", () => {
 	test("passes server options to the command action", async () => {
 		const runServer = vi.fn(() => undefined);
 		const result = await cli.execute(
-			["server", "--server-id", "00000000-0000-4000-8000-000000000001", "--session-dir", "./sessions"],
+			[
+				"server",
+				"--server-id",
+				"00000000-0000-4000-8000-000000000001",
+				"--session-dir",
+				"./sessions",
+				"--provider",
+				"anthropic",
+				"--model",
+				"claude-sonnet-4-5",
+			],
 			{
 				runPi: vi.fn(() => undefined),
 				runServer,
@@ -95,6 +109,8 @@ describe("experimental CLI command composition", () => {
 			command: "server" as const,
 			serverId: "00000000-0000-4000-8000-000000000001",
 			sessionDir: "./sessions",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
 		};
 		expect(result).toEqual({ ok: true, command });
 		expect(runServer).toHaveBeenCalledWith(command);
