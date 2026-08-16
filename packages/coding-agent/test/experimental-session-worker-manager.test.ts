@@ -1,5 +1,5 @@
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CoordinatorConnectionEvent } from "../src/experimental/coordinator.ts";
 import { SessionWorkerManager } from "../src/experimental/session-worker-manager.ts";
 
@@ -51,6 +51,11 @@ class FakeCoordinator {
 	}
 }
 
+afterEach(() => {
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+});
+
 async function createAttachedWorker(): Promise<{
 	coordinator: FakeCoordinator;
 	workers: SessionWorkerManager;
@@ -80,6 +85,77 @@ async function createAttachedWorker(): Promise<{
 	const attachment = await handle.attachClient!();
 	return { coordinator, workers, handle, release: () => Promise.resolve(attachment.release()) };
 }
+
+describe("Session worker lifecycle failures", () => {
+	test("compensates a timed-out attachment before rejecting it", async () => {
+		vi.useFakeTimers();
+		const coordinator = new FakeCoordinator();
+		const workers = new SessionWorkerManager(coordinator, "/tmp");
+		await workers.discover(new Set(["worker-1"]));
+		const handle = await workers.createHarness(metadata);
+		const demands: (string | null)[] = [];
+		coordinator.onSend = (peerId, payload) => {
+			if (payload.type !== "session_demand") return;
+			demands.push(typeof payload.attachmentId === "string" ? payload.attachmentId : null);
+			if (payload.attachmentId !== null) return;
+			queueMicrotask(() =>
+				coordinator.emit({
+					type: "message",
+					from: peerId,
+					payload: {
+						type: "demand_applied",
+						token: "worker-token",
+						sessionKey: metadata.path,
+						requestId: payload.requestId,
+						attachmentId: null,
+					},
+				}),
+			);
+		};
+
+		const attaching = expect(handle.attachClient!()).rejects.toThrow("timed out");
+		await vi.advanceTimersByTimeAsync(5_000);
+		await attaching;
+		expect(demands).toHaveLength(2);
+		expect(demands[0]).toEqual(expect.any(String));
+		expect(demands[1]).toBeNull();
+		workers.detach();
+	});
+
+	test("kills a worker when timed-out demand cannot be reconciled", async () => {
+		vi.useFakeTimers();
+		const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+		const coordinator = new FakeCoordinator();
+		const workers = new SessionWorkerManager(coordinator, "/tmp");
+		await workers.discover(new Set(["worker-1"]));
+		const handle = await workers.createHarness(metadata);
+		coordinator.onSend = () => {};
+
+		const attaching = expect(handle.attachClient!()).rejects.toThrow("worker was terminated");
+		await vi.advanceTimersByTimeAsync(5_000);
+		await vi.advanceTimersByTimeAsync(5_000);
+		await vi.advanceTimersByTimeAsync(10_000);
+		await attaching;
+		expect(kill).toHaveBeenCalledWith(123, "SIGKILL");
+		expect(workers.workerPids.size).toBe(0);
+		workers.detach();
+	});
+
+	test("bounds Harness-driven worker shutdown", async () => {
+		vi.useFakeTimers();
+		const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+		const { coordinator, workers, handle, release } = await createAttachedWorker();
+		await release();
+		coordinator.onSend = () => {};
+
+		const closing = handle.close();
+		await vi.advanceTimersByTimeAsync(10_000);
+		await closing;
+		expect(kill).toHaveBeenCalledWith(123, "SIGKILL");
+		expect(workers.workerPids.size).toBe(0);
+		workers.detach();
+	});
+});
 
 describe("Session worker operations", () => {
 	test("correlates prompt results to the worker generation and attachment", async () => {

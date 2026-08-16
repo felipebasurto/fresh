@@ -29,8 +29,10 @@ export class TestHarness {
 	readonly #termination = new Deferred<Error | undefined>();
 	readonly terminated = this.#termination.promise;
 	attachedClients = 0;
+	attachmentReleaseCount = 0;
 	closeCount = 0;
 	readonly promptCalls: PromptArguments[] = [];
+	failAttachmentRelease?: Error;
 	failClose?: Error;
 	nextPromptError?: Error;
 	nextPromptResult?: RunResult;
@@ -47,6 +49,8 @@ export class TestHarness {
 		return {
 			release: () => {
 				if (released) return;
+				this.attachmentReleaseCount += 1;
+				if (this.failAttachmentRelease) throw this.failAttachmentRelease;
 				released = true;
 				this.attachedClients -= 1;
 			},

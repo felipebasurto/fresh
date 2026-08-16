@@ -34,6 +34,7 @@ interface WorkerRecord {
 	resolveTerminated(error: Error | undefined): void;
 	attachmentId?: string;
 	expectedStop: boolean;
+	stopPromise?: Promise<void>;
 	stopping: boolean;
 }
 
@@ -178,7 +179,7 @@ export class SessionWorkerManager {
 		};
 	}
 
-	async #applyDemand(worker: WorkerRecord, attachmentId: string | null): Promise<void> {
+	async #applyDemand(worker: WorkerRecord, attachmentId: string | null, compensateOnTimeout = true): Promise<void> {
 		if (worker.stopping || this.#workersByPeer.get(worker.peerId) !== worker) {
 			throw new Error("Experimental Session worker is stopping");
 		}
@@ -189,10 +190,10 @@ export class SessionWorkerManager {
 			resolve = resolvePromise;
 			reject = rejectPromise;
 		});
-		const timer = setTimeout(
-			() => this.#rejectDemand(requestId, new Error("Session worker demand update timed out")),
-			WORKER_DEMAND_TIMEOUT_MS,
-		);
+		const timer = setTimeout(() => {
+			if (compensateOnTimeout) void this.#reconcileDemandTimeout(requestId);
+			else this.#rejectDemand(requestId, new Error("Session worker demand update timed out"));
+		}, WORKER_DEMAND_TIMEOUT_MS);
 		timer.unref();
 		const pending = { attachmentId, requestId, timer, worker, resolve, reject };
 		this.#pendingDemand.set(requestId, pending);
@@ -237,53 +238,66 @@ export class SessionWorkerManager {
 		return result;
 	}
 
-	async #stopWorker(worker: WorkerRecord): Promise<void> {
-		if (this.#detached || this.#workersByPeer.get(worker.peerId) !== worker) return;
-		this.#rejectWorkerOperations(worker, new Error("Session worker is stopping"));
-		if (!worker.stopping) {
-			worker.stopping = true;
-			worker.expectedStop = true;
-			await this.#coordinator.send(worker.peerId, { type: "shutdown" }).catch(() => {});
-		}
-		await worker.terminated;
+	#stopWorker(worker: WorkerRecord): Promise<void> {
+		if (this.#detached || this.#workersByPeer.get(worker.peerId) !== worker) return Promise.resolve();
+		worker.stopPromise ??= this.#stopWorkerInternal(worker);
+		return worker.stopPromise;
 	}
 
-	async shutdown(): Promise<void> {
-		if (this.#detached || this.#shuttingDown) return;
-		this.#shuttingDown = true;
-		for (const pending of this.#pending.values()) {
-			void this.#coordinator.send(pending.peerId, { type: "shutdown" }).catch(() => {});
-		}
-		const workers = [...this.#workersBySession.values()];
-		for (const worker of workers) {
-			worker.expectedStop = true;
-			worker.stopping = true;
-			void this.#coordinator.send(worker.peerId, { type: "shutdown" }).catch(() => {});
-		}
-		const finished = Promise.all([
-			...workers.map((worker) => worker.terminated),
-			...[...this.#pending.values()].map((pending) => {
-				if (pending.child.exitCode !== null || pending.child.signalCode !== null) return Promise.resolve();
-				return new Promise<void>((resolve) => pending.child.once("exit", () => resolve()));
-			}),
-		]).then(() => undefined);
+	async #stopWorkerInternal(worker: WorkerRecord): Promise<void> {
+		this.#rejectWorkerOperations(worker, new Error("Session worker is stopping"));
+		worker.stopping = true;
+		worker.expectedStop = true;
+		void this.#coordinator.send(worker.peerId, { type: "shutdown" }).catch(() => {});
 		let timer: NodeJS.Timeout | undefined;
 		const timedOut = new Promise<boolean>((resolve) => {
 			timer = setTimeout(() => resolve(true), WORKER_SHUTDOWN_TIMEOUT_MS);
 			timer.unref();
 		});
-		if ((await Promise.race([finished.then(() => false), timedOut])) === true) {
-			for (const worker of workers) {
+		try {
+			if ((await Promise.race([worker.terminated.then(() => false), timedOut])) === true) {
 				try {
 					process.kill(worker.pid, "SIGKILL");
 				} catch (error) {
 					if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
 				}
+				this.#removeWorker(worker, undefined);
+				await worker.terminated;
 			}
-			for (const pending of this.#pending.values()) pending.child.kill("SIGKILL");
-			await finished;
+		} finally {
+			if (timer) clearTimeout(timer);
 		}
-		if (timer) clearTimeout(timer);
+	}
+
+	async shutdown(): Promise<void> {
+		if (this.#detached || this.#shuttingDown) return;
+		this.#shuttingDown = true;
+		const pendingWorkers = [...this.#pending.values()];
+		for (const pending of pendingWorkers) {
+			void this.#coordinator.send(pending.peerId, { type: "shutdown" }).catch(() => {});
+		}
+		const pendingFinished = Promise.all(
+			pendingWorkers.map((pending) => {
+				if (pending.child.exitCode !== null || pending.child.signalCode !== null) return Promise.resolve();
+				return new Promise<void>((resolve) => pending.child.once("exit", () => resolve()));
+			}),
+		).then(() => undefined);
+		let timer: NodeJS.Timeout | undefined;
+		const pendingTimedOut = new Promise<boolean>((resolve) => {
+			timer = setTimeout(() => resolve(true), WORKER_SHUTDOWN_TIMEOUT_MS);
+			timer.unref();
+		});
+		const stopPending = (async () => {
+			if ((await Promise.race([pendingFinished.then(() => false), pendingTimedOut])) === true) {
+				for (const pending of pendingWorkers) pending.child.kill("SIGKILL");
+				await pendingFinished;
+			}
+			if (timer) clearTimeout(timer);
+		})();
+		await Promise.all([
+			stopPending,
+			...[...this.#workersBySession.values()].map((worker) => this.#stopWorker(worker)),
+		]);
 		this.#detachState();
 	}
 
@@ -524,6 +538,37 @@ export class SessionWorkerManager {
 	#rejectWorkerOperations(worker: WorkerRecord, error: Error): void {
 		for (const [requestId, pending] of this.#pendingOperations) {
 			if (pending.worker === worker) this.#rejectOperation(requestId, error);
+		}
+	}
+
+	async #reconcileDemandTimeout(requestId: string): Promise<void> {
+		const pending = this.#pendingDemand.get(requestId);
+		if (!pending) return;
+		this.#pendingDemand.delete(requestId);
+		clearTimeout(pending.timer);
+		const timeoutError = new Error("Session worker demand update timed out");
+		try {
+			await this.#applyDemand(pending.worker, null, false);
+			if (pending.attachmentId === null) pending.resolve();
+			else pending.reject(timeoutError);
+		} catch (cleanupError) {
+			try {
+				await this.#stopWorker(pending.worker);
+			} catch (stopError) {
+				pending.reject(
+					new AggregateError(
+						[timeoutError, cleanupError, stopError],
+						"Session worker demand reconciliation and termination failed",
+					),
+				);
+				return;
+			}
+			pending.reject(
+				new AggregateError(
+					[timeoutError, cleanupError],
+					"Session worker demand reconciliation failed; worker was terminated",
+				),
+			);
 		}
 	}
 

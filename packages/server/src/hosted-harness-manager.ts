@@ -37,6 +37,7 @@ interface ClientAttachment {
 	readonly client: object;
 	readonly session: HostedSession;
 	readonly prompts: Set<Promise<RunResult>>;
+	acquiring?: Promise<HostedHarnessAttachment>;
 	lease?: HostedHarnessAttachment;
 	releasing?: Promise<void>;
 }
@@ -172,12 +173,21 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 		const attachment: ClientAttachment = { client, session: hosted, prompts: new Set() };
 		hosted.attachment = attachment;
 		try {
-			attachment.lease = hosted.harness.attachClient ? await hosted.harness.attachClient() : { release: () => {} };
+			const acquiring = Promise.resolve(
+				hosted.harness.attachClient ? hosted.harness.attachClient() : { release: () => {} },
+			);
+			attachment.acquiring = acquiring;
+			attachment.lease = await acquiring;
 		} catch (error) {
 			if (hosted.attachment === attachment) hosted.attachment = undefined;
 			throw error;
 		}
-		if (hosted.attachment !== attachment || this.disconnectedClients.has(client) || this.options.isClosing()) {
+		if (
+			this.hostedSessions.get(hosted.id) !== hosted ||
+			hosted.attachment !== attachment ||
+			this.disconnectedClients.has(client) ||
+			this.options.isClosing()
+		) {
 			await this.releaseAttachment(attachment);
 			throw new ServerDrainingError();
 		}
@@ -206,15 +216,20 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 		attachment.releasing ??= (async () => {
 			try {
 				await Promise.allSettled(attachment.prompts);
-				if (attachment.lease) await attachment.lease.release();
+				const lease = attachment.lease ?? (await attachment.acquiring);
+				if (lease) await lease.release();
 			} finally {
-				if (attachment.session.attachment === attachment) attachment.session.attachment = undefined;
-				if (this.attachmentsByClient.get(attachment.client) === attachment) {
-					this.attachmentsByClient.delete(attachment.client);
-				}
+				this.clearAttachment(attachment);
 			}
 		})();
 		return attachment.releasing;
+	}
+
+	private clearAttachment(attachment: ClientAttachment): void {
+		if (attachment.session.attachment === attachment) attachment.session.attachment = undefined;
+		if (this.attachmentsByClient.get(attachment.client) === attachment) {
+			this.attachmentsByClient.delete(attachment.client);
+		}
 	}
 
 	private async acquire(sessionId: string): Promise<HostedSession> {
@@ -265,10 +280,9 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 		this.hostedSessions.delete(hosted.id);
 		const attachment = hosted.attachment;
 		if (attachment) {
-			hosted.attachment = undefined;
-			if (this.attachmentsByClient.get(attachment.client) === attachment) {
-				this.attachmentsByClient.delete(attachment.client);
-			}
+			void this.releaseAttachment(attachment).catch((releaseError: unknown) =>
+				this.options.reportError(releaseError),
+			);
 		}
 		if (error) this.options.reportError(error);
 	}

@@ -2,7 +2,7 @@ import type { SessionMetadata } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, test } from "vitest";
 import type { ByteConnection, ByteConnectionHandler } from "../src/connection.ts";
 import { PiServer } from "../src/server.ts";
-import { ProtocolTestClient, TestServerHost, type WireChannel } from "../src/testing/index.ts";
+import { Deferred, ProtocolTestClient, TestServerHost, type WireChannel } from "../src/testing/index.ts";
 import type { PiServerHost } from "../src/types.ts";
 
 const servers = new Set<PiServer>();
@@ -167,6 +167,39 @@ describe("Session protocol", () => {
 
 		await first.close();
 		await expect.poll(() => host.latestHarness("session-1").attachedClients).toBe(0);
+		await expect(
+			second.request("00000000-0000-4000-8000-000000000001", {
+				method: "attach",
+				args: ["session-1"],
+			}),
+		).resolves.toMatchObject({ ok: true, result: { sessionId: "session-1" } });
+	});
+
+	test("clears connection ownership when attachment release fails", async () => {
+		const host = new TestServerHost();
+		await host.seed("session-1");
+		const errors: Error[] = [];
+		const server = new PiServer(host, {
+			listeners: [],
+			serverId: "00000000-0000-4000-8000-000000000001",
+			onError: (error) => errors.push(error),
+		});
+		servers.add(server);
+		const first = connect(server);
+		const second = connect(server);
+		await Promise.all([first.hello(), second.hello()]);
+		await first.request("00000000-0000-4000-8000-000000000001", {
+			method: "attach",
+			args: ["session-1"],
+		});
+		const harness = host.latestHarness("session-1");
+		const releaseError = new Error("release failed");
+		harness.failAttachmentRelease = releaseError;
+
+		await first.close();
+		await expect.poll(() => harness.attachmentReleaseCount).toBe(1);
+		await expect.poll(() => errors).toContain(releaseError);
+		harness.failAttachmentRelease = undefined;
 		await expect(
 			second.request("00000000-0000-4000-8000-000000000001", {
 				method: "attach",
@@ -367,6 +400,8 @@ describe("Session protocol", () => {
 
 		await firstHarness.terminate(new Error("worker crashed"));
 		await firstHarness.terminated;
+		await expect.poll(() => firstHarness.attachedClients).toBe(0);
+		expect(firstHarness.attachmentReleaseCount).toBe(1);
 
 		await expect(
 			client.request("00000000-0000-4000-8000-000000000001", { method: "attach", args: ["session-1"] }),
@@ -392,6 +427,51 @@ describe("Session protocol", () => {
 });
 
 describe("hosted Harness acquisition failures", () => {
+	test("releases a lease acquired concurrently with Harness termination", async () => {
+		const metadata: SessionMetadata = { id: "session-1", createdAt: 1, storageVersion: 1 };
+		const acquiring = new Deferred<void>();
+		const continueAcquiring = new Deferred<void>();
+		const terminated = new Deferred<Error | undefined>();
+		let releaseCount = 0;
+		const host: PiServerHost = {
+			sessions: { list: async () => [metadata] },
+			createHarness: async () => ({
+				terminated: terminated.promise,
+				attachClient: async () => {
+					acquiring.resolve(undefined);
+					await continueAcquiring.promise;
+					return {
+						release: () => {
+							releaseCount += 1;
+						},
+					};
+				},
+				prompt: async () => ({
+					ok: true,
+					value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+				}),
+				close: async () => {},
+			}),
+		};
+		const server = new PiServer(host, {
+			listeners: [],
+			serverId: "00000000-0000-4000-8000-000000000001",
+		});
+		servers.add(server);
+		const client = connect(server);
+		await client.hello();
+		const attach = client.request("00000000-0000-4000-8000-000000000001", {
+			method: "attach",
+			args: ["session-1"],
+		});
+		await acquiring.promise;
+
+		terminated.resolve(new Error("worker crashed"));
+		continueAcquiring.resolve(undefined);
+		await expect(attach).resolves.toMatchObject({ ok: false, error: { code: "server_draining" } });
+		expect(releaseCount).toBe(1);
+	});
+
 	test("shares a Harness creation failure, releases the Session, and allows a later retry", async () => {
 		const host = new TestServerHost();
 		await host.seed("session-1");
