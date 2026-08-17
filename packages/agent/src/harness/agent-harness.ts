@@ -16,7 +16,7 @@ import type { AgentMessage, AgentToolResult, QueueMode, ThinkingLevel } from "..
 import type { BranchPreparation, BranchSummaryResult } from "./compaction/branch-summarization.ts";
 import type { CompactionPreparation, CompactionSettings, CompactResult } from "./compaction/compaction.ts";
 import { type Result, TaggedError } from "./result.ts";
-import { createAgentHarness } from "./runtime/agent-harness-runtime.ts";
+import { createAgentHarness } from "./runtime2/index.ts";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
@@ -431,10 +431,9 @@ export type HarnessEventPayload =
 	| { type: "entry_added"; entry: Entry }
 	| { type: "write_pending"; runId: string; entryId: string; entryType: EntryType }
 	| { type: "queue_update"; steer: QueuedItem[]; followUp: QueuedItem[]; nextRun: QueuedItem[] }
-	| ({ type: "fact_update" } & (
-			| { fact: "name"; name: string | undefined }
-			| { fact: "label"; targetId: string; label: string | undefined }
-			| { fact: "custom"; key: string; value: JsonValue | undefined }
+	| ({ type: "value_update" } & (
+			| { value: "session_name"; name: string | undefined }
+			| { value: "entry_label"; targetId: string; label: string | undefined }
 	  ))
 	| ({ type: "config_update" } & (
 			| {
@@ -477,7 +476,7 @@ export type HarnessEventPayload =
 
 export type SpecialEventPayload = Extract<
 	HarnessEventPayload,
-	{ type: "fault" | "fact_update" | "usage" | "config_update" | "handler_error" }
+	{ type: "fault" | "value_update" | "usage" | "config_update" | "handler_error" }
 >;
 export type LaneEventPayload = Exclude<HarnessEventPayload, SpecialEventPayload>;
 export type ConfigEventPayload = Extract<HarnessEventPayload, { type: "config_update" }>;
@@ -491,7 +490,7 @@ export type HandlerErrorPayload = Extract<HarnessEventPayload, { type: "handler_
 export type HarnessEvent =
 	| (LaneEventPayload & { lane: string; recovery?: true })
 	| (LaneConfigEventPayload & { lane: string; recovery?: true })
-	| (Extract<HarnessEventPayload, { type: "fault" | "fact_update" }> & {
+	| (Extract<HarnessEventPayload, { type: "fault" | "value_update" }> & {
 			lane?: never;
 			recovery?: never;
 	  })
@@ -511,27 +510,15 @@ export interface Events {
 
 export type Resources = AgentHarnessResources<Skill, PromptTemplate>;
 
-export type BeforeResumePrepared =
-	| { kind: "run"; prompt: AgentMessage[]; systemPromptOverride?: string }
-	| { kind: "compaction"; sourceLeafId: string | null; customInstructions?: string }
-	| {
-			kind: "navigation";
-			sourceLeafId: string | null;
-			targetId: string | null;
-			summarize: boolean;
-			label?: string;
-			customInstructions?: string;
-	  };
-
 type VoidHookResult = ReturnType<() => void>;
 
 export interface HookMap {
 	before_run: {
-		event: { prompt: AgentMessage[]; systemPrompt: string; resources: Resources };
-		result: { messages?: AgentMessage[]; systemPrompt?: string; resumeData?: JsonValue } | undefined;
+		event: { prompt: AgentMessage[]; resources: Resources };
+		result: { messages?: AgentMessage[] } | undefined;
 	};
-	before_resume: {
-		event: BeforeResumePrepared & { resumeData?: JsonValue };
+	before_drive: {
+		event: { operation: "run" | "compaction" | "navigation" };
 		result: VoidHookResult;
 	};
 	before_run_end: {
@@ -539,8 +526,8 @@ export interface HookMap {
 		result: { followUp?: string } | undefined;
 	};
 	transform_context: {
-		event: { messages: AgentMessage[] };
-		result: { messages: AgentMessage[] } | undefined;
+		event: { messages: AgentMessage[]; systemPrompt: string };
+		result: { messages?: AgentMessage[]; systemPrompt?: string } | undefined;
 	};
 	before_request: {
 		event: {

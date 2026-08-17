@@ -146,7 +146,7 @@ export function startAiSpan<Name extends AiSpanName, const Attributes extends Ai
 
 const HOOK_NAMES = [
 	"before_run",
-	"before_resume",
+	"before_drive",
 	"before_run_end",
 	"transform_context",
 	"before_request",
@@ -180,7 +180,7 @@ const EVENT_TYPES = [
 	"entry_added",
 	"write_pending",
 	"queue_update",
-	"fact_update",
+	"value_update",
 	"config_update",
 	"compaction_start",
 	"compaction_end",
@@ -474,7 +474,7 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 				"pi.hook.registration_id": {
 					type: "string",
 					required: false,
-					description: "Stable hook registration id",
+					description: "Optional hook registration metadata",
 				},
 			},
 			endAttributes: {
@@ -571,7 +571,7 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 				"pi.session.item_kinds": {
 					type: "string[]",
 					required: true,
-					elementValues: ["entry", "usage", "register"],
+					elementValues: ["entry", "usage", "value", "list"],
 					description: "Distinct write kinds in the transaction",
 				},
 			},

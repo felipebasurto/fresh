@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type Entry, type JsonlSessionMetadata, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
+import { type Entry, type JsonlSessionMetadata, JsonlSessionRepo, laneConfig } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 
 export async function createExperimentalSessions(
@@ -48,7 +48,7 @@ export async function readExperimentalSessionState(
 		session = await repo.open(matches[0]!);
 		const [branch, configuration] = await Promise.all([
 			session.findEntriesOnBranch({ order: "oldestFirst" }),
-			session.getRegister("lane.config", "main"),
+			session.getValue(laneConfig("main")),
 		]);
 		return { branch, model: configuration?.value.model, activeTools: configuration?.value.activeToolNames ?? [] };
 	} finally {

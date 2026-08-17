@@ -18,10 +18,7 @@ const EMPTY_USAGE = {
 };
 
 // Re-enable each case as the work-in-progress backend implements the missing contract behavior.
-const DISABLED_CASES = new Set([
-	"branch queries/applies stops before filters and cursors before limits",
-	"lifecycle/seals admission, drains admitted commits, and closes idempotently",
-]);
+const DISABLED_CASES = new Set(["branch queries/applies stops before filters and cursors before limits"]);
 
 function registerConformance(name: string, cases: readonly ConformanceCase[]): void {
 	describe(name, () => {

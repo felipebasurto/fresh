@@ -814,7 +814,7 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 		case "turn_start":
 		case "turn_end":
 		case "write_pending":
-		case "fact_update":
+		case "value_update":
 		case "config_update":
 		case "compaction_start":
 		case "compaction_end":

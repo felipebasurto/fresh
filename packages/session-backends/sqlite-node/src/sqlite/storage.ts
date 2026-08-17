@@ -4,28 +4,34 @@ import type {
 	EntryScan,
 	EntryStructure,
 	ForkOptions,
-	Register,
-	RegisterNamespace,
+	ListElement,
+	ListReadOptions,
 	SessionStats,
 	Storage,
 	StorageBranchScan,
-	Transaction,
+	StoredValue,
 	UsageRow,
 	UsageScan,
+	Value,
+	ValueList,
+	Write,
 } from "@earendil-works/pi-agent-core";
-import { prepareStorageCommit } from "@earendil-works/pi-agent-core";
+import { laneLeaf, prepareStorageCommit } from "@earendil-works/pi-agent-core";
 import { appendEntryToBranchIndex, scanBranchEntries, scanBranchEntryStructures } from "./session/branch-entries.ts";
 import { decodeEntryRow, EntryRowWriter, readAllEntryRows, readEntryRows, scanEntryRows } from "./session/entries.ts";
-import {
-	deleteRegisterRow,
-	listRegisterRows,
-	readAllRegisterRows,
-	readRegisterRow,
-	setRegisterRow,
-} from "./session/registers.ts";
 import { advanceNextSeq, readNextSeq } from "./session/session-sequences.ts";
 import { addUsageToSessionStats, incrementMessageCount, readSessionStats } from "./session/session-stats.ts";
 import { decodeUsageLedgerRow, scanUsageLedgerRows, UsageLedgerRowWriter } from "./session/usage-ledger.ts";
+import {
+	appendListValueRow,
+	deleteListValueRows,
+	deleteScalarValueRow,
+	readAllScalarValueRows,
+	readListValueRows,
+	readScalarValueRow,
+	scanScalarValueRows,
+	setScalarValueRow,
+} from "./session/values.ts";
 import type { SqliteDatabase } from "./types.ts";
 
 export interface SqliteStorageOptions {
@@ -35,7 +41,8 @@ export interface SqliteStorageOptions {
 
 export interface SqliteStorageSnapshot {
 	entries: Entry[];
-	registers: Register[];
+	scalarValues: StoredValue<unknown>[];
+	entriesComplete: boolean;
 }
 
 export class SqliteStorage implements Storage {
@@ -56,9 +63,9 @@ export class SqliteStorage implements Storage {
 		this.usageWriter = new UsageLedgerRowWriter(db);
 	}
 
-	commit(transaction: Transaction): Promise<CommitResult> {
+	async commit(writes: Write[]): Promise<CommitResult> {
 		if (this.state !== "open") throw new Error("SqliteStorage is closed");
-		const result = this.commitQueue.then(() => this.applyCommit(transaction));
+		const result = this.commitQueue.then(() => this.applyCommit(writes));
 		this.commitQueue = result.then(
 			() => undefined,
 			() => undefined,
@@ -77,20 +84,19 @@ export class SqliteStorage implements Storage {
 		return Promise.resolve(entries);
 	}
 
-	getRegister<TNamespace extends RegisterNamespace>(
-		namespace: TNamespace,
-		key: string,
-	): Promise<Register<TNamespace> | undefined> {
+	getValue<T>(address: Value<T>): Promise<StoredValue<T> | undefined> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
-		return Promise.resolve(readRegisterRow(this.db, namespace, key));
+		return Promise.resolve(readScalarValueRow(this.db, address));
 	}
 
-	listRegisters<TNamespace extends RegisterNamespace>(
-		namespace: TNamespace,
-		keyPrefix?: string,
-	): Promise<Register<TNamespace>[]> {
+	scanValues<T>(prefix: Value<T>): Promise<StoredValue<T>[]> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
-		return Promise.resolve(listRegisterRows(this.db, namespace, keyPrefix));
+		return Promise.resolve(scanScalarValueRows(this.db, prefix));
+	}
+
+	async readList<T>(address: ValueList<T>, options?: ListReadOptions): Promise<ListElement<T>[]> {
+		if (this.state !== "open") throw new Error("SqliteStorage is closed");
+		return readListValueRows(this.db, address, options);
 	}
 
 	scanBranch(query: StorageBranchScan): Promise<Entry[]> {
@@ -129,28 +135,30 @@ export class SqliteStorage implements Storage {
 	}
 
 	private readSnapshot(options: ForkOptions): SqliteStorageSnapshot {
-		const registers = readAllRegisterRows(this.db);
+		const scalarValues = readAllScalarValueRows(this.db);
 		return {
-			entries: this.readSnapshotEntries(options, registers),
-			registers,
+			entries: this.readSnapshotEntries(options, scalarValues),
+			scalarValues,
+			entriesComplete: options.scope === "tree",
 		};
 	}
 
-	private readSnapshotEntries(options: ForkOptions, registers: readonly Register[]): Entry[] {
+	private readSnapshotEntries(options: ForkOptions, scalarValues: readonly StoredValue<unknown>[]): Entry[] {
 		if (options.scope === "tree") return readAllEntryRows(this.db).map(decodeEntryRow);
-		const mainLeaf = registers.find((register) => register.namespace === "lane.leaf" && register.key === "main") as
-			| Register<"lane.leaf">
-			| undefined;
+		const mainAddress = laneLeaf("main");
+		const mainLeaf = scalarValues.find(
+			(stored) => stored.address.namespace === mainAddress.namespace && stored.address.key === mainAddress.key,
+		) as StoredValue<string | null> | undefined;
 		if (mainLeaf === undefined) throw new Error("Source session is missing main lane");
 		const requested = options.entryId ?? mainLeaf.value;
 		return requested === null ? [] : scanBranchEntries(this.db, { start: requested, order: "oldestFirst" });
 	}
 
-	private applyCommit(transaction: Transaction): CommitResult {
+	private applyCommit(writes: Write[]): CommitResult {
 		this.beforeCommit();
 		return this.db.transaction(() => {
 			const firstSeq = readNextSeq(this.db);
-			const prepared = prepareStorageCommit(transaction, firstSeq, this.now());
+			const prepared = prepareStorageCommit(writes, firstSeq, this.now());
 			for (const write of prepared.writes) {
 				switch (write.kind) {
 					case "entry": {
@@ -166,11 +174,18 @@ export class SqliteStorage implements Storage {
 						addUsageToSessionStats(this.db, row.usage);
 						break;
 					}
-					case "register":
+					case "value":
 						if (write.op === "delete") {
-							deleteRegisterRow(this.db, write.namespace, write.key);
+							deleteScalarValueRow(this.db, write.namespace, write.key);
 						} else {
-							setRegisterRow(this.db, write.namespace, write.key, write.seq, write.value);
+							setScalarValueRow(this.db, write.namespace, write.key, write.seq, write.value);
+						}
+						break;
+					case "list":
+						if (write.op === "delete") {
+							deleteListValueRows(this.db, write.namespace, write.key);
+						} else {
+							appendListValueRow(this.db, write.namespace, write.key, write.seq, write.value);
 						}
 						break;
 				}

@@ -1,5 +1,6 @@
-import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageFrame, Usage } from "@earendil-works/pi-ai";
 import { expectTypeOf, it } from "vitest";
+import * as storedValues from "../../src/harness/session/values.ts";
 import type {
 	AgentHarnessOptions,
 	AgentHarnessStreamOptions,
@@ -17,6 +18,7 @@ import type {
 	Deferred,
 	DriveResult,
 	EntryProjector,
+	EntryWrite,
 	Generation,
 	GenerationContext,
 	HarnessEvent,
@@ -34,8 +36,6 @@ import type {
 	OperationMeta,
 	OperationRequest,
 	OperationState,
-	RegisterSetWrite,
-	RegisterValues,
 	RunPhase,
 	RunResult,
 	RunState,
@@ -55,10 +55,12 @@ import type {
 	SummaryContext,
 	SummaryGeneration,
 	ToolCall,
-	Transaction,
 	UsageRow,
+	UsageWrite,
+	ValueSetWrite,
 	Write,
 } from "../../src/index.ts";
+import { insertEntry, insertUsage } from "../../src/index.ts";
 
 const configuration = {
 	model: { provider: "provider", modelId: "model" },
@@ -146,6 +148,7 @@ const structuralDecisions = [
 ] satisfies StructuralDecision[];
 
 const runPhases = [
+	{ kind: "starting" },
 	checkpoint,
 	{ kind: "assistant", generation: generations[0] },
 	{
@@ -208,7 +211,7 @@ const operations = [
 		lane: "main",
 		sourceLeafId: null,
 		startedAt: 1,
-		intent: { kind: "run", promptEntryIds: ["prompt"], resumeData: { extension: null } },
+		intent: { kind: "run", promptEntryIds: ["prompt"] },
 	},
 	{
 		operationId: "compaction",
@@ -234,46 +237,32 @@ const lastResult = {
 	outcome: "completed",
 	runCompletion: "assistant",
 } satisfies LaneLastResult;
-const registerWrites: RegisterSetWrite[] = [
-	{ kind: "register", op: "set", namespace: "lane.leaf", key: "main", value: "leaf" },
-	{ kind: "register", op: "set", namespace: "lane.config", key: "main", value: configuration },
-	{
-		kind: "register",
-		op: "set",
-		namespace: "lane.state",
-		key: "main",
-		value: { currentOperationId: "run", pendingNextRun: [] },
-	},
-	{ kind: "register", op: "set", namespace: "lane.lastResult", key: "main", value: lastResult },
-	{ kind: "register", op: "set", namespace: "op.meta", key: "run", value: operations[0] },
-	{ kind: "register", op: "set", namespace: "op.state", key: "run", value: runState },
-	{ kind: "register", op: "set", namespace: "op.tool_args", key: "run:step:0", value: { path: "file" } },
-	{
-		kind: "register",
-		op: "set",
-		namespace: "op.preparation",
-		key: "run:task",
-		value: {
-			kind: "compaction",
-			messagesToSummarize: [],
-			turnPrefixMessages: [],
-			retainedTail: [],
-			isSplitTurn: false,
-			tokensBefore: 100,
-			fileOps: { read: [], written: [], edited: [] },
-			settings: { enabled: true, reserveTokens: 1000, keepRecentTokens: 2000 },
-		},
-	},
-	{
-		kind: "register",
-		op: "set",
-		namespace: "pending.entry",
-		key: "pending",
-		value: { type: "custom", customType: "note", payload: { text: "pending" } },
-	},
-	{ kind: "register", op: "set", namespace: "fact.name", key: "", value: "session" },
-	{ kind: "register", op: "set", namespace: "fact.label", key: "entry", value: "label" },
-	{ kind: "register", op: "set", namespace: "fact.custom", key: "state", value: null },
+const valueWrites: ValueSetWrite[] = [
+	storedValues.setValue(storedValues.laneLeaf("main"), "leaf"),
+	storedValues.setValue(storedValues.laneConfig("main"), configuration),
+	storedValues.setValue(storedValues.laneState("main"), { currentOperationId: "run", pendingNextRun: [] }),
+	storedValues.setValue(storedValues.laneLastResult("main"), lastResult),
+	storedValues.setValue(storedValues.operationMeta("run"), operations[0]),
+	storedValues.setValue(storedValues.operationState("run"), runState),
+	storedValues.setValue(storedValues.operationToolArgs("run", "step", 0), { path: "file" }),
+	storedValues.setValue(storedValues.operationPreparation("run", "task"), {
+		kind: "compaction",
+		messagesToSummarize: [],
+		turnPrefixMessages: [],
+		retainedTail: [],
+		isSplitTurn: false,
+		tokensBefore: 100,
+		fileOps: { read: [], written: [], edited: [] },
+		settings: { enabled: true, reserveTokens: 1000, keepRecentTokens: 2000 },
+	}),
+	storedValues.setValue(storedValues.pendingEntry("pending"), {
+		type: "custom",
+		customType: "note",
+		payload: { text: "pending" },
+	}),
+	storedValues.setValue(storedValues.sessionName, "session"),
+	storedValues.setValue(storedValues.entryLabel("entry"), "label"),
+	storedValues.setValue(storedValues.value<unknown>("test.value", "state"), null),
 ];
 
 const usage = {
@@ -292,36 +281,32 @@ const usageRow = {
 	adjustment: false,
 	details: { attempt: 1 },
 } satisfies UsageRow;
+const entryWrite = insertEntry({
+	id: "entry",
+	parentId: null,
+	type: "message",
+	message: { role: "user", content: "hello", timestamp: 1 },
+});
+const usageWrite = insertUsage({
+	id: usageRow.id,
+	usage,
+	adjustment: false,
+	entryId: "entry",
+});
 const writes = [
-	{
-		kind: "entry",
-		entry: {
-			id: "entry",
-			parentId: null,
-			type: "message",
-			message: { role: "user", content: "hello", timestamp: 1 },
-		},
-	},
-	{ kind: "usage", row: { id: usageRow.id, usage, adjustment: false, entryId: "entry" } },
-	registerWrites[0]!,
-	{ kind: "register", op: "delete", namespace: "fact.label", key: "entry" },
+	entryWrite,
+	usageWrite,
+	valueWrites[0]!,
+	storedValues.deleteValue(storedValues.entryLabel("entry")),
 ] satisfies Write[];
-const transaction = { writes } satisfies Transaction;
+const transaction = writes satisfies Write[];
 
 it("covers the complete durable storage and Part 3 discriminants", () => {
-	expectTypeOf<keyof RegisterValues>().toEqualTypeOf<
-		| "lane.leaf"
-		| "lane.config"
-		| "lane.state"
-		| "lane.lastResult"
-		| "op.meta"
-		| "op.state"
-		| "op.tool_args"
-		| "op.preparation"
-		| "pending.entry"
-		| "fact.name"
-		| "fact.label"
-		| "fact.custom"
+	expectTypeOf(entryWrite).toEqualTypeOf<EntryWrite>();
+	expectTypeOf(usageWrite).toEqualTypeOf<UsageWrite>();
+	expectTypeOf(storedValues.laneConfig("main")).toEqualTypeOf<storedValues.Value<LaneConfiguration>>();
+	expectTypeOf(storedValues.pendingAssistantFrames("operation", "response")).toEqualTypeOf<
+		storedValues.ValueList<AssistantMessageFrame>
 	>();
 	expectTypeOf<OperationMeta["intent"]["kind"]>().toEqualTypeOf<"run" | "compaction" | "navigation">();
 	expectTypeOf<Control["status"]>().toEqualTypeOf<"running" | "cancel_requested">();
@@ -331,7 +316,7 @@ it("covers the complete durable storage and Part 3 discriminants", () => {
 	expectTypeOf<SummaryGeneration["status"]>().toEqualTypeOf<"ready" | "effect_pending" | "retry_wait">();
 	expectTypeOf<StructuralDecision["status"]>().toEqualTypeOf<"deciding" | "generating">();
 	expectTypeOf<RunPhase["kind"]>().toEqualTypeOf<
-		"checkpoint" | "assistant" | "tools" | "compaction" | "deferred" | "failure_drain"
+		"starting" | "checkpoint" | "assistant" | "tools" | "compaction" | "deferred" | "failure_drain"
 	>();
 	expectTypeOf<OperationState["kind"]>().toEqualTypeOf<"run" | "compaction" | "navigation">();
 	expectTypeOf<NavigationState["summarize"]>().toEqualTypeOf<boolean>();
@@ -344,16 +329,10 @@ it("covers the complete durable storage and Part 3 discriminants", () => {
 
 	const compileTimeFailures = () => {
 		// @ts-expect-error lane.config requires a complete LaneConfiguration
-		const invalidRegister: RegisterSetWrite = {
-			kind: "register",
-			op: "set",
-			namespace: "lane.config",
-			key: "main",
-			value: "model",
-		};
+		const invalidValue: ValueSetWrite = storedValues.setValue(storedValues.laneConfig("main"), "model");
 		// @ts-expect-error response entries require settled assistant content at runtime, not a pending settlement type
 		const invalidSettled: SettledAssistantMessage = { stopReason: "pending" } as AssistantMessage;
-		void invalidRegister;
+		void invalidValue;
 		void invalidSettled;
 	};
 	expectTypeOf(compileTimeFailures).toBeFunction();
@@ -365,13 +344,13 @@ it("covers storage, session, repository, search, and identity signatures", () =>
 	expectTypeOf<Parameters<Storage["scanBranch"]>[0]["start"]>().toEqualTypeOf<string>();
 	expectTypeOf<BranchScan["start"]>().toEqualTypeOf<string | undefined>();
 	expectTypeOf<Storage["commit"]>().toEqualTypeOf<
-		(transactionToCommit: Transaction) => Promise<{ firstSeq: number; seqs: number[]; timestamp: number }>
+		(transactionToCommit: Write[]) => Promise<{ firstSeq: number; seqs: number[]; timestamp: number }>
 	>();
 	expectTypeOf<Session["mutate"]>().toEqualTypeOf<
 		<T>(lane: string, mutation: (mutator: SessionMutator) => T | Promise<T>) => Promise<T>
 	>();
 	expectTypeOf<SessionMutator["commit"]>().toEqualTypeOf<
-		(transactionToCommit: Transaction) => Promise<{ firstSeq: number; seqs: number[]; timestamp: number }>
+		(transactionToCommit: Write[]) => Promise<{ firstSeq: number; seqs: number[]; timestamp: number }>
 	>();
 	expectTypeOf<Session["createLane"]>().toEqualTypeOf<
 		(name: string, at: string | null, laneConfiguration: LaneConfiguration) => Promise<SessionTree>
@@ -412,7 +391,7 @@ it("covers Part 5 results, events, hooks, snapshots, tools, and stream options",
 		| "entry_added"
 		| "write_pending"
 		| "queue_update"
-		| "fact_update"
+		| "value_update"
 		| "config_update"
 		| "compaction_start"
 		| "compaction_end"
@@ -425,7 +404,7 @@ it("covers Part 5 results, events, hooks, snapshots, tools, and stream options",
 	>();
 	expectTypeOf<HookName>().toEqualTypeOf<
 		| "before_run"
-		| "before_resume"
+		| "before_drive"
 		| "before_run_end"
 		| "transform_context"
 		| "before_request"
@@ -436,8 +415,12 @@ it("covers Part 5 results, events, hooks, snapshots, tools, and stream options",
 		| "before_compaction"
 		| "before_navigation"
 	>();
-	expectTypeOf<HookMap["before_resume"]["result"]>().toEqualTypeOf<void>();
-	expectTypeOf<HookHandler<"before_resume">>().returns.toEqualTypeOf<void | Promise<void>>();
+	expectTypeOf<HookMap["before_drive"]["result"]>().toEqualTypeOf<void>();
+	expectTypeOf<HookHandler<"before_drive">>().returns.toEqualTypeOf<void | Promise<void>>();
+	expectTypeOf<HookMap["transform_context"]["event"]>().toEqualTypeOf<{
+		messages: AgentMessage[];
+		systemPrompt: string;
+	}>();
 	expectTypeOf<LaneSnapshot["operation"]>().not.toEqualTypeOf<SessionSnapshot>();
 	expectTypeOf<AgentLane["getLastResult"]>().returns.toEqualTypeOf<Promise<LaneLastResult | undefined>>();
 	expectTypeOf<AgentLane["accept"]>().returns.toEqualTypeOf<Promise<OperationAdmissionResult>>();
@@ -459,15 +442,15 @@ it("covers Part 5 results, events, hooks, snapshots, tools, and stream options",
 	const compileTimeFailures = () => {
 		// @ts-expect-error callers cannot supply the harness-owned abort signal
 		const invalidOptions: AgentHarnessStreamOptions = { signal: new AbortController().signal };
-		const invalidFactEvent: Extract<HarnessEvent, { type: "fact_update" }> = {
-			type: "fact_update",
-			fact: "name",
+		const invalidValueEvent: Extract<HarnessEvent, { type: "value_update" }> = {
+			type: "value_update",
+			value: "session_name",
 			name: "session",
-			// @ts-expect-error fact events are harness-global and cannot carry a lane
+			// @ts-expect-error value events are harness-global and cannot carry a lane
 			lane: "main",
 		};
 		void invalidOptions;
-		void invalidFactEvent;
+		void invalidValueEvent;
 	};
 	expectTypeOf(compileTimeFailures).toBeFunction();
 });

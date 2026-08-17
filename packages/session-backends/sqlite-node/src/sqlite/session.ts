@@ -5,12 +5,15 @@ import type {
 	EntryQuery,
 	JsonValue,
 	LaneConfiguration,
-	Register,
-	RegisterNamespace,
+	ListElement,
+	ListReadOptions,
 	Session,
 	SessionMutator,
 	SessionStats,
 	SessionTree,
+	StoredValue,
+	Value,
+	ValueList,
 } from "@earendil-works/pi-agent-core";
 import type { SqliteSessionMetadata } from "./session/session-row.ts";
 
@@ -62,18 +65,16 @@ export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 		return this.admit(() => this.session.getEntries(ids));
 	}
 
-	getRegister<TNamespace extends RegisterNamespace>(
-		namespace: TNamespace,
-		key: string,
-	): Promise<Register<TNamespace> | undefined> {
-		return this.admit(() => this.session.getRegister(namespace, key));
+	getValue<T>(address: Value<T>): Promise<StoredValue<T> | undefined> {
+		return this.admit(() => this.session.getValue(address));
 	}
 
-	listRegisters<TNamespace extends RegisterNamespace>(
-		namespace: TNamespace,
-		keyPrefix?: string,
-	): Promise<Register<TNamespace>[]> {
-		return this.admit(() => this.session.listRegisters(namespace, keyPrefix));
+	scanValues<T>(prefix: Value<T>): Promise<StoredValue<T>[]> {
+		return this.admit(() => this.session.scanValues(prefix));
+	}
+
+	readList<T>(address: ValueList<T>, options?: ListReadOptions): Promise<ListElement<T>[]> {
+		return this.admit(() => this.session.readList(address, options));
 	}
 
 	view(lane: string): SessionTree {
@@ -82,12 +83,17 @@ export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 			getLeafId: () => this.admit(() => view.getLeafId()),
 			getEntry: (id) => this.admit(() => view.getEntry(id)),
 			getStats: () => this.admit(() => view.getStats()),
+			getValue: (address) => this.admit(() => view.getValue(address)),
+			scanValues: (prefix) => this.admit(() => view.scanValues(prefix)),
+			readList: (address, options) => this.admit(() => view.readList(address, options)),
+			setValue: (address, next) => this.admit(() => view.setValue(address, next)),
+			deleteValue: (address) => this.admit(() => view.deleteValue(address)),
+			appendList: (address, element) => this.admit(() => view.appendList(address, element)),
+			deleteList: (address) => this.admit(() => view.deleteList(address)),
 			getName: () => this.admit(() => view.getName()),
 			setName: (name) => this.admit(() => view.setName(name)),
 			getLabel: (targetId) => this.admit(() => view.getLabel(targetId)),
 			setLabel: (targetId, label) => this.admit(() => view.setLabel(targetId, label)),
-			getCustomFact: (key) => this.admit(() => view.getCustomFact(key)),
-			setCustomFact: (key, value) => this.admit(() => view.setCustomFact(key, value)),
 			findEntries: (query) => this.admit(() => view.findEntries(query)),
 			findEntry: (query) => this.admit(() => view.findEntry(query)),
 			findEntriesOnBranch: (query) => this.admit(() => view.findEntriesOnBranch(query)),
@@ -116,6 +122,22 @@ export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 		return this.admit(() => this.session.getStats());
 	}
 
+	setValue<T>(address: Value<T>, next: NoInfer<T>): Promise<void> {
+		return this.admit(() => this.session.setValue(address, next));
+	}
+
+	deleteValue<T>(address: Value<T>): Promise<void> {
+		return this.admit(() => this.session.deleteValue(address));
+	}
+
+	appendList<T>(address: ValueList<T>, element: NoInfer<T>): Promise<void> {
+		return this.admit(() => this.session.appendList(address, element));
+	}
+
+	deleteList<T>(address: ValueList<T>): Promise<void> {
+		return this.admit(() => this.session.deleteList(address));
+	}
+
 	getName(): Promise<string | undefined> {
 		return this.admit(() => this.session.getName());
 	}
@@ -130,14 +152,6 @@ export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 
 	setLabel(targetId: string, label: string | undefined): Promise<void> {
 		return this.admit(() => this.session.setLabel(targetId, label));
-	}
-
-	getCustomFact(key: string): Promise<JsonValue | undefined> {
-		return this.admit(() => this.session.getCustomFact(key));
-	}
-
-	setCustomFact(key: string, value: JsonValue | undefined): Promise<void> {
-		return this.admit(() => this.session.setCustomFact(key, value));
 	}
 
 	findEntries(query?: EntryQuery): Promise<Entry[]> {
