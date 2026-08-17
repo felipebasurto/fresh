@@ -11,6 +11,7 @@ import {
 	type JsonlSessionMetadata,
 	JsonlSessionRepo,
 	type Session,
+	TODO_CONTEXT,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import {
@@ -469,13 +470,13 @@ async function closeResources(resources: {
 }): Promise<void> {
 	const errors: unknown[] = [];
 	try {
-		if (resources.harness) await resources.harness.close();
-		else await resources.session?.close();
+		if (resources.harness) await resources.harness.close(TODO_CONTEXT);
+		else await resources.session?.close(TODO_CONTEXT);
 	} catch (error) {
 		errors.push(error);
 	}
 	try {
-		await resources.repo.close();
+		await resources.repo.close(TODO_CONTEXT);
 	} catch (error) {
 		errors.push(error);
 	}
@@ -517,7 +518,7 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 	let session: Session<JsonlSessionMetadata> | undefined;
 	let harness: AgentHarnessInstance | undefined;
 	try {
-		session = await repo.open(metadata);
+		session = await repo.open(metadata, TODO_CONTEXT);
 		harness = await createHarness(session, options, executionEnv);
 	} catch (error) {
 		try {
@@ -597,11 +598,13 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 		prompt: async (_scope: WorkerOperationScope, prompt) => {
 			const args = toHarnessPromptArguments(prompt);
 			const result =
-				typeof args[0] === "string" ? await harness.prompt(args[0], args[1]) : await harness.prompt(args[0]);
+				typeof args[0] === "string"
+					? await harness.prompt(args[0], args[1], TODO_CONTEXT)
+					: await harness.prompt(args[0], TODO_CONTEXT);
 			return toWireRunResult(result);
 		},
 		watch: async (scope: WorkerOperationScope, ..._args: never[]) => {
-			const handle = await harness.watch();
+			const handle = await harness.watch(TODO_CONTEXT);
 			const watchId = randomUUID();
 			laneWatches.set(watchId, { scope, handle });
 			return { watchId, snapshot: toWireLaneSnapshot(handle.snapshot) };
@@ -790,42 +793,48 @@ async function createCodingAgentHarness(
 	const tools = [createReadTool(), createWriteTool(), createBashTool()];
 	const activeToolNames = tools.map((tool) => tool.name);
 	const harness = (
-		await AgentHarness.create({
-			session,
-			models: modelRuntime,
-			model: resolved.model,
-			thinkingLevel: resolved.thinkingLevel,
-			tools,
-			activeToolNames,
-			toolContext: { env: executionEnv },
-			resources: {},
-		})
+		await AgentHarness.create(
+			{
+				session,
+				models: modelRuntime,
+				model: resolved.model,
+				thinkingLevel: resolved.thinkingLevel,
+				tools,
+				activeToolNames,
+				toolContext: { env: executionEnv },
+				resources: {},
+			},
+			TODO_CONTEXT,
+		)
 	).harness;
 	try {
-		const currentActiveToolNames = await harness.getActiveTools();
+		const currentActiveToolNames = await harness.getActiveTools(TODO_CONTEXT);
 		if (
 			currentActiveToolNames.length !== activeToolNames.length ||
 			currentActiveToolNames.some((name, index) => name !== activeToolNames[index])
 		) {
-			await harness.setActiveTools(activeToolNames);
+			await harness.setActiveTools(activeToolNames, TODO_CONTEXT);
 		}
 		if (options.model !== undefined) {
-			const currentModel = await harness.getModel();
+			const currentModel = await harness.getModel(TODO_CONTEXT);
 			if (
 				!currentModel ||
 				currentModel.provider !== resolved.model.provider ||
 				currentModel.id !== resolved.model.id
 			) {
-				await harness.setModel(resolved.model);
+				await harness.setModel(resolved.model, TODO_CONTEXT);
 			}
-			if (resolved.thinkingLevel !== undefined && (await harness.getThinkingLevel()) !== resolved.thinkingLevel) {
-				await harness.setThinkingLevel(resolved.thinkingLevel);
+			if (
+				resolved.thinkingLevel !== undefined &&
+				(await harness.getThinkingLevel(TODO_CONTEXT)) !== resolved.thinkingLevel
+			) {
+				await harness.setThinkingLevel(resolved.thinkingLevel, TODO_CONTEXT);
 			}
 		}
 		return harness;
 	} catch (error) {
 		try {
-			await harness.close();
+			await harness.close(TODO_CONTEXT);
 		} catch (cleanupError) {
 			throw new AggregateError([error, cleanupError], "Session worker model selection and cleanup failed");
 		}

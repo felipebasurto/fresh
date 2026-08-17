@@ -3,7 +3,7 @@ import { chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type JsonlSessionMetadata, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
+import { type JsonlSessionMetadata, JsonlSessionRepo, TODO_CONTEXT } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { PiClient, PiDisconnectedError, PiServerError } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, type UnixServerRoute } from "@earendil-works/pi-client/unix";
@@ -332,16 +332,18 @@ async function startServerBackend(
 	const host: PiServerHost<JsonlSessionMetadata> = {
 		sessions: {
 			list: async () => {
-				const sessions = new Map((await repo.list()).map((metadata) => [metadata.path, metadata]));
+				const sessions = new Map(
+					(await repo.list(undefined, TODO_CONTEXT)).map((metadata) => [metadata.path, metadata]),
+				);
 				for (const metadata of workers.trackedSessions) sessions.set(metadata.path, metadata);
 				return [...sessions.values()];
 			},
 			create: async (createOptions) => {
-				const session = await repo.create(createOptions);
+				const session = await repo.create(createOptions, TODO_CONTEXT);
 				try {
 					return session.metadata;
 				} finally {
-					await session.close();
+					await session.close(TODO_CONTEXT);
 				}
 			},
 		},
@@ -349,7 +351,7 @@ async function startServerBackend(
 	};
 	const socketPath = options.path;
 	const closeCatalog = async (): Promise<void> => {
-		const cleanup = await Promise.allSettled([repo.close(), executionEnv.cleanup()]);
+		const cleanup = await Promise.allSettled([repo.close(TODO_CONTEXT), executionEnv.cleanup()]);
 		const errors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
 		if (errors.length === 1) throw errors[0];
 		if (errors.length > 1) throw new AggregateError(errors, "Experimental session catalog cleanup failed");

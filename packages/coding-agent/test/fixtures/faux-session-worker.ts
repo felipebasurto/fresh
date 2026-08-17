@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentHarness } from "@earendil-works/pi-agent-core";
+import { AgentHarness, BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { consumeInternalProcessRole } from "../../src/experimental/process.ts";
 import { runSessionWorkerWithHarness } from "../../src/experimental/session-worker.ts";
@@ -17,13 +17,16 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
 		const models = createModels();
 		models.setProvider(faux.provider);
 		return (
-			await AgentHarness.create({
-				session,
-				models,
-				model: faux.getModel(),
-				tools: [],
-				resources: {},
-			})
+			await AgentHarness.create(
+				{
+					session,
+					models,
+					model: faux.getModel(),
+					tools: [],
+					resources: {},
+				},
+				BACKGROUND_CONTEXT,
+			)
 		).harness;
 	}).catch((error: unknown) => {
 		console.error(error);

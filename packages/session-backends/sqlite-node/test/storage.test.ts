@@ -1,6 +1,6 @@
 import * as storedValues from "@earendil-works/pi-agent-core";
 import * as sessionWrites from "@earendil-works/pi-agent-core";
-import { prepareStorageCommit } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, prepareStorageCommit } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { createNodeSqliteFactory, type SqliteDatabase, SqliteStorage, sql } from "../src/index.ts";
 import { applyInitialSchema } from "../src/sqlite/migrations.ts";
@@ -59,24 +59,30 @@ describe("SqliteStorage", () => {
 			insertCommitSessionRow(db);
 
 			expect(
-				await storage.commit([
-					sessionWrites.insertEntry({
-						id: "root",
-						parentId: null,
-						type: "message",
-						message: { role: "user", content: "root", timestamp: 10 },
-					}),
-				]),
+				await storage.commit(
+					[
+						sessionWrites.insertEntry({
+							id: "root",
+							parentId: null,
+							type: "message",
+							message: { role: "user", content: "root", timestamp: 10 },
+						}),
+					],
+					BACKGROUND_CONTEXT,
+				),
 			).toEqual({ firstSeq: 1, seqs: [1], timestamp: 1_700_000_000_000 });
 			expect(
-				await storage.commit([
-					sessionWrites.insertEntry({
-						id: "child",
-						parentId: "root",
-						type: "message",
-						message: { role: "user", content: "child", timestamp: 11 },
-					}),
-				]),
+				await storage.commit(
+					[
+						sessionWrites.insertEntry({
+							id: "child",
+							parentId: "root",
+							type: "message",
+							message: { role: "user", content: "child", timestamp: 11 },
+						}),
+					],
+					BACKGROUND_CONTEXT,
+				),
 			).toEqual({ firstSeq: 2, seqs: [2], timestamp: 1_700_000_000_000 });
 
 			expect(sql`SELECT branch_id, tip_entry_id, tip_seq FROM branch_meta`.all(db)).toEqual([
@@ -88,33 +94,39 @@ describe("SqliteStorage", () => {
 				{ branch_id: "root", entry_id: "root", entry_seq: 1, entry_type: "message" },
 				{ branch_id: "root", entry_id: "child", entry_seq: 2, entry_type: "message" },
 			]);
-			expect((await storage.scanBranch({ start: "child" })).map((entry) => entry.id)).toEqual(["child", "root"]);
+			expect((await storage.scanBranch({ start: "child" }, BACKGROUND_CONTEXT)).map((entry) => entry.id)).toEqual([
+				"child",
+				"root",
+			]);
 		});
 	});
 
 	it("commits divergent branch entries by materializing a new segment", async () => {
 		await withStorage(async (storage, db) => {
 			insertCommitSessionRow(db);
-			await storage.commit([
-				sessionWrites.insertEntry({
-					id: "root",
-					parentId: null,
-					type: "message",
-					message: { role: "user", content: "root", timestamp: 10 },
-				}),
-				sessionWrites.insertEntry({
-					id: "left",
-					parentId: "root",
-					type: "message",
-					message: { role: "user", content: "left", timestamp: 11 },
-				}),
-				sessionWrites.insertEntry({
-					id: "right",
-					parentId: "root",
-					type: "message",
-					message: { role: "user", content: "right", timestamp: 12 },
-				}),
-			]);
+			await storage.commit(
+				[
+					sessionWrites.insertEntry({
+						id: "root",
+						parentId: null,
+						type: "message",
+						message: { role: "user", content: "root", timestamp: 10 },
+					}),
+					sessionWrites.insertEntry({
+						id: "left",
+						parentId: "root",
+						type: "message",
+						message: { role: "user", content: "left", timestamp: 11 },
+					}),
+					sessionWrites.insertEntry({
+						id: "right",
+						parentId: "root",
+						type: "message",
+						message: { role: "user", content: "right", timestamp: 12 },
+					}),
+				],
+				BACKGROUND_CONTEXT,
+			);
 
 			expect(
 				sql`SELECT branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq FROM branch_meta ORDER BY branch_id`.all(
@@ -134,49 +146,58 @@ describe("SqliteStorage", () => {
 				{ branch_id: "root", entry_id: "root", entry_seq: 1, entry_type: "message" },
 				{ branch_id: "root", entry_id: "left", entry_seq: 2, entry_type: "message" },
 			]);
-			expect((await storage.scanBranch({ start: "right" })).map((entry) => entry.id)).toEqual(["right", "root"]);
-			expect((await storage.scanBranch({ start: "left" })).map((entry) => entry.id)).toEqual(["left", "root"]);
+			expect((await storage.scanBranch({ start: "right" }, BACKGROUND_CONTEXT)).map((entry) => entry.id)).toEqual([
+				"right",
+				"root",
+			]);
+			expect((await storage.scanBranch({ start: "left" }, BACKGROUND_CONTEXT)).map((entry) => entry.id)).toEqual([
+				"left",
+				"root",
+			]);
 		});
 	});
 
 	it("bases divergent branch segments at the newest compaction", async () => {
 		await withStorage(async (storage, db) => {
 			insertCommitSessionRow(db);
-			await storage.commit([
-				sessionWrites.insertEntry({
-					id: "root",
-					parentId: null,
-					type: "message",
-					message: { role: "user", content: "root", timestamp: 10 },
-				}),
-				sessionWrites.insertEntry({
-					id: "compact",
-					parentId: "root",
-					type: "compaction",
-					summary: "summary",
-					retainedTail: [],
-					tokensBefore: 1,
-					fromHook: false,
-				}),
-				sessionWrites.insertEntry({
-					id: "left",
-					parentId: "compact",
-					type: "message",
-					message: { role: "user", content: "left", timestamp: 11 },
-				}),
-				sessionWrites.insertEntry({
-					id: "leaf",
-					parentId: "left",
-					type: "message",
-					message: { role: "user", content: "leaf", timestamp: 12 },
-				}),
-				sessionWrites.insertEntry({
-					id: "right",
-					parentId: "left",
-					type: "message",
-					message: { role: "user", content: "right", timestamp: 13 },
-				}),
-			]);
+			await storage.commit(
+				[
+					sessionWrites.insertEntry({
+						id: "root",
+						parentId: null,
+						type: "message",
+						message: { role: "user", content: "root", timestamp: 10 },
+					}),
+					sessionWrites.insertEntry({
+						id: "compact",
+						parentId: "root",
+						type: "compaction",
+						summary: "summary",
+						retainedTail: [],
+						tokensBefore: 1,
+						fromHook: false,
+					}),
+					sessionWrites.insertEntry({
+						id: "left",
+						parentId: "compact",
+						type: "message",
+						message: { role: "user", content: "left", timestamp: 11 },
+					}),
+					sessionWrites.insertEntry({
+						id: "leaf",
+						parentId: "left",
+						type: "message",
+						message: { role: "user", content: "leaf", timestamp: 12 },
+					}),
+					sessionWrites.insertEntry({
+						id: "right",
+						parentId: "left",
+						type: "message",
+						message: { role: "user", content: "right", timestamp: 13 },
+					}),
+				],
+				BACKGROUND_CONTEXT,
+			);
 
 			expect(
 				sql`SELECT branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq FROM branch_meta WHERE branch_id = ${"right"}`.get(
@@ -197,7 +218,7 @@ describe("SqliteStorage", () => {
 				{ branch_id: "right", entry_id: "left", entry_seq: 3, entry_type: "message" },
 				{ branch_id: "right", entry_id: "right", entry_seq: 5, entry_type: "message" },
 			]);
-			expect((await storage.scanBranch({ start: "right" })).map((entry) => entry.id)).toEqual([
+			expect((await storage.scanBranch({ start: "right" }, BACKGROUND_CONTEXT)).map((entry) => entry.id)).toEqual([
 				"right",
 				"left",
 				"compact",
@@ -215,7 +236,7 @@ describe("SqliteStorage", () => {
 				db,
 			);
 
-			const entries = await storage.getEntries(["second", "missing", "first"]);
+			const entries = await storage.getEntries(["second", "missing", "first"], BACKGROUND_CONTEXT);
 
 			expect([...entries.keys()]).toEqual(["second", "first"]);
 			expect(entries.get("second")).toMatchObject({ id: "second", type: "message", parentId: "first" });
@@ -232,10 +253,14 @@ describe("SqliteStorage", () => {
 					(${"three"}, ${"two"}, ${3}, ${"custom"}, ${"note"}, ${12}, ${JSON.stringify({ data: 3 })})`.run(db);
 
 			expect(
-				(await storage.scanEntries({ order: "desc", type: "custom", fromSeq: 2 })).map((entry) => entry.id),
+				(await storage.scanEntries({ order: "desc", type: "custom", fromSeq: 2 }, BACKGROUND_CONTEXT)).map(
+					(entry) => entry.id,
+				),
 			).toEqual(["three"]);
 			expect(
-				(await storage.scanEntries({ order: "asc", customType: "note", limit: 2 })).map((entry) => entry.id),
+				(await storage.scanEntries({ order: "asc", customType: "note", limit: 2 }, BACKGROUND_CONTEXT)).map(
+					(entry) => entry.id,
+				),
 			).toEqual(["one", "three"]);
 		});
 	});
@@ -264,11 +289,16 @@ describe("SqliteStorage", () => {
 					(${"new"}, ${"leaf"}, ${5}, ${"message"})`.run(db);
 
 			expect(
-				(await storage.scanBranch({ start: "leaf", stopAtType: "compaction", limit: 2 })).map((entry) => entry.id),
+				(await storage.scanBranch({ start: "leaf", stopAtType: "compaction", limit: 2 }, BACKGROUND_CONTEXT)).map(
+					(entry) => entry.id,
+				),
 			).toEqual(["leaf", "custom"]);
 			expect(
 				(
-					await storage.scanBranch({ start: "leaf", order: "oldestFirst", type: "message", cursor: { seq: 1 } })
+					await storage.scanBranch(
+						{ start: "leaf", order: "oldestFirst", type: "message", cursor: { seq: 1 } },
+						BACKGROUND_CONTEXT,
+					)
 				).map((entry) => entry.id),
 			).toEqual(["old", "leaf"]);
 		});
@@ -294,7 +324,9 @@ describe("SqliteStorage", () => {
 					(${"zzz-base"}, ${"base-tip"}, ${2}, ${"message"})`.run(db);
 
 			expect(
-				(await storage.scanBranch({ start: "base-tip", order: "oldestFirst" })).map((entry) => entry.id),
+				(await storage.scanBranch({ start: "base-tip", order: "oldestFirst" }, BACKGROUND_CONTEXT)).map(
+					(entry) => entry.id,
+				),
 			).toEqual(["root", "base-tip"]);
 		});
 	});
@@ -319,12 +351,17 @@ describe("SqliteStorage", () => {
 					(${"new"}, ${"leaf"}, ${4}, ${"custom"})`.run(db);
 
 			expect(
-				(await storage.scanBranch({ start: "leaf", stopAtType: "compaction" })).map((entry) => entry.id),
-			).toEqual(["leaf", "after", "compact"]);
-			expect(
-				(await storage.scanBranch({ start: "leaf", stopAtType: "compaction", type: "message" })).map(
+				(await storage.scanBranch({ start: "leaf", stopAtType: "compaction" }, BACKGROUND_CONTEXT)).map(
 					(entry) => entry.id,
 				),
+			).toEqual(["leaf", "after", "compact"]);
+			expect(
+				(
+					await storage.scanBranch(
+						{ start: "leaf", stopAtType: "compaction", type: "message" },
+						BACKGROUND_CONTEXT,
+					)
+				).map((entry) => entry.id),
 			).toEqual(["after"]);
 		});
 	});
@@ -361,16 +398,18 @@ describe("SqliteStorage", () => {
 					(${"main"}, ${"root"}, ${1}, ${"message"}),
 					(${"main"}, ${"custom"}, ${2}, ${"custom"})`.run(db);
 
-			expect(await storage.scanBranchStructure({ start: "custom", customType: "note" })).toEqual([
-				{
-					id: "custom",
-					parentId: "root",
-					seq: 2,
-					timestamp: 11,
-					type: "custom",
-					customType: "note",
-				},
-			]);
+			expect(await storage.scanBranchStructure({ start: "custom", customType: "note" }, BACKGROUND_CONTEXT)).toEqual(
+				[
+					{
+						id: "custom",
+						parentId: "root",
+						seq: 2,
+						timestamp: 11,
+						type: "custom",
+						customType: "note",
+					},
+				],
+			);
 		});
 	});
 
@@ -409,10 +448,12 @@ describe("SqliteStorage", () => {
 					(${"u2"}, ${2}, ${null}, ${1}, ${JSON.stringify(usage)}, ${JSON.stringify({ reason: "adjust" })}),
 					(${"u3"}, ${3}, ${"e3"}, ${0}, ${JSON.stringify(usage)}, ${null})`.run(db);
 
-			expect(await storage.scanUsage({ fromSeq: 2, order: "asc", limit: 1 })).toEqual([
+			expect(await storage.scanUsage({ fromSeq: 2, order: "asc", limit: 1 }, BACKGROUND_CONTEXT)).toEqual([
 				{ id: "u2", seq: 2, usage, adjustment: true, details: { reason: "adjust" } },
 			]);
-			expect((await storage.scanUsage({ toSeq: 2, order: "desc" })).map((row) => row.id)).toEqual(["u2", "u1"]);
+			expect(
+				(await storage.scanUsage({ toSeq: 2, order: "desc" }, BACKGROUND_CONTEXT)).map((row) => row.id),
+			).toEqual(["u2", "u1"]);
 		});
 	});
 
@@ -479,7 +520,7 @@ describe("SqliteStorage", () => {
 				(created_at, parent_session_id, storage_version, metadata, message_count, usage_payload, next_seq)
 				VALUES (${1}, ${null}, ${1}, ${null}, ${2}, ${JSON.stringify(usage)}, ${3})`.run(db);
 
-			expect(await storage.getStats()).toEqual({ messageCount: 2, usage });
+			expect(await storage.getStats(BACKGROUND_CONTEXT)).toEqual({ messageCount: 2, usage });
 		});
 	});
 
@@ -489,12 +530,14 @@ describe("SqliteStorage", () => {
 			sql`INSERT INTO scalar_values (namespace, key, seq, value)
 				VALUES (${address.namespace}, ${address.key}, ${1}, ${JSON.stringify({ ready: true })})`.run(db);
 
-			expect(await storage.getValue(address)).toEqual({
+			expect(await storage.getValue(address, BACKGROUND_CONTEXT)).toEqual({
 				address,
 				seq: 1,
 				value: { ready: true },
 			});
-			expect(await storage.getValue(storedValues.value<unknown>("test.value", "missing"))).toBeUndefined();
+			expect(
+				await storage.getValue(storedValues.value<unknown>("test.value", "missing"), BACKGROUND_CONTEXT),
+			).toBeUndefined();
 		});
 	});
 
@@ -509,7 +552,9 @@ describe("SqliteStorage", () => {
 					(${"test.value"}, ${"other"}, ${5}, ${JSON.stringify(5)}),
 					(${"other.value"}, ${""}, ${6}, ${JSON.stringify("name")})`.run(db);
 
-			expect(await storage.scanValues(storedValues.value<unknown>("test.value", "app:"))).toEqual([
+			expect(
+				await storage.scanValues(storedValues.value<unknown>("test.value", "app:"), BACKGROUND_CONTEXT),
+			).toEqual([
 				{ address: storedValues.value<unknown>("test.value", "app:one"), seq: 1, value: 1 },
 				{ address: storedValues.value<unknown>("test.value", "app:two"), seq: 2, value: 2 },
 				{ address: storedValues.value<unknown>("test.value", "app:\ufffftail"), seq: 3, value: 3 },
