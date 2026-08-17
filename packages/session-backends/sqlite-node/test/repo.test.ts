@@ -147,4 +147,74 @@ describe("SqliteSessionRepo", () => {
 			await expect(repo.open(metadata)).rejects.toThrow("already claimed");
 		});
 	});
+
+	it("forks one branch with scoped facts and a zero ledger", async () => {
+		await withTempDir(async (directory) => {
+			const repo = new SqliteSessionRepo({
+				directory,
+				databaseFactory: createNodeSqliteFactory(),
+				now: () => 1_700_000_000_000,
+			});
+			const source = await repo.create({ id: "source" });
+			await source.mutate("main", (mutator) =>
+				mutator.commit({
+					writes: [
+						{ kind: "entry", entry: { id: "root", parentId: null, type: "custom", customType: "root" } },
+						{
+							kind: "entry",
+							entry: {
+								id: "child",
+								parentId: "root",
+								type: "message",
+								message: { role: "user", content: "child", timestamp: 1 },
+							},
+						},
+						{ kind: "entry", entry: { id: "sibling", parentId: "root", type: "custom", customType: "sibling" } },
+						{ kind: "register", op: "set", namespace: "lane.leaf", key: "main", value: "child" },
+						{ kind: "register", op: "set", namespace: "fact.name", key: "", value: "source name" },
+						{ kind: "register", op: "set", namespace: "fact.label", key: "root", value: "root label" },
+						{ kind: "register", op: "set", namespace: "fact.label", key: "sibling", value: "sibling label" },
+						{
+							kind: "usage",
+							row: {
+								id: "usage",
+								adjustment: false,
+								usage: {
+									input: 1,
+									output: 1,
+									cacheRead: 0,
+									cacheWrite: 0,
+									totalTokens: 2,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								},
+							},
+						},
+					],
+				}),
+			);
+
+			const fork = await repo.fork(source.metadata, { id: "fork", entryId: "child" });
+
+			expect((await fork.findEntries({ order: "asc" })).map((entry) => entry.id)).toEqual(["root", "child"]);
+			expect(await fork.getLeafId()).toBe("child");
+			expect(await fork.getName()).toBe("source name");
+			expect(await fork.getLabel("root")).toBe("root label");
+			expect(await fork.getLabel("sibling")).toBeUndefined();
+			await withDb(fork.metadata.path, (db) => {
+				expect(sql`SELECT COUNT(*) AS count FROM usage_ledger`.get<{ count: number }>(db)).toEqual({ count: 0 });
+			});
+			expect(await fork.getStats()).toEqual({
+				messageCount: 1,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+			});
+			await Promise.all([source.close(), fork.close()]);
+		});
+	});
 });

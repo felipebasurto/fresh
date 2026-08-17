@@ -1,9 +1,17 @@
 import { access, mkdir, open as openFile, readdir, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
-import type { SessionCreateOptions } from "@earendil-works/pi-agent-core";
+import type {
+	Entry,
+	ForkOptions,
+	Register,
+	RegisterNamespace,
+	SessionCreateOptions,
+} from "@earendil-works/pi-agent-core";
 import { StorageBackedSession } from "@earendil-works/pi-agent-core";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { applyInitialSchema } from "./migrations.ts";
+import { appendEntryToBranchIndex } from "./session/branch-entries.ts";
+import { decodeEntryRow, type EntryRow, EntryRowWriter } from "./session/entries.ts";
 import { insertInitialMainLaneRegisters } from "./session/registers.ts";
 import {
 	insertSessionRow,
@@ -14,6 +22,7 @@ import {
 } from "./session/session-row.ts";
 import { claimWriterLease, releaseWriterLease, renewWriterLease, type WriterLeaseRow } from "./session/writer-lease.ts";
 import { SqliteOpenSession } from "./session.ts";
+import { sql } from "./sql.ts";
 import { SqliteStorage } from "./storage.ts";
 import type { SqliteDatabase, SqliteDatabaseFactory } from "./types.ts";
 
@@ -49,6 +58,167 @@ async function removeSessionFiles(path: string, options: { force: boolean }): Pr
 
 function configureConnection(db: SqliteDatabase): void {
 	db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
+}
+
+interface RegisterRow {
+	namespace: RegisterNamespace;
+	key: string;
+	seq: number;
+	value: string;
+}
+
+interface ForkSnapshot {
+	entries: Entry[];
+	registers: Register[];
+	messageCount: number;
+	nextSeq: number;
+}
+
+function readSourceEntries(db: SqliteDatabase): Entry[] {
+	return sql`SELECT id, parent_id, seq, type, custom_type, timestamp, payload
+		FROM entries ORDER BY seq ASC`
+		.all<EntryRow>(db)
+		.map(decodeEntryRow);
+}
+
+function readSourceRegisters(db: SqliteDatabase): Register[] {
+	return sql`SELECT namespace, key, seq, value FROM registers ORDER BY seq ASC`
+		.all<RegisterRow>(db)
+		.map(
+			(row) => ({ namespace: row.namespace, key: row.key, seq: row.seq, value: JSON.parse(row.value) }) as Register,
+		);
+}
+
+function isRegisterNamespace<TNamespace extends RegisterNamespace>(
+	register: Register,
+	namespace: TNamespace,
+): register is Register<TNamespace> {
+	return register.namespace === namespace;
+}
+
+function hasRegister(registers: readonly Register[], namespace: RegisterNamespace, key: string): boolean {
+	return registers.some((register) => register.namespace === namespace && register.key === key);
+}
+
+function validateForkSourceSnapshot(
+	entriesById: ReadonlyMap<string, Entry>,
+	registers: readonly Register[],
+	sourceLeaves: readonly Register<"lane.leaf">[],
+): void {
+	const sourceLeafKeys = new Set(sourceLeaves.map((register) => register.key));
+	if (!sourceLeafKeys.has("main")) throw new Error("Source session is missing main lane");
+	for (const register of registers) {
+		if (
+			(register.namespace === "lane.config" ||
+				register.namespace === "lane.state" ||
+				register.namespace === "lane.lastResult") &&
+			!sourceLeafKeys.has(register.key)
+		) {
+			throw new Error(`Source session lane ${JSON.stringify(register.key)} is missing lane.leaf`);
+		}
+	}
+	for (const leaf of sourceLeaves) {
+		if (!hasRegister(registers, "lane.state", leaf.key)) {
+			throw new Error(`Source session lane ${JSON.stringify(leaf.key)} is missing lane.state`);
+		}
+		if (leaf.key !== "main" && !hasRegister(registers, "lane.config", leaf.key)) {
+			throw new Error(`Source session lane ${JSON.stringify(leaf.key)} is missing lane.config`);
+		}
+		if (leaf.value !== null && !entriesById.has(leaf.value)) {
+			throw new Error(`Source session lane ${JSON.stringify(leaf.key)} has an unknown leaf`);
+		}
+	}
+}
+
+function selectForkContents(
+	entriesById: ReadonlyMap<string, Entry>,
+	sourceLeaves: readonly Register<"lane.leaf">[],
+	options: ForkOptions,
+): { entryIds: Set<string>; laneToLeafId: Map<string, string | null> } {
+	const entryIds = new Set<string>();
+	const laneToLeafId = new Map<string, string | null>();
+	if (options.scope === "tree") {
+		for (const id of entriesById.keys()) entryIds.add(id);
+		for (const register of sourceLeaves) laneToLeafId.set(register.key, register.value);
+		return { entryIds, laneToLeafId };
+	}
+
+	const mainLeaf = sourceLeaves.find((register) => register.key === "main");
+	if (mainLeaf === undefined) throw new Error("Source session is missing main lane");
+	const requested = options.entryId ?? mainLeaf.value;
+	let leaf = requested;
+	if (requested !== null) {
+		const target = entriesById.get(requested);
+		if (target === undefined) throw new Error(`Unknown fork entry: ${requested}`);
+		if (options.position === "before") leaf = target.parentId;
+	}
+
+	let entryId = leaf;
+	while (entryId !== null) {
+		const entry = entriesById.get(entryId);
+		if (entry === undefined) throw new Error(`Corrupt source branch: missing parent ${entryId}`);
+		entryIds.add(entryId);
+		entryId = entry.parentId;
+	}
+	laneToLeafId.set("main", leaf);
+	return { entryIds, laneToLeafId };
+}
+
+function createSqliteForkSnapshot(sourceDb: SqliteDatabase, options: ForkOptions): ForkSnapshot {
+	sourceDb.exec("BEGIN");
+	let committed = false;
+	try {
+		const sourceEntries = readSourceEntries(sourceDb);
+		const sourceRegisters = readSourceRegisters(sourceDb);
+		const sourceEntriesById = new Map(sourceEntries.map((entry) => [entry.id, entry]));
+		const sourceLeaves = sourceRegisters.filter((register) => isRegisterNamespace(register, "lane.leaf"));
+		validateForkSourceSnapshot(sourceEntriesById, sourceRegisters, sourceLeaves);
+		const { entryIds, laneToLeafId } = selectForkContents(sourceEntriesById, sourceLeaves, options);
+		const entries = sourceEntries.filter((entry) => entryIds.has(entry.id));
+		const registers: Register[] = [];
+		let nextSeq = Math.max(0, ...entries.map((entry) => entry.seq)) + 1;
+		const setRegister = (namespace: RegisterNamespace, key: string, value: Register["value"]): void => {
+			registers.push({ namespace, key, value, seq: nextSeq++ } as Register);
+		};
+		for (const [lane, leaf] of laneToLeafId) {
+			const configuration = sourceRegisters.find(
+				(register) => register.namespace === "lane.config" && register.key === lane,
+			);
+			if (configuration !== undefined) setRegister("lane.config", lane, configuration.value);
+			setRegister("lane.leaf", lane, leaf);
+			setRegister("lane.state", lane, { currentOperationId: null, pendingNextRun: [] });
+		}
+		for (const register of sourceRegisters) {
+			if (
+				register.namespace === "fact.name" ||
+				register.namespace === "fact.custom" ||
+				(register.namespace === "fact.label" && entryIds.has(register.key))
+			) {
+				setRegister(register.namespace, register.key, register.value);
+			}
+		}
+		const snapshot = {
+			entries,
+			registers,
+			messageCount: entries.filter((entry) => entry.type === "message").length,
+			nextSeq,
+		};
+		sourceDb.exec("COMMIT");
+		committed = true;
+		return snapshot;
+	} catch (error) {
+		if (!committed) sourceDb.exec("ROLLBACK");
+		throw error;
+	}
+}
+
+function insertForkRegister(db: SqliteDatabase, register: Register): void {
+	sql`INSERT INTO registers (namespace, key, seq, value)
+		VALUES (${register.namespace}, ${register.key}, ${register.seq}, ${JSON.stringify(register.value)})`.run(db);
+}
+
+function updateForkSessionStats(db: SqliteDatabase, messageCount: number): void {
+	sql`UPDATE session SET message_count = ${messageCount}`.run(db);
 }
 
 export class SqliteSessionRepo {
@@ -179,6 +349,78 @@ export class SqliteSessionRepo {
 		// TODO: Reject missing files and live external writer leases before unlinking once repo/session ownership is wired.
 		if (this.pendingIds.has(metadata.id)) throw new Error(`Session is open: ${metadata.id}`);
 		await rm(metadata.path, { force: true });
+	}
+
+	async fork(source: SqliteSessionMetadata, options: ForkOptions): Promise<SqliteOpenSession> {
+		await mkdir(this.directory, { recursive: true });
+		const createdAt = this.now();
+		const id = options.id ?? uuidv7(createdAt);
+		this.reserveId(id);
+		const path = sessionPath(this.directory, id);
+		let sourceDb: SqliteDatabase | undefined;
+		let db: SqliteDatabase | undefined;
+		let lease: WriterLeaseRow | undefined;
+		let reservedFile = false;
+		let initialized = false;
+		let session: SqliteOpenSession | undefined;
+		try {
+			const file = await openFile(path, "wx");
+			await file.close();
+			reservedFile = true;
+
+			sourceDb = await this.databaseFactory.open(source.path);
+			configureConnection(sourceDb);
+			const storedSource = metadataFromSessionRow(
+				source.path,
+				sessionIdFromPath(source.path),
+				readSingleSessionRow(sourceDb),
+				SQLITE_STORAGE_VERSION,
+			);
+			if (storedSource.id !== source.id) {
+				throw new Error(`SQLite session path ${source.path} contains ${storedSource.id}, not ${source.id}`);
+			}
+			const snapshot = createSqliteForkSnapshot(sourceDb, options);
+
+			const activeDb = await this.databaseFactory.open(path);
+			db = activeDb;
+			configureConnection(activeDb);
+			await applyInitialSchema(activeDb);
+			const metadata: SqliteSessionMetadata = {
+				id,
+				createdAt,
+				storageVersion: SQLITE_STORAGE_VERSION,
+				parentSessionId: source.id,
+				path,
+			};
+			lease = activeDb.transaction(() => {
+				insertSessionRow(activeDb, metadata, SQLITE_STORAGE_VERSION, snapshot.nextSeq);
+				const entryWriter = new EntryRowWriter(activeDb);
+				for (const entry of snapshot.entries) {
+					entryWriter.insert(entry);
+					appendEntryToBranchIndex(activeDb, entry);
+				}
+				for (const register of snapshot.registers) insertForkRegister(activeDb, register);
+				updateForkSessionStats(activeDb, snapshot.messageCount);
+				return claimWriterLease(activeDb, uuidv7(this.now()), this.now(), DEFAULT_WRITER_LEASE_MS);
+			});
+			initialized = true;
+			session = this.openStorageBackedSession(metadata, activeDb, lease);
+			return session;
+		} catch (error) {
+			if (reservedFile && !initialized) await removeSessionFiles(path, { force: true });
+			throw error;
+		} finally {
+			sourceDb?.close();
+			if (session === undefined) {
+				const failedDb = db;
+				const failedLease = lease;
+				if (failedDb !== undefined && failedLease !== undefined) {
+					failedDb.transaction(() => releaseWriterLease(failedDb, failedLease.owner_id, failedLease.fence));
+				}
+				db?.close();
+				this.pendingIds.delete(id);
+			}
+		}
 	}
 
 	private openStorageBackedSession(
