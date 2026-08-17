@@ -25,10 +25,11 @@ afterEach(async () => {
 
 describe.skipIf(process.platform === "win32")("experimental internal process launcher", () => {
 	test("starts the coordinator through the current runtime", async () => {
-		const directory = await mkdtemp(join(tmpdir(), "pi-internal-process-"));
+		// Keep Unix socket paths below macOS's short sun_path limit.
+		const directory = await mkdtemp(join(tmpdir(), "pi-ip-"));
 		directories.add(directory);
-		const publicPath = join(directory, "public.sock");
-		const controlPath = join(directory, "control.sock");
+		const publicPath = join(directory, "p.sock");
+		const controlPath = join(directory, "c.sock");
 		const child = spawnInternalProcess("coordinator", [publicPath, controlPath]);
 		children.add(child);
 
@@ -37,12 +38,9 @@ describe.skipIf(process.platform === "win32")("experimental internal process lau
 	});
 
 	test("waits for a failed activation child to terminate", async () => {
-		const directory = await mkdtemp(join(tmpdir(), "pi-internal-process-stop-"));
+		const directory = await mkdtemp(join(tmpdir(), "pi-ip-stop-"));
 		directories.add(directory);
-		const child = spawnInternalProcess("coordinator", [
-			join(directory, "public.sock"),
-			join(directory, "control.sock"),
-		]);
+		const child = spawnInternalProcess("coordinator", [join(directory, "p.sock"), join(directory, "c.sock")]);
 		children.add(child);
 
 		await expect.poll(() => child.pid).toEqual(expect.any(Number));
