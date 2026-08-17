@@ -148,6 +148,41 @@ describe("SqliteSessionRepo", () => {
 		});
 	});
 
+	it("forks at a serialized boundary for an open source session", async () => {
+		await withTempDir(async (directory) => {
+			const repo = new SqliteSessionRepo({
+				directory,
+				databaseFactory: createNodeSqliteFactory(),
+				now: () => 1_700_000_000_000,
+			});
+			const source = await repo.create({ id: "source" });
+			const firstCommit = source.mutate("main", (mutator) =>
+				mutator.commit({
+					writes: [
+						{ kind: "entry", entry: { id: "root", parentId: null, type: "custom", customType: "root" } },
+						{ kind: "register", op: "set", namespace: "lane.leaf", key: "main", value: "root" },
+					],
+				}),
+			);
+			const forkPromise = repo.fork(source.metadata, { id: "fork" });
+			const secondCommit = source.mutate("main", (mutator) =>
+				mutator.commit({
+					writes: [
+						{ kind: "entry", entry: { id: "child", parentId: "root", type: "custom", customType: "child" } },
+						{ kind: "register", op: "set", namespace: "lane.leaf", key: "main", value: "child" },
+					],
+				}),
+			);
+
+			const [, fork] = await Promise.all([firstCommit, forkPromise]);
+			await secondCommit;
+
+			expect(await fork.getLeafId()).toBe("root");
+			expect((await fork.findEntries({ order: "asc" })).map((entry) => entry.id)).toEqual(["root"]);
+			await Promise.all([source.close(), fork.close()]);
+		});
+	});
+
 	it("forks one branch with scoped facts and a zero ledger", async () => {
 		await withTempDir(async (directory) => {
 			const repo = new SqliteSessionRepo({

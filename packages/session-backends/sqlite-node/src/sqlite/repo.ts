@@ -10,7 +10,7 @@ import type {
 import { StorageBackedSession } from "@earendil-works/pi-agent-core";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { applyInitialSchema } from "./migrations.ts";
-import { appendEntryToBranchIndex } from "./session/branch-entries.ts";
+import { appendEntryToBranchIndex, scanBranchEntries } from "./session/branch-entries.ts";
 import { decodeEntryRow, type EntryRow, EntryRowWriter } from "./session/entries.ts";
 import { insertInitialMainLaneRegisters } from "./session/registers.ts";
 import {
@@ -23,7 +23,7 @@ import {
 import { claimWriterLease, releaseWriterLease, renewWriterLease, type WriterLeaseRow } from "./session/writer-lease.ts";
 import { SqliteOpenSession } from "./session.ts";
 import { sql } from "./sql.ts";
-import { SqliteStorage } from "./storage.ts";
+import { SqliteStorage, type SqliteStorageSnapshot } from "./storage.ts";
 import type { SqliteDatabase, SqliteDatabaseFactory } from "./types.ts";
 
 export const SQLITE_STORAGE_VERSION = 1;
@@ -100,7 +100,7 @@ function hasRegister(registers: readonly Register[], namespace: RegisterNamespac
 	return registers.some((register) => register.namespace === namespace && register.key === key);
 }
 
-function validateForkSourceSnapshot(
+function validateTreeForkSourceSnapshot(
 	entriesById: ReadonlyMap<string, Entry>,
 	registers: readonly Register[],
 	sourceLeaves: readonly Register<"lane.leaf">[],
@@ -128,6 +128,16 @@ function validateForkSourceSnapshot(
 			throw new Error(`Source session lane ${JSON.stringify(leaf.key)} has an unknown leaf`);
 		}
 	}
+}
+
+function validateBranchForkSourceSnapshot(
+	registers: readonly Register[],
+	sourceLeaves: readonly Register<"lane.leaf">[],
+): void {
+	if (!sourceLeaves.some((register) => register.key === "main"))
+		throw new Error("Source session is missing main lane");
+	if (!hasRegister(registers, "lane.state", "main"))
+		throw new Error('Source session lane "main" is missing lane.state');
 }
 
 function selectForkContents(
@@ -164,45 +174,64 @@ function selectForkContents(
 	return { entryIds, laneToLeafId };
 }
 
+function buildForkSnapshot(source: SqliteStorageSnapshot, options: ForkOptions): ForkSnapshot {
+	const sourceEntries = source.entries;
+	const sourceRegisters = source.registers;
+	const sourceEntriesById = new Map(sourceEntries.map((entry) => [entry.id, entry]));
+	const sourceLeaves = sourceRegisters.filter((register) => isRegisterNamespace(register, "lane.leaf"));
+	if (options.scope === "tree") validateTreeForkSourceSnapshot(sourceEntriesById, sourceRegisters, sourceLeaves);
+	else validateBranchForkSourceSnapshot(sourceRegisters, sourceLeaves);
+	const { entryIds, laneToLeafId } = selectForkContents(sourceEntriesById, sourceLeaves, options);
+	const entries = sourceEntries.filter((entry) => entryIds.has(entry.id));
+	const registers: Register[] = [];
+	let nextSeq = Math.max(0, ...entries.map((entry) => entry.seq)) + 1;
+	const setRegister = (namespace: RegisterNamespace, key: string, value: Register["value"]): void => {
+		registers.push({ namespace, key, value, seq: nextSeq++ } as Register);
+	};
+	for (const [lane, leaf] of laneToLeafId) {
+		const configuration = sourceRegisters.find(
+			(register) => register.namespace === "lane.config" && register.key === lane,
+		);
+		if (configuration !== undefined) setRegister("lane.config", lane, configuration.value);
+		setRegister("lane.leaf", lane, leaf);
+		setRegister("lane.state", lane, { currentOperationId: null, pendingNextRun: [] });
+	}
+	for (const register of sourceRegisters) {
+		if (
+			register.namespace === "fact.name" ||
+			register.namespace === "fact.custom" ||
+			(register.namespace === "fact.label" && entryIds.has(register.key))
+		) {
+			setRegister(register.namespace, register.key, register.value);
+		}
+	}
+	return {
+		entries,
+		registers,
+		messageCount: entries.filter((entry) => entry.type === "message").length,
+		nextSeq,
+	};
+}
+
+function readForkSourceEntries(db: SqliteDatabase, registers: readonly Register[], options: ForkOptions): Entry[] {
+	if (options.scope === "tree") return readSourceEntries(db);
+	const mainLeaf = registers.find((register) => register.namespace === "lane.leaf" && register.key === "main") as
+		| Register<"lane.leaf">
+		| undefined;
+	if (mainLeaf === undefined) throw new Error("Source session is missing main lane");
+	const requested = options.entryId ?? mainLeaf.value;
+	return requested === null ? [] : scanBranchEntries(db, { start: requested, order: "oldestFirst" });
+}
+
 function createSqliteForkSnapshot(sourceDb: SqliteDatabase, options: ForkOptions): ForkSnapshot {
 	sourceDb.exec("BEGIN");
 	let committed = false;
 	try {
-		const sourceEntries = readSourceEntries(sourceDb);
-		const sourceRegisters = readSourceRegisters(sourceDb);
-		const sourceEntriesById = new Map(sourceEntries.map((entry) => [entry.id, entry]));
-		const sourceLeaves = sourceRegisters.filter((register) => isRegisterNamespace(register, "lane.leaf"));
-		validateForkSourceSnapshot(sourceEntriesById, sourceRegisters, sourceLeaves);
-		const { entryIds, laneToLeafId } = selectForkContents(sourceEntriesById, sourceLeaves, options);
-		const entries = sourceEntries.filter((entry) => entryIds.has(entry.id));
-		const registers: Register[] = [];
-		let nextSeq = Math.max(0, ...entries.map((entry) => entry.seq)) + 1;
-		const setRegister = (namespace: RegisterNamespace, key: string, value: Register["value"]): void => {
-			registers.push({ namespace, key, value, seq: nextSeq++ } as Register);
-		};
-		for (const [lane, leaf] of laneToLeafId) {
-			const configuration = sourceRegisters.find(
-				(register) => register.namespace === "lane.config" && register.key === lane,
-			);
-			if (configuration !== undefined) setRegister("lane.config", lane, configuration.value);
-			setRegister("lane.leaf", lane, leaf);
-			setRegister("lane.state", lane, { currentOperationId: null, pendingNextRun: [] });
-		}
-		for (const register of sourceRegisters) {
-			if (
-				register.namespace === "fact.name" ||
-				register.namespace === "fact.custom" ||
-				(register.namespace === "fact.label" && entryIds.has(register.key))
-			) {
-				setRegister(register.namespace, register.key, register.value);
-			}
-		}
-		const snapshot = {
-			entries,
-			registers,
-			messageCount: entries.filter((entry) => entry.type === "message").length,
-			nextSeq,
-		};
+		const registers = readSourceRegisters(sourceDb);
+		const snapshot = buildForkSnapshot(
+			{ entries: readForkSourceEntries(sourceDb, registers, options), registers },
+			options,
+		);
 		sourceDb.exec("COMMIT");
 		committed = true;
 		return snapshot;
@@ -226,6 +255,7 @@ export class SqliteSessionRepo {
 	private readonly databaseFactory: SqliteDatabaseFactory;
 	private readonly now: () => number;
 	private readonly pendingIds = new Set<string>();
+	private readonly openStorages = new Map<string, SqliteStorage>();
 
 	constructor(options: SqliteSessionRepoOptions) {
 		this.directory = options.directory;
@@ -352,12 +382,13 @@ export class SqliteSessionRepo {
 	}
 
 	async fork(source: SqliteSessionMetadata, options: ForkOptions): Promise<SqliteOpenSession> {
-		await mkdir(this.directory, { recursive: true });
 		const createdAt = this.now();
 		const id = options.id ?? uuidv7(createdAt);
 		this.reserveId(id);
+		const sourceStorage = this.openStorages.get(source.id);
+		const activeSourceSnapshot = sourceStorage?.snapshot();
+		await mkdir(this.directory, { recursive: true });
 		const path = sessionPath(this.directory, id);
-		let sourceDb: SqliteDatabase | undefined;
 		let db: SqliteDatabase | undefined;
 		let lease: WriterLeaseRow | undefined;
 		let reservedFile = false;
@@ -368,18 +399,10 @@ export class SqliteSessionRepo {
 			await file.close();
 			reservedFile = true;
 
-			sourceDb = await this.databaseFactory.open(source.path);
-			configureConnection(sourceDb);
-			const storedSource = metadataFromSessionRow(
-				source.path,
-				sessionIdFromPath(source.path),
-				readSingleSessionRow(sourceDb),
-				SQLITE_STORAGE_VERSION,
-			);
-			if (storedSource.id !== source.id) {
-				throw new Error(`SQLite session path ${source.path} contains ${storedSource.id}, not ${source.id}`);
-			}
-			const snapshot = createSqliteForkSnapshot(sourceDb, options);
+			const snapshot =
+				activeSourceSnapshot === undefined
+					? await this.createForkSnapshotFromClosedSource(source, options)
+					: buildForkSnapshot(await activeSourceSnapshot, options);
 
 			const activeDb = await this.databaseFactory.open(path);
 			db = activeDb;
@@ -410,7 +433,6 @@ export class SqliteSessionRepo {
 			if (reservedFile && !initialized) await removeSessionFiles(path, { force: true });
 			throw error;
 		} finally {
-			sourceDb?.close();
 			if (session === undefined) {
 				const failedDb = db;
 				const failedLease = lease;
@@ -420,6 +442,28 @@ export class SqliteSessionRepo {
 				db?.close();
 				this.pendingIds.delete(id);
 			}
+		}
+	}
+
+	private async createForkSnapshotFromClosedSource(
+		source: SqliteSessionMetadata,
+		options: ForkOptions,
+	): Promise<ForkSnapshot> {
+		const sourceDb = await this.databaseFactory.open(source.path);
+		try {
+			configureConnection(sourceDb);
+			const storedSource = metadataFromSessionRow(
+				source.path,
+				sessionIdFromPath(source.path),
+				readSingleSessionRow(sourceDb),
+				SQLITE_STORAGE_VERSION,
+			);
+			if (storedSource.id !== source.id) {
+				throw new Error(`SQLite session path ${source.path} contains ${storedSource.id}, not ${source.id}`);
+			}
+			return createSqliteForkSnapshot(sourceDb, options);
+		} finally {
+			sourceDb.close();
 		}
 	}
 
@@ -435,6 +479,7 @@ export class SqliteSessionRepo {
 			);
 		};
 		const storage = new SqliteStorage(db, { now: this.now, beforeCommit: renew });
+		this.openStorages.set(metadata.id, storage);
 		const session = new StorageBackedSession(metadata, storage);
 		return new SqliteOpenSession(session, {
 			renewWriterLease: renew,
@@ -442,6 +487,7 @@ export class SqliteSessionRepo {
 			renewIntervalMs: WRITER_LEASE_RENEW_INTERVAL_MS,
 			onClose: () => {
 				db.close();
+				this.openStorages.delete(metadata.id);
 				this.pendingIds.delete(metadata.id);
 			},
 		});

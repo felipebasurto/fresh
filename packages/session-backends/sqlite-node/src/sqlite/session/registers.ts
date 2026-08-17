@@ -54,6 +54,14 @@ export function readRegisterRow<TNamespace extends RegisterNamespace>(
 	return row === undefined ? undefined : decodeRegisterRow(namespace, row);
 }
 
+export function readAllRegisterRows(db: SqliteDatabase): Register[] {
+	return sql`SELECT namespace, key, seq, value FROM registers ORDER BY seq ASC`
+		.all<RegisterRow>(db)
+		.map(
+			(row) => ({ namespace: row.namespace, key: row.key, seq: row.seq, value: JSON.parse(row.value) }) as Register,
+		);
+}
+
 function nextPrefixBoundary(prefix: string): string | undefined {
 	if (prefix === "") return undefined;
 	const codePoints = Array.from(prefix);

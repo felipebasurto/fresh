@@ -3,6 +3,7 @@ import type {
 	Entry,
 	EntryScan,
 	EntryStructure,
+	ForkOptions,
 	Register,
 	RegisterNamespace,
 	SessionStats,
@@ -14,8 +15,14 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { prepareStorageCommit } from "@earendil-works/pi-agent-core";
 import { appendEntryToBranchIndex, scanBranchEntries, scanBranchEntryStructures } from "./session/branch-entries.ts";
-import { decodeEntryRow, EntryRowWriter, readEntryRows, scanEntryRows } from "./session/entries.ts";
-import { deleteRegisterRow, listRegisterRows, readRegisterRow, setRegisterRow } from "./session/registers.ts";
+import { decodeEntryRow, EntryRowWriter, readAllEntryRows, readEntryRows, scanEntryRows } from "./session/entries.ts";
+import {
+	deleteRegisterRow,
+	listRegisterRows,
+	readAllRegisterRows,
+	readRegisterRow,
+	setRegisterRow,
+} from "./session/registers.ts";
 import { advanceNextSeq, readNextSeq } from "./session/session-sequences.ts";
 import { addUsageToSessionStats, incrementMessageCount, readSessionStats } from "./session/session-stats.ts";
 import { decodeUsageLedgerRow, scanUsageLedgerRows, UsageLedgerRowWriter } from "./session/usage-ledger.ts";
@@ -24,6 +31,11 @@ import type { SqliteDatabase } from "./types.ts";
 export interface SqliteStorageOptions {
 	now?: () => number;
 	beforeCommit?: () => void;
+}
+
+export interface SqliteStorageSnapshot {
+	entries: Entry[];
+	registers: Register[];
 }
 
 export class SqliteStorage implements Storage {
@@ -104,6 +116,34 @@ export class SqliteStorage implements Storage {
 	getStats(): Promise<SessionStats> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
 		return Promise.resolve(readSessionStats(this.db));
+	}
+
+	snapshot(options: ForkOptions = {}): Promise<SqliteStorageSnapshot> {
+		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
+		const result = this.commitQueue.then(() => this.readSnapshot(options));
+		this.commitQueue = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		return result;
+	}
+
+	private readSnapshot(options: ForkOptions): SqliteStorageSnapshot {
+		const registers = readAllRegisterRows(this.db);
+		return {
+			entries: this.readSnapshotEntries(options, registers),
+			registers,
+		};
+	}
+
+	private readSnapshotEntries(options: ForkOptions, registers: readonly Register[]): Entry[] {
+		if (options.scope === "tree") return readAllEntryRows(this.db).map(decodeEntryRow);
+		const mainLeaf = registers.find((register) => register.namespace === "lane.leaf" && register.key === "main") as
+			| Register<"lane.leaf">
+			| undefined;
+		if (mainLeaf === undefined) throw new Error("Source session is missing main lane");
+		const requested = options.entryId ?? mainLeaf.value;
+		return requested === null ? [] : scanBranchEntries(this.db, { start: requested, order: "oldestFirst" });
 	}
 
 	private applyCommit(transaction: Transaction): CommitResult {

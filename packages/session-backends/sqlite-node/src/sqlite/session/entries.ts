@@ -139,6 +139,11 @@ export function readEntryRows(db: SqliteDatabase, ids: readonly string[]): Entry
 		WHERE id IN (${placeholders})`.all<EntryRow>(db);
 }
 
+export function readAllEntryRows(db: SqliteDatabase): EntryRow[] {
+	return sql`SELECT id, parent_id, seq, type, custom_type, timestamp, payload
+		FROM entries ORDER BY seq ASC`.all<EntryRow>(db);
+}
+
 export function scanEntryRows(db: SqliteDatabase, query: EntryScan): EntryRow[] {
 	const filters: SqlQuery[] = [];
 	if (query.type !== undefined) filters.push(sql`type = ${query.type}`);
