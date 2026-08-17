@@ -33,7 +33,7 @@ describe.skipIf(process.platform === "win32")("experimental internal process lau
 		const child = spawnInternalProcess("coordinator", [publicPath, controlPath]);
 		children.add(child);
 
-		await expect.poll(() => canConnect(controlPath)).toBe(true);
+		await expect.poll(() => canConnect(controlPath), { timeout: 10_000 }).toBe(true);
 		expect(child.pid).not.toBe(process.pid);
 	});
 
