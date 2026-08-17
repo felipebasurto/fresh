@@ -70,6 +70,11 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 			ServiceRpc,
 			{
 				list: async () => (await this.options.host.sessions.list()).map(toProtocolSessionMetadata),
+				create: async (client, createOptions) =>
+					this.runForClient(client, async () => {
+						if (this.options.isClosing() || this.disconnectedClients.has(client)) throw new ServerDrainingError();
+						return toProtocolSessionMetadata(await this.options.host.sessions.create(createOptions));
+					}),
 				attach: async (client, sessionId) => {
 					if (this.options.isClosing()) throw new ServerDrainingError();
 					return this.runForClient(client, () => this.attachClient(client, sessionId));

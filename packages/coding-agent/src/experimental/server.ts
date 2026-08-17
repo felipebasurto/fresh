@@ -336,6 +336,14 @@ async function startServerBackend(
 				for (const metadata of workers.trackedSessions) sessions.set(metadata.path, metadata);
 				return [...sessions.values()];
 			},
+			create: async (createOptions) => {
+				const session = await repo.create(createOptions);
+				try {
+					return session.metadata;
+				} finally {
+					await session.close();
+				}
+			},
 		},
 		createHarness: (metadata) => workers.createHarness(metadata),
 	};

@@ -2,9 +2,10 @@
 
 Experimental local server for the new durable Session and Agent Harness interfaces.
 
-The current slice supports three client operations:
+The current slice supports four client operations:
 
-- `list` calls `SessionRepo.list()` without opening sessions.
+- `list` calls the host's Session catalog without opening sessions.
+- `create` asks the host to persist an optional Session ID and working directory without opening a Harness.
 - `attach` finds the requested metadata, passes it to the host, and retains the returned Harness handle in the server.
 - `prompt` executes one serializable Harness prompt through the requesting client's attached handle.
 
@@ -24,7 +25,17 @@ async function startServer(
 ) {
   const sessions = new MemorySessionRepo();
   const host: PiServerHost = {
-    sessions,
+    sessions: {
+      list: () => sessions.list(),
+      async create({ id }) {
+        const session = await sessions.create({ id });
+        try {
+          return session.metadata;
+        } finally {
+          await session.close();
+        }
+      },
+    },
     async createHarness(metadata) {
       const session = await sessions.open(metadata);
       try {
@@ -53,7 +64,7 @@ async function startServer(
 }
 ```
 
-Applications supply a session catalog and a Harness factory. The server only calls `list()`; the host receives the repository's concrete metadata and owns opening the Session, creating the Harness, and cleaning up failed creation. This permits the host to perform those operations in a worker process without passing an open JavaScript Session across processes.
+Applications supply a Session catalog and a Harness factory. The catalog lists and creates durable metadata; the host receives the repository's concrete metadata and owns opening the Session, creating the Harness, and cleaning up failed Harness creation. This permits the host to perform those operations in a worker process without passing an open JavaScript Session across processes.
 
 `serverId` is a logical identity supplied by the launcher, not a socket address. The Unix preset requires an explicit physical `path`; `getUnixSocketPath()` derives one from a caller-selected directory. Choose a short, private runtime directory rather than deriving the route from an unbounded home-directory path. A long-lived launcher can reuse the same ID and path when replacing a server process.
 

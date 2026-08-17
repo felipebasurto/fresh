@@ -41,11 +41,21 @@ export const SessionMetadataSchema = StrictObject({
 });
 export type SessionMetadata = Static<typeof SessionMetadataSchema>;
 
+export const SessionCreateOptionsSchema = StrictObject({
+	id: Type.Optional(SessionIdSchema),
+	cwd: Type.String({ minLength: 1 }),
+});
+export type SessionCreateOptions = Static<typeof SessionCreateOptionsSchema>;
+
 /** Session operations available to normal Pi clients in protocol v1. */
 export const ServiceRpc = defineRpc({
 	list: {
 		args: Type.Tuple([]),
 		result: Type.Array(SessionMetadataSchema),
+	},
+	create: {
+		args: Type.Tuple([SessionCreateOptionsSchema]),
+		result: SessionMetadataSchema,
 	},
 	attach: {
 		args: Type.Tuple([SessionIdSchema]),

@@ -52,31 +52,51 @@ describe("PiClient service operations", () => {
 		});
 		await expect(listing).resolves.toEqual([{ id: "session-1", createdAt: 1, storageVersion: 1 }]);
 
-		const attaching = client.attachSession("session-1");
+		const creating = client.createSession({ cwd: "/workspace" });
 		await server.waitForMessages(3);
 		expect(server.messages[2]).toMatchObject({
+			type: "request",
+			serverId: "00000000-0000-4000-8000-000000000001",
+			call: { method: "create", args: [{ cwd: "/workspace" }] },
+		});
+		server.send({
+			type: "response",
+			id: "request-2",
+			ok: true,
+			result: { id: "session-2", createdAt: 2, storageVersion: 1, cwd: "/workspace" },
+		});
+		await expect(creating).resolves.toEqual({
+			id: "session-2",
+			createdAt: 2,
+			storageVersion: 1,
+			cwd: "/workspace",
+		});
+
+		const attaching = client.attachSession("session-1");
+		await server.waitForMessages(4);
+		expect(server.messages[3]).toMatchObject({
 			type: "request",
 			serverId: "00000000-0000-4000-8000-000000000001",
 			call: { method: "attach", args: ["session-1"] },
 		});
 		server.send({
 			type: "response",
-			id: "request-2",
+			id: "request-3",
 			ok: true,
 			result: { sessionId: "session-1" },
 		});
 		await expect(attaching).resolves.toEqual({ sessionId: "session-1" });
 
 		const prompting = client.promptSession("session-1", "Hello");
-		await server.waitForMessages(4);
-		expect(server.messages[3]).toMatchObject({
+		await server.waitForMessages(5);
+		expect(server.messages[4]).toMatchObject({
 			type: "request",
 			serverId: "00000000-0000-4000-8000-000000000001",
 			call: { method: "prompt", args: ["session-1", ["Hello"]] },
 		});
 		server.send({
 			type: "response",
-			id: "request-3",
+			id: "request-4",
 			ok: true,
 			result: { ok: true, value: { kind: "completed", runId: "run-1", leafId: "leaf-1" } },
 		});

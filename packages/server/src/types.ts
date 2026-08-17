@@ -1,5 +1,5 @@
 import type { SessionMetadata } from "@earendil-works/pi-agent-core";
-import type { PromptArguments, RunResult } from "@earendil-works/pi-protocol";
+import type { PromptArguments, RunResult, SessionCreateOptions } from "@earendil-works/pi-protocol";
 import type { PiServerListener } from "./listener.ts";
 
 export interface PiServerOptions {
@@ -32,6 +32,9 @@ export interface HostedHarnessHandle {
 
 /** Host capabilities used directly by Session RPC operations. */
 export interface PiServerHost<TMetadata extends SessionMetadata = SessionMetadata> {
-	readonly sessions: { list(): Promise<TMetadata[]> };
+	readonly sessions: {
+		list(): Promise<TMetadata[]>;
+		create(options: SessionCreateOptions): Promise<TMetadata>;
+	};
 	createHarness(metadata: TMetadata): Promise<HostedHarnessHandle>;
 }

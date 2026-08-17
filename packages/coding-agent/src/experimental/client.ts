@@ -18,13 +18,9 @@ export interface RunClientOptions {
 	readonly directory?: string;
 }
 
-/** Discover servers, then list Sessions or attach to one selected Session. */
+/** Discover servers, then list Sessions, attach to one, or create one for a prompt. */
 export async function runClient(command: ClientCommand, options: RunClientOptions = {}): Promise<ClientResult> {
 	if (command.auth !== undefined) throw new Error("Authentication is not supported by the experimental local server");
-	// TODO: Create a Session for one-shot prompts once the client protocol supports session creation.
-	if (command.prompt !== undefined && command.sessionId === undefined) {
-		throw new Error("Client prompt requires a session ID");
-	}
 	if (command.provider !== undefined && command.model === undefined) {
 		throw new Error("Server model provider requires a model");
 	}
@@ -72,8 +68,8 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 			discovered.push({ route, sessionIds: sessions.map(({ id }) => id), client });
 		}
 
-		const sessionId = command.sessionId;
-		if (sessionId === undefined) {
+		let sessionId = command.sessionId;
+		if (sessionId === undefined && command.prompt === undefined) {
 			return {
 				kind: "list",
 				sessions: discovered
@@ -87,10 +83,30 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 			};
 		}
 
-		const matches = discovered.filter((candidate) => candidate.sessionIds.includes(sessionId));
-		if (matches.length === 0) throw new Error(`No discovered server contains session ${sessionId}`);
-		if (matches.length > 1) throw new Error(`Session ${sessionId} is available from more than one server`);
-		const match = matches[0]!;
+		let match: (typeof discovered)[number];
+		if (sessionId === undefined) {
+			if (discovered.length !== 1) {
+				throw new Error("Client prompt requires exactly one discovered server to create a Session");
+			}
+			match = discovered[0]!;
+			sessionId = (await match.client.createSession({ cwd: process.cwd() })).id;
+		} else {
+			const selectedSessionId = sessionId;
+			const matches = discovered.filter((candidate) => candidate.sessionIds.includes(selectedSessionId));
+			if (matches.length > 1) {
+				throw new Error(`Session ${selectedSessionId} is available from more than one server`);
+			}
+			const existing = matches[0];
+			if (existing) {
+				match = existing;
+			} else {
+				if (command.prompt === undefined || discovered.length !== 1) {
+					throw new Error(`No discovered server contains session ${selectedSessionId}`);
+				}
+				match = discovered[0]!;
+				await match.client.createSession({ id: selectedSessionId, cwd: process.cwd() });
+			}
+		}
 		const attached = await match.client.attachSession(sessionId);
 		if (command.prompt === undefined) {
 			return { kind: "attached", serverId: match.route.serverId, sessionId: attached.sessionId };

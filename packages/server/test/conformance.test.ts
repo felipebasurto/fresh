@@ -82,6 +82,26 @@ describe("Session protocol", () => {
 		expect(host.harnesses.size).toBe(0);
 	});
 
+	test("create persists a Session without opening a Harness", async () => {
+		const host = new TestServerHost();
+		const client = connect(createServer(host));
+		await client.hello();
+
+		await expect(
+			client.request("00000000-0000-4000-8000-000000000001", {
+				method: "create",
+				args: [{ id: "session-1", cwd: "/workspace" }],
+			}),
+		).resolves.toMatchObject({
+			ok: true,
+			result: { id: "session-1", createdAt: 1, storageVersion: 1 },
+		});
+		await expect(
+			client.request("00000000-0000-4000-8000-000000000001", { method: "list", args: [] }),
+		).resolves.toMatchObject({ result: [{ id: "session-1" }] });
+		expect(host.harnesses.size).toBe(0);
+	});
+
 	test("attach passes concrete repository metadata to the Harness host", async () => {
 		type BackendMetadata = SessionMetadata & { path: string; modifiedAt: number };
 		const metadata: BackendMetadata = {
@@ -94,7 +114,7 @@ describe("Session protocol", () => {
 		};
 		let received: BackendMetadata | undefined;
 		const host: PiServerHost<BackendMetadata> = {
-			sessions: { list: async () => [metadata] },
+			sessions: { list: async () => [metadata], create: async () => metadata },
 			createHarness: async (candidate) => {
 				received = candidate;
 				return {
@@ -371,6 +391,9 @@ describe("Session protocol", () => {
 					{ id: "duplicate", createdAt: 1, storageVersion: 1, cwd: "/one", path: "/one/session.jsonl" },
 					{ id: "duplicate", createdAt: 2, storageVersion: 1, cwd: "/two", path: "/two/session.jsonl" },
 				],
+				create: async () => {
+					throw new Error("must not create a Session in this test");
+				},
 			},
 			createHarness: async () => {
 				throw new Error("must not create a Harness for an ambiguous session");
@@ -434,7 +457,7 @@ describe("hosted Harness acquisition failures", () => {
 		const terminated = new Deferred<Error | undefined>();
 		let releaseCount = 0;
 		const host: PiServerHost = {
-			sessions: { list: async () => [metadata] },
+			sessions: { list: async () => [metadata], create: async () => metadata },
 			createHarness: async () => ({
 				terminated: terminated.promise,
 				attachClient: async () => {

@@ -11,6 +11,7 @@ import {
 	ServiceRpc,
 	type ServiceRpcCall,
 	type ServiceRpcResult,
+	type SessionCreateOptions,
 	type SessionMetadata,
 } from "@earendil-works/pi-protocol";
 import { Connection } from "./connection.ts";
@@ -105,6 +106,10 @@ export class PiClient {
 
 	listSessions(): Promise<readonly SessionMetadata[]> {
 		return this.#rpc.list();
+	}
+
+	createSession(options: SessionCreateOptions): Promise<ServiceRpcResult<"create">> {
+		return this.#rpc.create(options);
 	}
 
 	attachSession(sessionId: string): Promise<ServiceRpcResult<"attach">> {

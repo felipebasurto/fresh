@@ -51,11 +51,9 @@ export const clientCommand = new Command<ClientCommand, ClientCommandContext>("c
 				: undefined;
 		const { errors: optionErrors } = parseLegacyOptions(input);
 		const modelErrors = provider !== undefined && model === undefined ? ["--provider requires --model"] : [];
-		const promptErrors =
-			prompt !== undefined && sessionId === undefined ? ["Client prompt requires --session-id"] : [];
 		const unsupportedErrors =
 			input.remainingArgs.length === 0 || prompt !== undefined ? [] : unsupportedLegacyOptions("client", input);
-		const errors = [...authErrors, ...optionErrors, ...modelErrors, ...promptErrors, ...unsupportedErrors];
+		const errors = [...authErrors, ...optionErrors, ...modelErrors, ...unsupportedErrors];
 		if (errors.length > 0) return { ok: false, errors };
 		return {
 			ok: true,

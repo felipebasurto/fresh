@@ -291,15 +291,7 @@ describe("experimental durable server composition", () => {
 		await expect(competing.attachSession("demo-1")).rejects.toMatchObject({ code: "session_in_use" });
 	});
 
-	test("rejects a one-shot prompt without a session selection", async () => {
-		const { directory } = await makeServer();
-
-		await expect(runClient({ command: "client", prompt: "question" }, { directory })).rejects.toThrow(
-			"Client prompt requires a session ID",
-		);
-	});
-
-	test("runs a one-shot prompt through the client command", async ({ onTestFinished }) => {
+	test("creates generated and requested Sessions for one-shot prompts", async ({ onTestFinished }) => {
 		const spawn = vi
 			.spyOn(processRuntime, "spawnInternalProcess")
 			.mockImplementation((role, args, options) =>
@@ -310,28 +302,40 @@ describe("experimental durable server composition", () => {
 				),
 			);
 		onTestFinished(() => spawn.mockRestore());
-		const { runtime } = await makeServer();
+		const { directory, runtime } = await makeServer();
+		const prompt = (sessionId?: string) =>
+			runClient(
+				{ command: "client", prompt: "question", ...(sessionId === undefined ? {} : { sessionId }) },
+				{ directory },
+			);
 
-		await expect(
-			runClient({
-				command: "client",
-				sessionId: "demo-1",
-				prompt: "question",
-				connect: { transport: "unix", path: runtime.socketPath },
-			}),
-		).resolves.toEqual({
+		const generated = await prompt();
+		expect(generated).toMatchObject({
 			kind: "prompted",
 			serverId: runtime.serverId,
-			sessionId: "demo-1",
+			sessionId: expect.any(String),
 			text: "deterministic remote answer",
 		});
-		await expect.poll(() => runtime.workerPids.has("demo-1")).toBe(false);
-		const { branch } = await readExperimentalSessionState(runtime.sessionDir, "demo-1");
-		expect(branch).toHaveLength(2);
-		expect(branch[0]).toMatchObject({ message: { role: "user", content: [{ type: "text", text: "question" }] } });
-		expect(branch[1]).toMatchObject({
-			message: { role: "assistant", content: [{ type: "text", text: "deterministic remote answer" }] },
+		const requested = await prompt("created-by-prompt");
+		expect(requested).toEqual({
+			kind: "prompted",
+			serverId: runtime.serverId,
+			sessionId: "created-by-prompt",
+			text: "deterministic remote answer",
 		});
+
+		for (const result of [generated, requested]) {
+			if (result.kind !== "prompted") throw new Error("Expected a prompted client result");
+			await expect.poll(() => runtime.workerPids.has(result.sessionId)).toBe(false);
+			const { branch } = await readExperimentalSessionState(runtime.sessionDir, result.sessionId);
+			expect(branch).toHaveLength(2);
+			expect(branch[0]).toMatchObject({
+				message: { role: "user", content: [{ type: "text", text: "question" }] },
+			});
+			expect(branch[1]).toMatchObject({
+				message: { role: "assistant", content: [{ type: "text", text: "deterministic remote answer" }] },
+			});
+		}
 	});
 
 	test("completes and persists a prompt through the worker-owned Harness", async ({ onTestFinished }) => {

@@ -58,6 +58,8 @@ describe("RPC manifest", () => {
 			switch (call.method) {
 				case "list":
 					return [metadata];
+				case "create":
+					return metadata;
 				case "attach":
 					return { sessionId: call.args[0] };
 				case "prompt":
@@ -66,10 +68,12 @@ describe("RPC manifest", () => {
 		});
 
 		await expect(client.list()).resolves.toEqual([metadata]);
+		await expect(client.create({ cwd: "/workspace" })).resolves.toEqual(metadata);
 		await expect(client.attach("session-1")).resolves.toEqual({ sessionId: "session-1" });
 		await expect(client.prompt("session-1", ["Hello"])).resolves.toEqual(completedRunResult);
 		expect(calls).toEqual([
 			{ method: "list", args: [] },
+			{ method: "create", args: [{ cwd: "/workspace" }] },
 			{ method: "attach", args: ["session-1"] },
 			{ method: "prompt", args: ["session-1", ["Hello"]] },
 		]);
@@ -78,10 +82,12 @@ describe("RPC manifest", () => {
 	test("dispatches only methods and values allowed by the manifest", async () => {
 		const dispatch = createRpcDispatcher(ServiceRpc, {
 			list: () => [metadata],
+			create: () => metadata,
 			attach: (_context, sessionId) => ({ sessionId }),
 			prompt: () => completedRunResult,
 		});
 		await expect(dispatch({ method: "list", args: [] }, undefined)).resolves.toEqual([metadata]);
+		await expect(dispatch({ method: "create", args: [{ cwd: "/workspace" }] }, undefined)).resolves.toEqual(metadata);
 		await expect(dispatch({ method: "attach", args: ["session-1"] }, undefined)).resolves.toEqual({
 			sessionId: "session-1",
 		});
@@ -100,6 +106,7 @@ describe("RPC manifest", () => {
 
 		const dispatch = createRpcDispatcher(ServiceRpc, {
 			list: () => [{ id: "session-1" }],
+			create: () => metadata,
 			attach: (_context: undefined, sessionId: string) => ({ sessionId }),
 			prompt: () => completedRunResult,
 		} as never);
@@ -159,21 +166,31 @@ describe("protocol validation", () => {
 			serverId: "00000000-0000-4000-8000-000000000001",
 			call: { method: "list", args: [] },
 		};
-		const attach: ClientMessage = {
+		const create: ClientMessage = {
 			type: "request",
 			id: "request-2",
+			serverId: "00000000-0000-4000-8000-000000000001",
+			call: { method: "create", args: [{ cwd: "/workspace" }] },
+		};
+		const attach: ClientMessage = {
+			type: "request",
+			id: "request-3",
 			serverId: "00000000-0000-4000-8000-000000000001",
 			call: { method: "attach", args: ["session-1"] },
 		};
 		const prompt: ClientMessage = {
 			type: "request",
-			id: "request-3",
+			id: "request-4",
 			serverId: "00000000-0000-4000-8000-000000000001",
 			call: { method: "prompt", args: ["session-1", ["Hello"]] },
 		};
 		expect(parseClientMessage(list)).toEqual(list);
+		expect(parseClientMessage(create)).toEqual(create);
 		expect(parseClientMessage(attach)).toEqual(attach);
 		expect(parseClientMessage(prompt)).toEqual(prompt);
+		expect(() => parseClientMessage({ ...create, call: { method: "create", args: [{ cwd: "" }] } })).toThrow(
+			ProtocolValidationError,
+		);
 		expect(() => parseClientMessage({ ...attach, call: { method: "attach", args: [] } })).toThrow(
 			ProtocolValidationError,
 		);

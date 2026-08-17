@@ -1,6 +1,6 @@
 # @earendil-works/pi-client
 
-Transport-neutral client for Pi Session discovery, attachment, and prompting.
+Transport-neutral client for Pi Session discovery, creation, attachment, and prompting.
 
 ```ts
 import { PiClient, type ByteTransportFactory } from "@earendil-works/pi-client";
@@ -19,14 +19,14 @@ const client = await PiClient.connect({
   serverId: "01234567-89ab-4def-8123-456789abcdef",
   transportFactory,
 });
-const sessions = await client.listSessions();
-const attachment = await client.attachSession(sessions[0].id);
+const session = await client.createSession({ cwd: "/workspace" });
+const attachment = await client.attachSession(session.id);
 const result = await client.promptSession(attachment.sessionId, "Summarize this session");
 ```
 
 The client verifies that the physical endpoint reports the expected logical `serverId`. Every Session request carries that ID again so the final server can reject misdelivery.
 
-`attachSession()` returns only `{ sessionId }`. The attachment is exclusive to that client connection. `promptSession()` accepts the protocol's serializable Harness prompt overloads and returns a structural `RunResult`. On disconnect or disposal, pending prompts reject locally, but accepted work may still complete remotely before the attachment is released. The client never reconnects or replays requests automatically. After disconnection, call `reconnect()` and explicitly repeat only operations known to be safe.
+`createSession()` creates durable Session metadata without attaching or opening a Harness; pass `id` to request an exact ID or omit it to generate one. `attachSession()` returns only `{ sessionId }`; the attachment is exclusive to that client connection. `promptSession()` accepts the protocol's serializable Harness prompt overloads and returns a structural `RunResult`. On disconnect or disposal, pending prompts reject locally, but accepted work may still complete remotely before the attachment is released. The client never reconnects or replays requests automatically. After disconnection, call `reconnect()` and explicitly repeat only operations known to be safe.
 
 The experimental local coordinator only provides a stable endpoint and relays traffic. Replaceable server processes own session and worker lifecycle outside the public client protocol.
 

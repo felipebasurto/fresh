@@ -5,10 +5,10 @@ Runtime-neutral schemas, types, CBOR encoding, and byte-stream framing for the e
 Protocol version `1` currently contains the first Session-operation slice:
 
 - a version handshake that identifies the logical `serverId`;
-- a service RPC manifest with `list()`, `attach(sessionId)`, and `prompt(sessionId, arguments)`;
+- a service RPC manifest with `list()`, `create(options)`, `attach(sessionId)`, and `prompt(sessionId, arguments)`;
 - correlated responses and bounded protocol errors.
 
-The manifest generates typed client methods and validated server dispatch. The wire uses generic `{ serverId, method, args }` calls rather than a hand-written command union. `list()` returns durable `SessionMetadata`. `attach()` exclusively binds that Session to the client connection and returns only its `sessionId`. `prompt()` targets an explicitly identified Session attached to the requesting connection. The real `Session` and `AgentHarness` remain hosted by the server. Disconnecting releases the attachment after accepted work settles.
+The manifest generates typed client methods and validated server dispatch. The wire uses generic `{ serverId, method, args }` calls rather than a hand-written command union. `list()` returns durable `SessionMetadata`. `create()` creates durable metadata for a working directory without opening a Harness; its ID is optional. `attach()` exclusively binds that Session to the client connection and returns only its `sessionId`. `prompt()` targets an explicitly identified Session attached to the requesting connection. The real `Session` and `AgentHarness` remain hosted by the server. Disconnecting releases the attachment after accepted work settles.
 
 `PromptArguments` contains one serializable `AgentLane.prompt()` overload. `PromptMessage` is the protocol's closed set of built-in message DTOs; application-defined `AgentMessage` extensions are not accepted implicitly. `RunResult` is the wire-safe structural equivalent of the Harness result and contains no JavaScript `Error` instances.
 

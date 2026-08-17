@@ -135,6 +135,14 @@ export class TestServerHost implements PiServerHost {
 			}
 			return this.repo.list();
 		},
+		create: async ({ id }) => {
+			const session = await this.repo.create({ id });
+			try {
+				return session.metadata;
+			} finally {
+				await session.close();
+			}
+		},
 	};
 	private nextListDelay?: ListDelay;
 	private nextCreateHarnessGate?: OpenGate;

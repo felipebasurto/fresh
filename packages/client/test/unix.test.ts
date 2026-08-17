@@ -32,7 +32,10 @@ async function startServer(
 	const path = join(directory, `${fileServerId}.sock`);
 	const server = new PiServer(
 		{
-			sessions: { list: async () => [] },
+			sessions: {
+				list: async () => [],
+				create: async () => Promise.reject(new Error("unused")),
+			},
 			createHarness: async () => Promise.reject(new Error("unused")),
 		},
 		{ listeners: [createUnixListener({ path })], serverId: reportedServerId },

@@ -120,12 +120,11 @@ describe("experimental CLI commands", () => {
 		});
 	});
 
-	test("parses a one-shot client prompt", () => {
-		expect(cli.parse(["client", "--session-id", "demo-1", "Explain this project"])).toEqual({
+	test("parses a one-shot client prompt without a session ID", () => {
+		expect(cli.parse(["client", "Explain this project"])).toEqual({
 			ok: true,
 			command: {
 				command: "client",
-				sessionId: "demo-1",
 				prompt: "Explain this project",
 			},
 		});
@@ -212,7 +211,6 @@ describe("experimental CLI commands", () => {
 			"The experimental server command does not support existing CLI options yet",
 		],
 		[["client", "--connect", "ws://localhost:8080"], 'Unsupported --connect transport "ws:"'],
-		[["client", "Explain this project"], "Client prompt requires --session-id"],
 		[["client", "--provider", "anthropic"], "--provider requires --model"],
 		[["server", "--provider", "anthropic"], "--provider requires --model"],
 		[["server", "--server-id", "not-a-uuid"], "Invalid --server-id"],
