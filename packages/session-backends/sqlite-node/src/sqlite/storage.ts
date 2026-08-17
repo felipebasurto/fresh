@@ -23,11 +23,13 @@ import type { SqliteDatabase } from "./types.ts";
 
 export interface SqliteStorageOptions {
 	now?: () => number;
+	beforeCommit?: () => void;
 }
 
 export class SqliteStorage implements Storage {
 	private readonly db: SqliteDatabase;
 	private readonly now: () => number;
+	private readonly beforeCommit: () => void;
 	private readonly entryWriter: EntryRowWriter;
 	private readonly usageWriter: UsageLedgerRowWriter;
 	private commitQueue: Promise<void> = Promise.resolve();
@@ -37,6 +39,7 @@ export class SqliteStorage implements Storage {
 	constructor(db: SqliteDatabase, options: SqliteStorageOptions = {}) {
 		this.db = db;
 		this.now = options.now ?? Date.now;
+		this.beforeCommit = options.beforeCommit ?? (() => undefined);
 		this.entryWriter = new EntryRowWriter(db);
 		this.usageWriter = new UsageLedgerRowWriter(db);
 	}
@@ -104,6 +107,7 @@ export class SqliteStorage implements Storage {
 	}
 
 	private applyCommit(transaction: Transaction): CommitResult {
+		this.beforeCommit();
 		return this.db.transaction(() => {
 			const firstSeq = readNextSeq(this.db);
 			const prepared = prepareStorageCommit(transaction, firstSeq, this.now());

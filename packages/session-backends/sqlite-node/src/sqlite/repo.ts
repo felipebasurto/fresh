@@ -12,7 +12,7 @@ import {
 	readSingleSessionRow,
 	type SqliteSessionMetadata,
 } from "./session/session-row.ts";
-import { claimWriterLease, releaseWriterLease } from "./session/writer-lease.ts";
+import { claimWriterLease, releaseWriterLease, renewWriterLease, type WriterLeaseRow } from "./session/writer-lease.ts";
 import { SqliteOpenSession } from "./session.ts";
 import { SqliteStorage } from "./storage.ts";
 import type { SqliteDatabase, SqliteDatabaseFactory } from "./types.ts";
@@ -21,6 +21,7 @@ export const SQLITE_STORAGE_VERSION = 1;
 export const SQLITE_SESSION_EXTENSION = ".sqlite";
 
 const DEFAULT_WRITER_LEASE_MS = 30_000;
+const WRITER_LEASE_RENEW_INTERVAL_MS = DEFAULT_WRITER_LEASE_MS / 2;
 const FIRST_AVAILABLE_COMMIT_SEQ = 3;
 
 export type SqliteSessionCreateOptions = SessionCreateOptions;
@@ -69,6 +70,7 @@ export class SqliteSessionRepo {
 		this.reserveId(id);
 		const path = sessionPath(this.directory, id);
 		let db: SqliteDatabase | undefined;
+		let lease: WriterLeaseRow | undefined;
 		let reservedFile = false;
 		let initialized = false;
 		let session: SqliteOpenSession | undefined;
@@ -87,22 +89,25 @@ export class SqliteSessionRepo {
 				...(options.parentSessionId === undefined ? {} : { parentSessionId: options.parentSessionId }),
 				path,
 			};
-			activeDb.transaction(() => {
+			lease = activeDb.transaction(() => {
 				if (readSessionRowCount(activeDb) !== 0) throw new Error(`SQLite session already exists at ${path}`);
 				insertSessionRow(activeDb, metadata, SQLITE_STORAGE_VERSION, FIRST_AVAILABLE_COMMIT_SEQ);
 				insertInitialMainLaneRegisters(activeDb);
-				// TODO: Keep this lease until SqliteOpenSession.close() and release only the matching fenced claim.
-				const lease = claimWriterLease(activeDb, uuidv7(this.now()), this.now(), DEFAULT_WRITER_LEASE_MS);
-				releaseWriterLease(activeDb, lease.owner_id, lease.fence);
+				return claimWriterLease(activeDb, uuidv7(this.now()), this.now(), DEFAULT_WRITER_LEASE_MS);
 			});
 			initialized = true;
-			session = this.openStorageBackedSession(metadata, activeDb);
+			session = this.openStorageBackedSession(metadata, activeDb, lease);
 			return session;
 		} catch (error) {
 			if (reservedFile && !initialized) await removeSessionFiles(path, { force: true });
 			throw error;
 		} finally {
 			if (session === undefined) {
+				const failedDb = db;
+				const failedLease = lease;
+				if (failedDb !== undefined && failedLease !== undefined) {
+					failedDb.transaction(() => releaseWriterLease(failedDb, failedLease.owner_id, failedLease.fence));
+				}
 				db?.close();
 				this.pendingIds.delete(id);
 			}
@@ -112,6 +117,7 @@ export class SqliteSessionRepo {
 	async open(metadata: SqliteSessionMetadata): Promise<SqliteOpenSession> {
 		this.reserveId(metadata.id);
 		let db: SqliteDatabase | undefined;
+		let lease: WriterLeaseRow | undefined;
 		let session: SqliteOpenSession | undefined;
 		try {
 			await access(metadata.path);
@@ -129,15 +135,19 @@ export class SqliteSessionRepo {
 				if (stored.id !== metadata.id) {
 					throw new Error(`SQLite session path ${metadata.path} contains ${stored.id}, not ${metadata.id}`);
 				}
-				// TODO: Keep this lease until SqliteOpenSession.close() and release only the matching fenced claim.
-				const lease = claimWriterLease(activeDb, uuidv7(this.now()), this.now(), DEFAULT_WRITER_LEASE_MS);
-				releaseWriterLease(activeDb, lease.owner_id, lease.fence);
+				lease = claimWriterLease(activeDb, uuidv7(this.now()), this.now(), DEFAULT_WRITER_LEASE_MS);
 				return stored;
 			});
-			session = this.openStorageBackedSession(stored, activeDb);
+			if (lease === undefined) throw new Error("Failed to claim SQLite writer lease");
+			session = this.openStorageBackedSession(stored, activeDb, lease);
 			return session;
 		} finally {
 			if (session === undefined) {
+				const failedDb = db;
+				const failedLease = lease;
+				if (failedDb !== undefined && failedLease !== undefined) {
+					failedDb.transaction(() => releaseWriterLease(failedDb, failedLease.owner_id, failedLease.fence));
+				}
 				db?.close();
 				this.pendingIds.delete(metadata.id);
 			}
@@ -171,12 +181,27 @@ export class SqliteSessionRepo {
 		await rm(metadata.path, { force: true });
 	}
 
-	private openStorageBackedSession(metadata: SqliteSessionMetadata, db: SqliteDatabase): SqliteOpenSession {
-		const storage = new SqliteStorage(db, { now: this.now });
+	private openStorageBackedSession(
+		metadata: SqliteSessionMetadata,
+		db: SqliteDatabase,
+		initialLease: WriterLeaseRow,
+	): SqliteOpenSession {
+		let lease = initialLease;
+		const renew = () => {
+			lease = db.transaction(() =>
+				renewWriterLease(db, lease.owner_id, lease.fence, this.now(), DEFAULT_WRITER_LEASE_MS),
+			);
+		};
+		const storage = new SqliteStorage(db, { now: this.now, beforeCommit: renew });
 		const session = new StorageBackedSession(metadata, storage);
-		return new SqliteOpenSession(session, () => {
-			db.close();
-			this.pendingIds.delete(metadata.id);
+		return new SqliteOpenSession(session, {
+			renewWriterLease: renew,
+			releaseWriterLease: () => db.transaction(() => releaseWriterLease(db, lease.owner_id, lease.fence)),
+			renewIntervalMs: WRITER_LEASE_RENEW_INTERVAL_MS,
+			onClose: () => {
+				db.close();
+				this.pendingIds.delete(metadata.id);
+			},
 		});
 	}
 

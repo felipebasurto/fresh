@@ -14,27 +14,44 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { SqliteSessionMetadata } from "./session/session-row.ts";
 
-/**
- * SQLite-specific open-session lifecycle wrapper.
- *
- * TODO: Keep the writer lease claimed for the lifetime of this open session,
- *   renew it while open, and release only the matching fenced lease on close.
- */
+export interface SqliteOpenSessionOptions {
+	onClose: () => void;
+	renewWriterLease: () => void;
+	releaseWriterLease: () => void;
+	renewIntervalMs: number;
+}
+
+/** SQLite-specific open-session lifecycle wrapper. */
 export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 	readonly metadata: SqliteSessionMetadata;
 	readonly idGenerator: Session<SqliteSessionMetadata>["idGenerator"];
 	private readonly session: Session<SqliteSessionMetadata>;
 	private readonly onClose: () => void;
+	private readonly renewWriterLease: () => void;
+	private readonly releaseWriterLease: () => void;
+	private readonly renewalTimer: ReturnType<typeof setInterval>;
 	private readonly admitted = new Set<Promise<unknown>>();
+	private leaseError: unknown;
 	private readonly closedError = new Error("Session is closed");
 	private state: "open" | "closing" | "closed" = "open";
 	private closePromise: Promise<void> | undefined;
 
-	constructor(session: Session<SqliteSessionMetadata>, onClose: () => void) {
+	constructor(session: Session<SqliteSessionMetadata>, options: SqliteOpenSessionOptions) {
 		this.session = session;
 		this.metadata = session.metadata;
 		this.idGenerator = session.idGenerator;
-		this.onClose = onClose;
+		this.onClose = options.onClose;
+		this.renewWriterLease = options.renewWriterLease;
+		this.releaseWriterLease = options.releaseWriterLease;
+		this.renewalTimer = setInterval(() => {
+			try {
+				this.renewWriterLease();
+			} catch (error) {
+				this.leaseError = error;
+				clearInterval(this.renewalTimer);
+			}
+		}, options.renewIntervalMs);
+		this.renewalTimer.unref?.();
 	}
 
 	mutate<T>(lane: string, mutation: (mutator: SessionMutator) => T | Promise<T>): Promise<T> {
@@ -153,14 +170,20 @@ export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 		this.closePromise = Promise.allSettled([...this.admitted])
 			.then(() => this.session.close())
 			.finally(() => {
-				this.state = "closed";
-				this.onClose();
+				clearInterval(this.renewalTimer);
+				try {
+					this.releaseWriterLease();
+				} finally {
+					this.state = "closed";
+					this.onClose();
+				}
 			});
 		return this.closePromise;
 	}
 
 	private admit<T>(operation: () => Promise<T>): Promise<T> {
 		if (this.state !== "open") return Promise.reject(this.closedError);
+		if (this.leaseError !== undefined) return Promise.reject(this.leaseError);
 		let result: Promise<T>;
 		try {
 			result = operation();

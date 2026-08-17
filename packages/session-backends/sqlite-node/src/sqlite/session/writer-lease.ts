@@ -26,6 +26,23 @@ export function claimWriterLease(db: SqliteDatabase, ownerId: string, now: numbe
 	return { rowid: current.rowid, owner_id: ownerId, fence, expires_at_ms: expiresAt };
 }
 
+export function renewWriterLease(
+	db: SqliteDatabase,
+	ownerId: string,
+	fence: number,
+	now: number,
+	leaseMs: number,
+): WriterLeaseRow {
+	const expiresAt = now + leaseMs;
+	const result = sql`UPDATE writer_lease SET expires_at_ms = ${expiresAt}
+		WHERE owner_id = ${ownerId} AND fence = ${fence}`.run(db);
+	if (result.changes !== 1) throw new Error("SQLite writer lease was lost");
+	const row = sql`SELECT rowid, owner_id, fence, expires_at_ms FROM writer_lease
+		WHERE owner_id = ${ownerId} AND fence = ${fence}`.get<WriterLeaseRow>(db);
+	if (row === undefined) throw new Error("SQLite writer lease was lost");
+	return row;
+}
+
 export function releaseWriterLease(db: SqliteDatabase, ownerId: string, fence: number): void {
 	sql`DELETE FROM writer_lease WHERE owner_id = ${ownerId} AND fence = ${fence}`.run(db);
 }

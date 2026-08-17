@@ -87,7 +87,7 @@ describe("SqliteSessionRepo", () => {
 		});
 	});
 
-	it("lists sessions without taking the writer lease", async () => {
+	it("lists sessions without changing the writer lease", async () => {
 		await withTempDir(async (directory) => {
 			const repo = new SqliteSessionRepo({
 				directory,
@@ -96,10 +96,14 @@ describe("SqliteSessionRepo", () => {
 			});
 			const session = await repo.create({ id: "session" });
 			const { metadata } = session;
+			let leaseBeforeList: unknown[] = [];
+			await withDb(metadata.path, (db) => {
+				leaseBeforeList = sql`SELECT owner_id, fence FROM writer_lease`.all(db);
+			});
 
 			await expect(repo.list()).resolves.toMatchObject([{ id: "session", path: metadata.path }]);
 			await withDb(metadata.path, (db) => {
-				expect(sql`SELECT owner_id, fence FROM writer_lease`.all(db)).toEqual([]);
+				expect(sql`SELECT owner_id, fence FROM writer_lease`.all(db)).toEqual(leaseBeforeList);
 			});
 			await session.close();
 		});
