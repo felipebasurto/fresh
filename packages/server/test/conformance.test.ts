@@ -1,4 +1,4 @@
-import type { SessionMetadata } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, type SessionMetadata } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, test } from "vitest";
 import type { ByteConnection, ByteConnectionHandler } from "../src/connection.ts";
 import { PiServer } from "../src/server.ts";
@@ -652,6 +652,6 @@ describe("hosted Harness acquisition failures", () => {
 		expect(host.latestHarness("session-1").closeCount).toBe(1);
 
 		servers.delete(server);
-		await host.latestHarness("session-1").close();
+		await host.latestHarness("session-1").close(BACKGROUND_CONTEXT);
 	});
 });

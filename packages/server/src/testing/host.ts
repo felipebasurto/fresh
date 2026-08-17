@@ -1,4 +1,4 @@
-import type { Session, SessionMetadata } from "@earendil-works/pi-agent-core";
+import type { Context, Session, SessionMetadata } from "@earendil-works/pi-agent-core";
 import { BACKGROUND_CONTEXT, MemorySessionRepo } from "@earendil-works/pi-agent-core";
 import type { LaneEvent, LaneSnapshot, PromptArguments, RunResult } from "@earendil-works/pi-protocol";
 import type { HostedHarnessHandle, HostedHarnessWatch, PiServerHost } from "../types.ts";
@@ -35,8 +35,8 @@ const emptyLaneSnapshot: LaneSnapshot = {
 
 class TestHarnessWatch implements HostedHarnessWatch {
 	readonly snapshot: LaneSnapshot;
-	private readonly buffered: LaneEvent[] = [];
-	private listener: ((event: LaneEvent) => void | Promise<void>) | undefined;
+	private readonly buffered: Array<{ event: LaneEvent; context: Context }> = [];
+	private listener: ((event: LaneEvent, context: Context) => void | Promise<void>) | undefined;
 	private tail: Promise<void> = Promise.resolve();
 	private state: "buffering" | "started" | "unsubscribed" = "buffering";
 
@@ -44,32 +44,32 @@ class TestHarnessWatch implements HostedHarnessWatch {
 		this.snapshot = structuredClone(snapshot);
 	}
 
-	start(listener: (event: LaneEvent) => void | Promise<void>): void {
+	start(listener: (event: LaneEvent, context: Context) => void | Promise<void>, _context: Context): void {
 		if (this.state !== "buffering") throw new Error("Test Harness watch may be started only once");
 		this.state = "started";
 		this.listener = listener;
-		for (const event of this.buffered.splice(0)) this.enqueue(event);
+		for (const buffered of this.buffered.splice(0)) this.enqueue(buffered.event, buffered.context);
 	}
 
-	unsubscribe(): void {
+	unsubscribe(_context: Context): void {
 		this.state = "unsubscribed";
 		this.buffered.splice(0);
 		this.listener = undefined;
 	}
 
-	push(event: LaneEvent): Promise<void> {
+	push(event: LaneEvent, context: Context): Promise<void> {
 		if (this.state === "unsubscribed") return Promise.resolve();
 		if (this.state === "buffering") {
-			this.buffered.push(structuredClone(event));
+			this.buffered.push({ event: structuredClone(event), context });
 			return Promise.resolve();
 		}
-		return this.enqueue(event);
+		return this.enqueue(event, context);
 	}
 
-	private enqueue(event: LaneEvent): Promise<void> {
+	private enqueue(event: LaneEvent, context: Context): Promise<void> {
 		const listener = this.listener;
 		if (listener === undefined) return Promise.resolve();
-		const delivery = this.tail.then(() => listener(structuredClone(event)));
+		const delivery = this.tail.then(() => listener(structuredClone(event), context));
 		this.tail = delivery.catch(() => {});
 		return delivery;
 	}
@@ -97,11 +97,11 @@ export class TestHarness {
 		this.session = session;
 	}
 
-	attachClient(): { release(): void } {
+	attachClient(_context: Context): { release(context: Context): void } {
 		this.attachedClients += 1;
 		let released = false;
 		return {
-			release: () => {
+			release: (_context) => {
 				if (released) return;
 				this.attachmentReleaseCount += 1;
 				if (this.failAttachmentRelease) throw this.failAttachmentRelease;
@@ -111,24 +111,24 @@ export class TestHarness {
 		};
 	}
 
-	async watch(): Promise<HostedHarnessWatch> {
+	async watch(_context: Context): Promise<HostedHarnessWatch> {
 		const watch = new TestHarnessWatch(this.watchSnapshot);
 		this.watches.add(watch);
 		return {
 			snapshot: watch.snapshot,
-			start: (listener) => watch.start(listener),
-			unsubscribe: () => {
-				watch.unsubscribe();
+			start: (listener, context) => watch.start(listener, context),
+			unsubscribe: (context) => {
+				watch.unsubscribe(context);
 				this.watches.delete(watch);
 			},
 		};
 	}
 
-	async emitEvent(event: LaneEvent): Promise<void> {
-		await Promise.all([...this.watches].map((watch) => watch.push(event)));
+	async emitEvent(event: LaneEvent, context: Context = BACKGROUND_CONTEXT): Promise<void> {
+		await Promise.all([...this.watches].map((watch) => watch.push(event, context)));
 	}
 
-	async prompt(prompt: PromptArguments): Promise<RunResult> {
+	async prompt(prompt: PromptArguments, _context: Context): Promise<RunResult> {
 		this.promptCalls.push(prompt);
 		if (this.nextPromptError) {
 			const error = this.nextPromptError;
@@ -149,7 +149,7 @@ export class TestHarness {
 		return result;
 	}
 
-	async close(): Promise<void> {
+	async close(context: Context): Promise<void> {
 		this.closeCount += 1;
 		const gate = this.nextCloseGate;
 		if (gate) {
@@ -162,7 +162,7 @@ export class TestHarness {
 			this.failClose = undefined;
 			throw error;
 		}
-		await this.session.close(BACKGROUND_CONTEXT);
+		await this.session.close(context);
 		this.closed.resolve(undefined);
 		this.#termination.resolve(undefined);
 	}
@@ -197,28 +197,28 @@ export class TestServerHost implements PiServerHost {
 	nextCreateHarnessError?: Error;
 	nextHarnessCloseError?: Error;
 	readonly sessions: PiServerHost["sessions"] = {
-		list: async () => {
+		list: async (context) => {
 			const delay = this.nextListDelay;
 			if (delay) {
 				this.nextListDelay = undefined;
 				delay.entered.resolve(undefined);
 				await delay.release.promise;
 			}
-			return this.repo.list(undefined, BACKGROUND_CONTEXT);
+			return this.repo.list(undefined, context);
 		},
-		create: async ({ id }) => {
-			const session = await this.repo.create({ id }, BACKGROUND_CONTEXT);
+		create: async ({ id }, context) => {
+			const session = await this.repo.create({ id }, context);
 			try {
 				return session.metadata;
 			} finally {
-				await session.close(BACKGROUND_CONTEXT);
+				await session.close(context);
 			}
 		},
 	};
 	private nextListDelay?: ListDelay;
 	private nextCreateHarnessGate?: OpenGate;
 
-	async createHarness(metadata: SessionMetadata): Promise<HostedHarnessHandle> {
+	async createHarness(metadata: SessionMetadata, context: Context): Promise<HostedHarnessHandle> {
 		this.createHarnessCount += 1;
 		const gate = this.nextCreateHarnessGate;
 		if (gate) {
@@ -226,7 +226,7 @@ export class TestServerHost implements PiServerHost {
 			gate.entered.resolve(undefined);
 			await gate.release.promise;
 		}
-		const session = await this.repo.open(metadata, BACKGROUND_CONTEXT);
+		const session = await this.repo.open(metadata, context);
 		try {
 			if (this.nextCreateHarnessError) {
 				const error = this.nextCreateHarnessError;
@@ -243,7 +243,7 @@ export class TestServerHost implements PiServerHost {
 			this.harnesses.set(metadata.id, harnesses);
 			return harness;
 		} catch (error) {
-			await session.close(BACKGROUND_CONTEXT);
+			await session.close(context);
 			throw error;
 		}
 	}

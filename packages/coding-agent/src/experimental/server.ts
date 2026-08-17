@@ -331,23 +331,23 @@ async function startServerBackend(
 	const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot: sessionDir });
 	const host: PiServerHost<JsonlSessionMetadata> = {
 		sessions: {
-			list: async () => {
+			list: async (context) => {
 				const sessions = new Map(
-					(await repo.list(undefined, TODO_CONTEXT)).map((metadata) => [metadata.path, metadata]),
+					(await repo.list(undefined, context)).map((metadata) => [metadata.path, metadata]),
 				);
 				for (const metadata of workers.trackedSessions) sessions.set(metadata.path, metadata);
 				return [...sessions.values()];
 			},
-			create: async (createOptions) => {
-				const session = await repo.create(createOptions, TODO_CONTEXT);
+			create: async (createOptions, context) => {
+				const session = await repo.create(createOptions, context);
 				try {
 					return session.metadata;
 				} finally {
-					await session.close(TODO_CONTEXT);
+					await session.close(context);
 				}
 			},
 		},
-		createHarness: (metadata) => workers.createHarness(metadata),
+		createHarness: (metadata, context) => workers.createHarness(metadata, context),
 	};
 	const socketPath = options.path;
 	const closeCatalog = async (): Promise<void> => {

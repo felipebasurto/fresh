@@ -1,4 +1,4 @@
-import type { SessionMetadata } from "@earendil-works/pi-agent-core";
+import type { Context, SessionMetadata } from "@earendil-works/pi-agent-core";
 import type {
 	LaneEvent,
 	LaneSnapshot,
@@ -22,34 +22,34 @@ export type MaybePromise<T> = T | Promise<T>;
 
 /** One client connection's exclusive attachment to a hosted Session. */
 export interface HostedHarnessAttachment {
-	release(): MaybePromise<void>;
+	release(context: Context): MaybePromise<void>;
 }
 
 /** Snapshot-first observation handle supplied by a hosted Harness adapter. */
 export interface HostedHarnessWatch {
 	readonly snapshot: LaneSnapshot;
-	start(listener: (event: LaneEvent) => MaybePromise<void>): MaybePromise<void>;
-	unsubscribe(): MaybePromise<void>;
+	start(listener: (event: LaneEvent, context: Context) => MaybePromise<void>, context: Context): MaybePromise<void>;
+	unsubscribe(context: Context): MaybePromise<void>;
 }
 
 /** A process-safe handle for the hosted Harness operations exposed by this server. */
 export interface HostedHarnessHandle {
 	/** Acquire the Session for one client connection. Sessions permit only one attachment at a time. */
-	attachClient?(): MaybePromise<HostedHarnessAttachment>;
+	attachClient?(context: Context): MaybePromise<HostedHarnessAttachment>;
 	/** Execute one serializable prompt against the hosted Harness. */
-	prompt(prompt: PromptArguments): Promise<RunResult>;
+	prompt(prompt: PromptArguments, context: Context): Promise<RunResult>;
 	/** Observe the attached main lane when supported by this host. */
-	watch?(): Promise<HostedHarnessWatch>;
+	watch?(context: Context): Promise<HostedHarnessWatch>;
 	/** Resolves with an error for unexpected termination, or undefined after an expected close. */
 	readonly terminated?: Promise<Error | undefined>;
-	close(): Promise<void>;
+	close(context: Context): Promise<void>;
 }
 
 /** Host capabilities used directly by Session RPC operations. */
 export interface PiServerHost<TMetadata extends SessionMetadata = SessionMetadata> {
 	readonly sessions: {
-		list(): Promise<TMetadata[]>;
-		create(options: SessionCreateOptions): Promise<TMetadata>;
+		list(context: Context): Promise<TMetadata[]>;
+		create(options: SessionCreateOptions, context: Context): Promise<TMetadata>;
 	};
-	createHarness(metadata: TMetadata): Promise<HostedHarnessHandle>;
+	createHarness(metadata: TMetadata, context: Context): Promise<HostedHarnessHandle>;
 }

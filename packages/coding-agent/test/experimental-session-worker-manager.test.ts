@@ -1,4 +1,4 @@
-import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, type JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CoordinatorConnectionEvent } from "../src/experimental/coordinator.ts";
 import { SessionWorkerManager } from "../src/experimental/session-worker-manager.ts";
@@ -65,7 +65,7 @@ async function createAttachedWorker(): Promise<{
 	const coordinator = new FakeCoordinator();
 	const workers = new SessionWorkerManager(coordinator, "/tmp");
 	await workers.discover(new Set(["worker-1"]));
-	const handle = await workers.createHarness(metadata);
+	const handle = await workers.createHarness(metadata, BACKGROUND_CONTEXT);
 	coordinator.onSend = (peerId, payload) => {
 		if (payload.type !== "session_demand") return;
 		queueMicrotask(() =>
@@ -82,8 +82,13 @@ async function createAttachedWorker(): Promise<{
 			}),
 		);
 	};
-	const attachment = await handle.attachClient!();
-	return { coordinator, workers, handle, release: () => Promise.resolve(attachment.release()) };
+	const attachment = await handle.attachClient!(BACKGROUND_CONTEXT);
+	return {
+		coordinator,
+		workers,
+		handle,
+		release: () => Promise.resolve(attachment.release(BACKGROUND_CONTEXT)),
+	};
 }
 
 describe("Session worker lifecycle failures", () => {
@@ -92,7 +97,7 @@ describe("Session worker lifecycle failures", () => {
 		const coordinator = new FakeCoordinator();
 		const workers = new SessionWorkerManager(coordinator, "/tmp");
 		await workers.discover(new Set(["worker-1"]));
-		const handle = await workers.createHarness(metadata);
+		const handle = await workers.createHarness(metadata, BACKGROUND_CONTEXT);
 		const demands: (string | null)[] = [];
 		coordinator.onSend = (peerId, payload) => {
 			if (payload.type !== "session_demand") return;
@@ -113,7 +118,7 @@ describe("Session worker lifecycle failures", () => {
 			);
 		};
 
-		const attaching = expect(handle.attachClient!()).rejects.toThrow("timed out");
+		const attaching = expect(handle.attachClient!(BACKGROUND_CONTEXT)).rejects.toThrow("timed out");
 		await vi.advanceTimersByTimeAsync(5_000);
 		await attaching;
 		expect(demands).toHaveLength(2);
@@ -128,10 +133,10 @@ describe("Session worker lifecycle failures", () => {
 		const coordinator = new FakeCoordinator();
 		const workers = new SessionWorkerManager(coordinator, "/tmp");
 		await workers.discover(new Set(["worker-1"]));
-		const handle = await workers.createHarness(metadata);
+		const handle = await workers.createHarness(metadata, BACKGROUND_CONTEXT);
 		coordinator.onSend = () => {};
 
-		const attaching = expect(handle.attachClient!()).rejects.toThrow("worker was terminated");
+		const attaching = expect(handle.attachClient!(BACKGROUND_CONTEXT)).rejects.toThrow("worker was terminated");
 		await vi.advanceTimersByTimeAsync(5_000);
 		await vi.advanceTimersByTimeAsync(5_000);
 		await vi.advanceTimersByTimeAsync(10_000);
@@ -148,7 +153,7 @@ describe("Session worker lifecycle failures", () => {
 		await release();
 		coordinator.onSend = () => {};
 
-		const closing = handle.close();
+		const closing = handle.close(BACKGROUND_CONTEXT);
 		await vi.advanceTimersByTimeAsync(10_000);
 		await closing;
 		expect(kill).toHaveBeenCalledWith(123, "SIGKILL");
@@ -185,7 +190,7 @@ describe("Session worker operations", () => {
 			});
 		};
 
-		await expect(handle.prompt(["Hello"])).resolves.toEqual({
+		await expect(handle.prompt(["Hello"], BACKGROUND_CONTEXT)).resolves.toEqual({
 			ok: true,
 			value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
 		});
@@ -226,7 +231,7 @@ describe("Session worker operations", () => {
 			);
 		};
 
-		await expect(handle.prompt(["Hello"])).rejects.toThrow(/mismatched operation response/);
+		await expect(handle.prompt(["Hello"], BACKGROUND_CONTEXT)).rejects.toThrow(/mismatched operation response/);
 		workers.detach();
 		await release();
 	});
@@ -257,7 +262,7 @@ describe("Session worker operations", () => {
 			);
 		};
 
-		await expect(handle.prompt(["Hello"])).rejects.toThrow(/invalid operation response/);
+		await expect(handle.prompt(["Hello"], BACKGROUND_CONTEXT)).rejects.toThrow(/invalid operation response/);
 		workers.detach();
 		await release();
 	});
@@ -265,7 +270,7 @@ describe("Session worker operations", () => {
 	test("rejects pending prompts on replacement without stopping the worker", async () => {
 		const { coordinator, workers, handle } = await createAttachedWorker();
 		coordinator.onSend = () => {};
-		const prompting = handle.prompt(["Hello"]);
+		const prompting = handle.prompt(["Hello"], BACKGROUND_CONTEXT);
 		workers.detach();
 
 		await expect(prompting).rejects.toThrow(/replaced during a worker operation/);

@@ -1,4 +1,4 @@
-import type { SessionMetadata } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, type SessionMetadata, TODO_CONTEXT } from "@earendil-works/pi-agent-core";
 import {
 	type ClientHello,
 	type ClientMessage,
@@ -258,9 +258,14 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 	private async handleRequest(state: ConnectionState, envelope: RequestEnvelope): Promise<void> {
 		try {
 			if (envelope.serverId !== this.serverId) throw new WrongServerError();
-			const result: ProtocolRpcResult = await this.sessions.executeCall(envelope.call, state, async (message) => {
-				await this.sendMessage(state, message);
-			});
+			const result: ProtocolRpcResult = await this.sessions.executeCall(
+				envelope.call,
+				state,
+				async (message, _context) => {
+					await this.sendMessage(state, message);
+				},
+				TODO_CONTEXT,
+			);
 			await this.sendMessage(state, {
 				type: "response",
 				id: envelope.id,
@@ -294,7 +299,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 		connection.stage = "closed";
 		clearTimeout(connection.handshakeTimeout);
 		if (this.connections.delete(connection)) this.notifyConnectionCountChanged();
-		void this.sessions.disconnect(connection).catch((error: unknown) => this.reportError(error));
+		void this.sessions.disconnect(connection, TODO_CONTEXT).catch((error: unknown) => this.reportError(error));
 	}
 
 	private async sendMessage(connection: ConnectionState, message: ServerMessage): Promise<boolean> {
@@ -342,7 +347,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 		}
 		await Promise.all(connections.map((connection) => this.closeConnection(connection.connection)));
 		for (const connection of connections) this.disconnect(connection);
-		await this.sessions.close();
+		await this.sessions.close(BACKGROUND_CONTEXT);
 		this.connections.clear();
 	}
 
