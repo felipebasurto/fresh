@@ -14,11 +14,11 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { prepareStorageCommit } from "@earendil-works/pi-agent-core";
 import { appendEntryToBranchIndex, scanBranchEntries, scanBranchEntryStructures } from "./session/branch-entries.ts";
-import { decodeEntryRow, insertEntryRow, readEntryRows, scanEntryRows } from "./session/entries.ts";
+import { decodeEntryRow, EntryRowWriter, readEntryRows, scanEntryRows } from "./session/entries.ts";
 import { deleteRegisterRow, listRegisterRows, readRegisterRow, setRegisterRow } from "./session/registers.ts";
 import { advanceNextSeq, readNextSeq } from "./session/session-sequences.ts";
 import { addUsageToSessionStats, incrementMessageCount, readSessionStats } from "./session/session-stats.ts";
-import { decodeUsageLedgerRow, insertUsageLedgerRow, scanUsageLedgerRows } from "./session/usage-ledger.ts";
+import { decodeUsageLedgerRow, scanUsageLedgerRows, UsageLedgerRowWriter } from "./session/usage-ledger.ts";
 import type { SqliteDatabase } from "./types.ts";
 
 export interface SqliteStorageOptions {
@@ -28,6 +28,8 @@ export interface SqliteStorageOptions {
 export class SqliteStorage implements Storage {
 	private readonly db: SqliteDatabase;
 	private readonly now: () => number;
+	private readonly entryWriter: EntryRowWriter;
+	private readonly usageWriter: UsageLedgerRowWriter;
 	private commitQueue: Promise<void> = Promise.resolve();
 	private state: "open" | "closing" | "closed" = "open";
 	private closePromise: Promise<void> | undefined;
@@ -35,6 +37,8 @@ export class SqliteStorage implements Storage {
 	constructor(db: SqliteDatabase, options: SqliteStorageOptions = {}) {
 		this.db = db;
 		this.now = options.now ?? Date.now;
+		this.entryWriter = new EntryRowWriter(db);
+		this.usageWriter = new UsageLedgerRowWriter(db);
 	}
 
 	commit(transaction: Transaction): Promise<CommitResult> {
@@ -107,14 +111,14 @@ export class SqliteStorage implements Storage {
 				switch (write.kind) {
 					case "entry": {
 						const { kind: _kind, ...entry } = write;
-						insertEntryRow(this.db, entry);
+						this.entryWriter.insert(entry);
 						appendEntryToBranchIndex(this.db, entry);
 						if (entry.type === "message") incrementMessageCount(this.db);
 						break;
 					}
 					case "usage": {
 						const { kind: _kind, ...row } = write;
-						insertUsageLedgerRow(this.db, row);
+						this.usageWriter.insert(row);
 						addUsageToSessionStats(this.db, row.usage);
 						break;
 					}

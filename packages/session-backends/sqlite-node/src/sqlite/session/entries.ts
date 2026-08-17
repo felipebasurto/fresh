@@ -8,7 +8,7 @@ import type {
 	MessageEntry,
 } from "@earendil-works/pi-agent-core";
 import { joinSqlFragments, type SqlQuery, sql } from "../sql.ts";
-import type { SqliteDatabase } from "../types.ts";
+import type { SqliteDatabase, SqliteStatement } from "../types.ts";
 
 export interface EntryRow {
 	id: string;
@@ -66,17 +66,35 @@ function parsePayload<TEntry extends Entry>(row: EntryRow): StoredEntryPayload<T
 	return JSON.parse(row.payload) as StoredEntryPayload<TEntry>;
 }
 
+const INSERT_ENTRY_SQL = `INSERT INTO entries (id, parent_id, seq, type, custom_type, timestamp, payload)
+	VALUES (?, ?, ?, ?, ?, ?, ?)`;
+
+function entryRowParams(entry: Entry): unknown[] {
+	return [
+		entry.id,
+		entry.parentId,
+		entry.seq,
+		entry.type,
+		entry.type === "custom" ? entry.customType : null,
+		entry.timestamp,
+		JSON.stringify(entryPayload(entry)),
+	];
+}
+
+export class EntryRowWriter {
+	private readonly insertStatement: SqliteStatement;
+
+	constructor(db: SqliteDatabase) {
+		this.insertStatement = db.prepare(INSERT_ENTRY_SQL);
+	}
+
+	insert(entry: Entry): void {
+		this.insertStatement.run(...entryRowParams(entry));
+	}
+}
+
 export function insertEntryRow(db: SqliteDatabase, entry: Entry): void {
-	sql`INSERT INTO entries (id, parent_id, seq, type, custom_type, timestamp, payload)
-		VALUES (
-			${entry.id},
-			${entry.parentId},
-			${entry.seq},
-			${entry.type},
-			${entry.type === "custom" ? entry.customType : null},
-			${entry.timestamp},
-			${JSON.stringify(entryPayload(entry))}
-		)`.run(db);
+	db.prepare(INSERT_ENTRY_SQL).run(...entryRowParams(entry));
 }
 
 export function decodeEntryRow(row: EntryRow): Entry {
