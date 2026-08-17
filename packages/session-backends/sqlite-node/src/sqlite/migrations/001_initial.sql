@@ -1,6 +1,6 @@
 -- AgentHarness storage format 4 / storageVersion 1.
 -- One SQLite database file represents exactly one session. Authoritative durable
--- state is entries + registers + usage_ledger; branch_* and stats columns on
+-- state is entries + scalar_values + list_values + usage_ledger; branch_* and stats columns on
 -- session are maintained projections/caches.
 
 CREATE TABLE IF NOT EXISTS entries (
@@ -16,12 +16,20 @@ CREATE TABLE IF NOT EXISTS entries (
 CREATE INDEX IF NOT EXISTS ix_entry_parent ON entries(parent_id);
 CREATE INDEX IF NOT EXISTS ix_entry_seq ON entries(seq, type);
 
-CREATE TABLE IF NOT EXISTS registers (
-	namespace TEXT,
-	key TEXT,
+CREATE TABLE IF NOT EXISTS scalar_values (
+	namespace TEXT NOT NULL,
+	key TEXT NOT NULL,
 	seq INTEGER NOT NULL,
 	value TEXT NOT NULL,
 	PRIMARY KEY (namespace, key)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS list_values (
+	namespace TEXT NOT NULL,
+	key TEXT NOT NULL,
+	seq INTEGER NOT NULL,
+	value TEXT NOT NULL,
+	PRIMARY KEY (namespace, key, seq)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS usage_ledger (
@@ -62,7 +70,7 @@ BEGIN
 	);
 END;
 
--- Private branch index. Not registers; no equivalent in the other backends.
+-- Private branch index. Not values/lists; no equivalent in the other backends.
 CREATE TABLE IF NOT EXISTS branch_entries (
 	branch_id TEXT,
 	entry_id TEXT,

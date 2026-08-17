@@ -1,8 +1,11 @@
+import * as storedValues from "@earendil-works/pi-agent-core";
+import * as sessionWrites from "@earendil-works/pi-agent-core";
 import { prepareStorageCommit } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { createNodeSqliteFactory, type SqliteDatabase, SqliteStorage, sql } from "../src/index.ts";
 import { applyInitialSchema } from "../src/sqlite/migrations.ts";
 import { advanceNextSeq, readNextSeq } from "../src/sqlite/session/session-sequences.ts";
+import { listValueReadQuery } from "../src/sqlite/session/values.ts";
 
 async function withStorage<T>(run: (storage: SqliteStorage, db: SqliteDatabase) => Promise<T>): Promise<T> {
 	const db = await createNodeSqliteFactory().open(":memory:");
@@ -56,34 +59,24 @@ describe("SqliteStorage", () => {
 			insertCommitSessionRow(db);
 
 			expect(
-				await storage.commit({
-					writes: [
-						{
-							kind: "entry",
-							entry: {
-								id: "root",
-								parentId: null,
-								type: "message",
-								message: { role: "user", content: "root", timestamp: 10 },
-							},
-						},
-					],
-				}),
+				await storage.commit([
+					sessionWrites.insertEntry({
+						id: "root",
+						parentId: null,
+						type: "message",
+						message: { role: "user", content: "root", timestamp: 10 },
+					}),
+				]),
 			).toEqual({ firstSeq: 1, seqs: [1], timestamp: 1_700_000_000_000 });
 			expect(
-				await storage.commit({
-					writes: [
-						{
-							kind: "entry",
-							entry: {
-								id: "child",
-								parentId: "root",
-								type: "message",
-								message: { role: "user", content: "child", timestamp: 11 },
-							},
-						},
-					],
-				}),
+				await storage.commit([
+					sessionWrites.insertEntry({
+						id: "child",
+						parentId: "root",
+						type: "message",
+						message: { role: "user", content: "child", timestamp: 11 },
+					}),
+				]),
 			).toEqual({ firstSeq: 2, seqs: [2], timestamp: 1_700_000_000_000 });
 
 			expect(sql`SELECT branch_id, tip_entry_id, tip_seq FROM branch_meta`.all(db)).toEqual([
@@ -102,37 +95,26 @@ describe("SqliteStorage", () => {
 	it("commits divergent branch entries by materializing a new segment", async () => {
 		await withStorage(async (storage, db) => {
 			insertCommitSessionRow(db);
-			await storage.commit({
-				writes: [
-					{
-						kind: "entry",
-						entry: {
-							id: "root",
-							parentId: null,
-							type: "message",
-							message: { role: "user", content: "root", timestamp: 10 },
-						},
-					},
-					{
-						kind: "entry",
-						entry: {
-							id: "left",
-							parentId: "root",
-							type: "message",
-							message: { role: "user", content: "left", timestamp: 11 },
-						},
-					},
-					{
-						kind: "entry",
-						entry: {
-							id: "right",
-							parentId: "root",
-							type: "message",
-							message: { role: "user", content: "right", timestamp: 12 },
-						},
-					},
-				],
-			});
+			await storage.commit([
+				sessionWrites.insertEntry({
+					id: "root",
+					parentId: null,
+					type: "message",
+					message: { role: "user", content: "root", timestamp: 10 },
+				}),
+				sessionWrites.insertEntry({
+					id: "left",
+					parentId: "root",
+					type: "message",
+					message: { role: "user", content: "left", timestamp: 11 },
+				}),
+				sessionWrites.insertEntry({
+					id: "right",
+					parentId: "root",
+					type: "message",
+					message: { role: "user", content: "right", timestamp: 12 },
+				}),
+			]);
 
 			expect(
 				sql`SELECT branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq FROM branch_meta ORDER BY branch_id`.all(
@@ -160,58 +142,41 @@ describe("SqliteStorage", () => {
 	it("bases divergent branch segments at the newest compaction", async () => {
 		await withStorage(async (storage, db) => {
 			insertCommitSessionRow(db);
-			await storage.commit({
-				writes: [
-					{
-						kind: "entry",
-						entry: {
-							id: "root",
-							parentId: null,
-							type: "message",
-							message: { role: "user", content: "root", timestamp: 10 },
-						},
-					},
-					{
-						kind: "entry",
-						entry: {
-							id: "compact",
-							parentId: "root",
-							type: "compaction",
-							summary: "summary",
-							retainedTail: [],
-							tokensBefore: 1,
-							fromHook: false,
-						},
-					},
-					{
-						kind: "entry",
-						entry: {
-							id: "left",
-							parentId: "compact",
-							type: "message",
-							message: { role: "user", content: "left", timestamp: 11 },
-						},
-					},
-					{
-						kind: "entry",
-						entry: {
-							id: "leaf",
-							parentId: "left",
-							type: "message",
-							message: { role: "user", content: "leaf", timestamp: 12 },
-						},
-					},
-					{
-						kind: "entry",
-						entry: {
-							id: "right",
-							parentId: "left",
-							type: "message",
-							message: { role: "user", content: "right", timestamp: 13 },
-						},
-					},
-				],
-			});
+			await storage.commit([
+				sessionWrites.insertEntry({
+					id: "root",
+					parentId: null,
+					type: "message",
+					message: { role: "user", content: "root", timestamp: 10 },
+				}),
+				sessionWrites.insertEntry({
+					id: "compact",
+					parentId: "root",
+					type: "compaction",
+					summary: "summary",
+					retainedTail: [],
+					tokensBefore: 1,
+					fromHook: false,
+				}),
+				sessionWrites.insertEntry({
+					id: "left",
+					parentId: "compact",
+					type: "message",
+					message: { role: "user", content: "left", timestamp: 11 },
+				}),
+				sessionWrites.insertEntry({
+					id: "leaf",
+					parentId: "left",
+					type: "message",
+					message: { role: "user", content: "leaf", timestamp: 12 },
+				}),
+				sessionWrites.insertEntry({
+					id: "right",
+					parentId: "left",
+					type: "message",
+					message: { role: "user", content: "right", timestamp: 13 },
+				}),
+			]);
 
 			expect(
 				sql`SELECT branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq FROM branch_meta WHERE branch_id = ${"right"}`.get(
@@ -453,36 +418,28 @@ describe("SqliteStorage", () => {
 
 	it("prepares committed writes with assigned sequences and timestamp", () => {
 		const prepared = prepareStorageCommit(
-			{
-				writes: [
-					{
-						kind: "entry",
-						entry: {
-							id: "entry",
-							parentId: null,
-							type: "message",
-							message: { role: "user", content: "hi", timestamp: 1 },
-						},
+			[
+				sessionWrites.insertEntry({
+					id: "entry",
+					parentId: null,
+					type: "message",
+					message: { role: "user", content: "hi", timestamp: 1 },
+				}),
+				sessionWrites.insertUsage({
+					id: "usage",
+					usage: {
+						input: 1,
+						output: 2,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 3,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 					},
-					{
-						kind: "usage",
-						row: {
-							id: "usage",
-							usage: {
-								input: 1,
-								output: 2,
-								cacheRead: 0,
-								cacheWrite: 0,
-								totalTokens: 3,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-							},
-							adjustment: false,
-						},
-					},
-					{ kind: "register", op: "set", namespace: "fact.name", key: "", value: "name" },
-					{ kind: "register", op: "delete", namespace: "fact.label", key: "entry" },
-				],
-			},
+					adjustment: false,
+				}),
+				storedValues.setValue(storedValues.sessionName, "name"),
+				storedValues.deleteValue(storedValues.entryLabel("entry")),
+			],
 			7,
 			1_700_000_000_000,
 		);
@@ -491,8 +448,8 @@ describe("SqliteStorage", () => {
 		expect(prepared.writes).toMatchObject([
 			{ kind: "entry", id: "entry", seq: 7, timestamp: 1_700_000_000_000 },
 			{ kind: "usage", id: "usage", seq: 8 },
-			{ kind: "register", op: "set", namespace: "fact.name", key: "", seq: 9, value: "name" },
-			{ kind: "register", op: "delete", namespace: "fact.label", key: "entry", seq: 10 },
+			storedValues.setValue(storedValues.sessionName, "name"),
+			storedValues.deleteValue(storedValues.entryLabel("entry")),
 		]);
 	});
 
@@ -526,37 +483,55 @@ describe("SqliteStorage", () => {
 		});
 	});
 
-	it("gets a decoded register by namespace and key", async () => {
+	it("gets a decoded scalar value by bound address", async () => {
 		await withStorage(async (storage, db) => {
-			sql`INSERT INTO registers (namespace, key, seq, value)
-				VALUES (${"fact.custom"}, ${"state"}, ${1}, ${JSON.stringify({ ready: true })})`.run(db);
+			const address = storedValues.value<{ ready: boolean }>("test.value", "state");
+			sql`INSERT INTO scalar_values (namespace, key, seq, value)
+				VALUES (${address.namespace}, ${address.key}, ${1}, ${JSON.stringify({ ready: true })})`.run(db);
 
-			expect(await storage.getRegister("fact.custom", "state")).toEqual({
-				namespace: "fact.custom",
-				key: "state",
+			expect(await storage.getValue(address)).toEqual({
+				address,
 				seq: 1,
 				value: { ready: true },
 			});
-			expect(await storage.getRegister("fact.custom", "missing")).toBeUndefined();
+			expect(await storage.getValue(storedValues.value<unknown>("test.value", "missing"))).toBeUndefined();
 		});
 	});
 
-	it("lists decoded registers by namespace and key prefix", async () => {
+	it("scans decoded scalar values by namespace and key prefix", async () => {
 		await withStorage(async (storage, db) => {
-			sql`INSERT INTO registers (namespace, key, seq, value)
+			sql`INSERT INTO scalar_values (namespace, key, seq, value)
 				VALUES
-					(${"fact.custom"}, ${"app:one"}, ${1}, ${JSON.stringify(1)}),
-					(${"fact.custom"}, ${"app:two"}, ${2}, ${JSON.stringify(2)}),
-					(${"fact.custom"}, ${"app:\ufffftail"}, ${3}, ${JSON.stringify(3)}),
-					(${"fact.custom"}, ${"app;other"}, ${4}, ${JSON.stringify(4)}),
-					(${"fact.custom"}, ${"other"}, ${5}, ${JSON.stringify(5)}),
-					(${"fact.name"}, ${""}, ${6}, ${JSON.stringify("name")})`.run(db);
+					(${"test.value"}, ${"app:one"}, ${1}, ${JSON.stringify(1)}),
+					(${"test.value"}, ${"app:two"}, ${2}, ${JSON.stringify(2)}),
+					(${"test.value"}, ${"app:\ufffftail"}, ${3}, ${JSON.stringify(3)}),
+					(${"test.value"}, ${"app;other"}, ${4}, ${JSON.stringify(4)}),
+					(${"test.value"}, ${"other"}, ${5}, ${JSON.stringify(5)}),
+					(${"other.value"}, ${""}, ${6}, ${JSON.stringify("name")})`.run(db);
 
-			expect(await storage.listRegisters("fact.custom", "app:")).toEqual([
-				{ namespace: "fact.custom", key: "app:one", seq: 1, value: 1 },
-				{ namespace: "fact.custom", key: "app:two", seq: 2, value: 2 },
-				{ namespace: "fact.custom", key: "app:\ufffftail", seq: 3, value: 3 },
+			expect(await storage.scanValues(storedValues.value<unknown>("test.value", "app:"))).toEqual([
+				{ address: storedValues.value<unknown>("test.value", "app:one"), seq: 1, value: 1 },
+				{ address: storedValues.value<unknown>("test.value", "app:two"), seq: 2, value: 2 },
+				{ address: storedValues.value<unknown>("test.value", "app:\ufffftail"), seq: 3, value: 3 },
 			]);
+		});
+	});
+
+	it("uses the list primary key for ascending and descending cursor pages", async () => {
+		await withStorage(async (_storage, db) => {
+			const address = storedValues.list<unknown>("test.list", "events");
+			for (const options of [
+				{ order: "asc" as const },
+				{ order: "asc" as const, cursor: { seq: 4 } },
+				{ order: "desc" as const },
+				{ order: "desc" as const, cursor: { seq: 4 } },
+			]) {
+				const query = listValueReadQuery(address, options);
+				const plan = explainQueryPlan(db, query.queryText, ...query.params);
+				expect(plan.some((detail) => detail.includes("USING PRIMARY KEY"))).toBe(true);
+				expect(plan.some((detail) => detail.includes("SCAN list_values"))).toBe(false);
+				expect(plan.some((detail) => detail.includes("USE TEMP B-TREE"))).toBe(false);
+			}
 		});
 	});
 });

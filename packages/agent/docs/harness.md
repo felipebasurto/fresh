@@ -523,17 +523,17 @@ type Write =
   | { kind: "list"; op: "append"; namespace: string; key: string; value: unknown }
   | { kind: "list"; op: "delete"; namespace: string; key: string };
 
+function insertEntry(entry: Omit<Entry, "seq" | "timestamp">): Write;
+function insertUsage(row: Omit<UsageRow, "seq">): Write;
 function setValue<T>(address: Value<T>, next: NoInfer<T>): Write;
 function deleteValue<T>(address: Value<T>): Write;
 function appendList<T>(address: ValueList<T>, element: NoInfer<T>): Write;
 function deleteList<T>(address: ValueList<T>): Write;
 
-interface Transaction { writes: Write[] }
-
 interface CommitResult { firstSeq: number; seqs: number[]; timestamp: number }
 ```
 
-The raw write shapes are storage internals; harness and application code use the helpers. Value helpers cannot target list addresses and list helpers cannot target value addresses. `NoInfer<T>` makes the address authoritative instead of widening `T` from an incompatible write value.
+The raw write shapes are storage internals; harness and application code use `insertEntry`, `insertUsage`, and the value/list helpers rather than constructing discriminants manually. Value helpers cannot target list addresses and list helpers cannot target value addresses. `NoInfer<T>` makes the address authoritative instead of widening `T` from an incompatible write value.
 
 Rules:
 
@@ -554,7 +554,7 @@ One `Storage` instance serves one session. Repository discovery and lifecycle ar
 
 ```ts
 interface Storage {
-  commit(tx: Transaction): Promise<CommitResult>;
+  commit(writes: Write[]): Promise<CommitResult>;
 
   getEntries(ids: string[]): Promise<Map<string, Entry>>;
 
@@ -1046,7 +1046,7 @@ interface SessionMutator extends SessionReader {
 
   /** The callback's sole commit. A second call rejects, including after a
       failed first attempt. */
-  commit(tx: Transaction): Promise<CommitResult>;
+  commit(writes: Write[]): Promise<CommitResult>;
 }
 
 interface Session<M extends SessionMetadata = SessionMetadata>

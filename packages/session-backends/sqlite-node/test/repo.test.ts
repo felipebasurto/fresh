@@ -1,6 +1,8 @@
 import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as storedValues from "@earendil-works/pi-agent-core";
+import * as sessionWrites from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import type { SqliteDatabase } from "../src/index.ts";
 import { createNodeSqliteFactory, SqliteSessionRepo, sql } from "../src/index.ts";
@@ -24,7 +26,7 @@ async function withDb<T>(path: string, run: (db: SqliteDatabase) => Promise<T> |
 }
 
 describe("SqliteSessionRepo", () => {
-	it("creates one initialized session file with main lane registers", async () => {
+	it("creates one initialized session file with main lane values", async () => {
 		await withTempDir(async (directory) => {
 			const repo = new SqliteSessionRepo({
 				directory,
@@ -55,15 +57,21 @@ describe("SqliteSessionRepo", () => {
 					}),
 					next_seq: 3,
 				});
-				expect(sql`SELECT namespace, key, seq, value FROM registers ORDER BY seq`.all(db)).toEqual([
-					{ namespace: "lane.leaf", key: "main", seq: 1, value: "null" },
+				expect(sql`SELECT namespace, key, seq, value FROM scalar_values ORDER BY seq`.all(db)).toEqual([
 					{
-						namespace: "lane.state",
+						namespace: storedValues.laneLeaf("main").namespace,
+						key: "main",
+						seq: 1,
+						value: "null",
+					},
+					{
+						namespace: storedValues.laneState("main").namespace,
 						key: "main",
 						seq: 2,
 						value: JSON.stringify({ currentOperationId: null, pendingNextRun: [] }),
 					},
 				]);
+				expect(sql`SELECT COUNT(*) AS count FROM list_values`.get(db)).toEqual({ count: 0 });
 			});
 			await session.close();
 		});
@@ -201,22 +209,22 @@ describe("SqliteSessionRepo", () => {
 				now: () => 1_700_000_000_000,
 			});
 			const source = await repo.create({ id: "source" });
+			const applicationValue = storedValues.value<string>("test.application.value");
+			const applicationList = storedValues.list<string>("test.application.list");
 			const firstCommit = source.mutate("main", (mutator) =>
-				mutator.commit({
-					writes: [
-						{ kind: "entry", entry: { id: "root", parentId: null, type: "custom", customType: "root" } },
-						{ kind: "register", op: "set", namespace: "lane.leaf", key: "main", value: "root" },
-					],
-				}),
+				mutator.commit([
+					sessionWrites.insertEntry({ id: "root", parentId: null, type: "custom", customType: "root" }),
+					storedValues.setValue(storedValues.laneLeaf("main"), "root"),
+					storedValues.setValue(applicationValue, "excluded"),
+					storedValues.appendList(applicationList, "excluded"),
+				]),
 			);
 			const forkPromise = repo.fork(source.metadata, { id: "fork" });
 			const secondCommit = source.mutate("main", (mutator) =>
-				mutator.commit({
-					writes: [
-						{ kind: "entry", entry: { id: "child", parentId: "root", type: "custom", customType: "child" } },
-						{ kind: "register", op: "set", namespace: "lane.leaf", key: "main", value: "child" },
-					],
-				}),
+				mutator.commit([
+					sessionWrites.insertEntry({ id: "child", parentId: "root", type: "custom", customType: "child" }),
+					storedValues.setValue(storedValues.laneLeaf("main"), "child"),
+				]),
 			);
 
 			const [, fork] = await Promise.all([firstCommit, forkPromise]);
@@ -224,11 +232,13 @@ describe("SqliteSessionRepo", () => {
 
 			expect(await fork.getLeafId()).toBe("root");
 			expect((await fork.findEntries({ order: "asc" })).map((entry) => entry.id)).toEqual(["root"]);
+			expect(await fork.getValue(applicationValue)).toBeUndefined();
+			expect(await fork.readList(applicationList)).toEqual([]);
 			await Promise.all([source.close(), fork.close()]);
 		});
 	});
 
-	it("forks one branch with scoped facts and a zero ledger", async () => {
+	it("forks the whole open tree with every configured lane", async () => {
 		await withTempDir(async (directory) => {
 			const repo = new SqliteSessionRepo({
 				directory,
@@ -236,43 +246,97 @@ describe("SqliteSessionRepo", () => {
 				now: () => 1_700_000_000_000,
 			});
 			const source = await repo.create({ id: "source" });
+			const configuration = {
+				model: { provider: "test", modelId: "model" },
+				thinkingLevel: "off" as const,
+				activeToolNames: [],
+			};
 			await source.mutate("main", (mutator) =>
-				mutator.commit({
-					writes: [
-						{ kind: "entry", entry: { id: "root", parentId: null, type: "custom", customType: "root" } },
-						{
-							kind: "entry",
-							entry: {
-								id: "child",
-								parentId: "root",
-								type: "message",
-								message: { role: "user", content: "child", timestamp: 1 },
-							},
-						},
-						{ kind: "entry", entry: { id: "sibling", parentId: "root", type: "custom", customType: "sibling" } },
-						{ kind: "register", op: "set", namespace: "lane.leaf", key: "main", value: "child" },
-						{ kind: "register", op: "set", namespace: "fact.name", key: "", value: "source name" },
-						{ kind: "register", op: "set", namespace: "fact.label", key: "root", value: "root label" },
-						{ kind: "register", op: "set", namespace: "fact.label", key: "sibling", value: "sibling label" },
-						{
-							kind: "usage",
-							row: {
-								id: "usage",
-								adjustment: false,
-								usage: {
-									input: 1,
-									output: 1,
-									cacheRead: 0,
-									cacheWrite: 0,
-									totalTokens: 2,
-									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-								},
-							},
-						},
-					],
-				}),
+				mutator.commit([
+					sessionWrites.insertEntry({ id: "root", parentId: null, type: "custom", customType: "root" }),
+					sessionWrites.insertEntry({ id: "child", parentId: "root", type: "custom", customType: "child" }),
+					sessionWrites.insertEntry({ id: "sibling", parentId: "root", type: "custom", customType: "sibling" }),
+					storedValues.setValue(storedValues.laneLeaf("main"), "child"),
+					storedValues.setValue(storedValues.laneLeaf("review"), "sibling"),
+					storedValues.setValue(storedValues.laneConfig("review"), configuration),
+					storedValues.setValue(storedValues.laneState("review"), {
+						currentOperationId: null,
+						pendingNextRun: [],
+					}),
+				]),
 			);
 
+			const fork = await repo.fork(source.metadata, { id: "fork", scope: "tree" });
+
+			expect((await fork.findEntries({ order: "asc" })).map(({ id }) => id)).toEqual(["root", "child", "sibling"]);
+			expect(await fork.getLeafId()).toBe("child");
+			expect(await fork.view("review").getLeafId()).toBe("sibling");
+			expect((await fork.getValue(storedValues.laneState("review")))?.value).toEqual({
+				currentOperationId: null,
+				pendingNextRun: [],
+			});
+
+			const branchFork = await repo.fork(source.metadata, { id: "branch", entryId: "root" });
+			expect((await branchFork.findEntries({ order: "asc" })).map(({ id }) => id)).toEqual(["root"]);
+			expect(await branchFork.getLeafId()).toBe("root");
+			await Promise.all([source.close(), fork.close(), branchFork.close()]);
+		});
+	});
+
+	it("forks one branch with scoped values and a zero ledger", async () => {
+		await withTempDir(async (directory) => {
+			const repo = new SqliteSessionRepo({
+				directory,
+				databaseFactory: createNodeSqliteFactory(),
+				now: () => 1_700_000_000_000,
+			});
+			const source = await repo.create({ id: "source" });
+			const applicationValue = storedValues.value<string>("test.application.value");
+			const applicationList = storedValues.list<string>("test.application.list");
+			await source.mutate("main", (mutator) =>
+				mutator.commit([
+					sessionWrites.insertEntry({ id: "root", parentId: null, type: "custom", customType: "root" }),
+					sessionWrites.insertEntry({
+						id: "child",
+						parentId: "root",
+						type: "message",
+						message: { role: "user", content: "child", timestamp: 1 },
+					}),
+					sessionWrites.insertEntry({ id: "sibling", parentId: "root", type: "custom", customType: "sibling" }),
+					storedValues.setValue(storedValues.laneLeaf("main"), "child"),
+					storedValues.setValue(storedValues.sessionName, "source name"),
+					storedValues.setValue(storedValues.entryLabel("root"), "root label"),
+					storedValues.setValue(storedValues.entryLabel("sibling"), "sibling label"),
+					storedValues.setValue(applicationValue, "excluded"),
+					storedValues.appendList(applicationList, "excluded"),
+					storedValues.setValue(storedValues.laneLastResult("main"), {
+						operationId: "previous",
+						kind: "navigation",
+						leafId: "child",
+						oldLeafId: "root",
+						outcome: "completed",
+					}),
+					storedValues.setValue(storedValues.pendingEntry("pending"), {
+						type: "custom",
+						customType: "pending",
+					}),
+					storedValues.setValue(storedValues.operationToolMemo("operation", "invocation", "memo"), true),
+					sessionWrites.insertUsage({
+						id: "usage",
+						adjustment: false,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+					}),
+				]),
+			);
+
+			await source.close();
 			const fork = await repo.fork(source.metadata, { id: "fork", entryId: "child" });
 
 			expect((await fork.findEntries({ order: "asc" })).map((entry) => entry.id)).toEqual(["root", "child"]);
@@ -280,6 +344,11 @@ describe("SqliteSessionRepo", () => {
 			expect(await fork.getName()).toBe("source name");
 			expect(await fork.getLabel("root")).toBe("root label");
 			expect(await fork.getLabel("sibling")).toBeUndefined();
+			expect(await fork.getValue(applicationValue)).toBeUndefined();
+			expect(await fork.readList(applicationList)).toEqual([]);
+			expect(await fork.getValue(storedValues.laneLastResult("main"))).toBeUndefined();
+			expect(await fork.getValue(storedValues.pendingEntry("pending"))).toBeUndefined();
+			expect(await fork.getValue(storedValues.operationToolMemo("operation", "invocation", "memo"))).toBeUndefined();
 			await withDb(fork.metadata.path, (db) => {
 				expect(sql`SELECT COUNT(*) AS count FROM usage_ledger`.get<{ count: number }>(db)).toEqual({ count: 0 });
 			});
