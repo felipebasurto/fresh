@@ -109,6 +109,24 @@ describe("SqliteSessionRepo", () => {
 		});
 	});
 
+	it("skips corrupt and incompatible files during list discovery", async () => {
+		await withTempDir(async (directory) => {
+			const repo = new SqliteSessionRepo({
+				directory,
+				databaseFactory: createNodeSqliteFactory(),
+				now: () => 1,
+			});
+			const session = await repo.create({ id: "session" });
+			await session.close();
+			await writeFile(join(directory, "corrupt.sqlite"), "not a sqlite database");
+			await withDb(session.metadata.path, (db) => {
+				sql`UPDATE session SET storage_version = ${999}`.run(db);
+			});
+
+			expect(await repo.list()).toEqual([]);
+		});
+	});
+
 	it("does not remove a pre-existing non-database file when create fails", async () => {
 		await withTempDir(async (directory) => {
 			const repo = new SqliteSessionRepo({
@@ -121,6 +139,33 @@ describe("SqliteSessionRepo", () => {
 
 			await expect(repo.create({ id: "session" })).rejects.toThrow();
 			await expect(access(path)).resolves.toBeUndefined();
+		});
+	});
+
+	it("rejects delete for missing files and live external writer leases", async () => {
+		await withTempDir(async (directory) => {
+			const repo = new SqliteSessionRepo({
+				directory,
+				databaseFactory: createNodeSqliteFactory(),
+				now: () => 1,
+			});
+			const session = await repo.create({ id: "session" });
+			const { metadata } = session;
+			await session.close();
+
+			await withDb(metadata.path, (db) => {
+				sql`INSERT INTO writer_lease (owner_id, fence, expires_at_ms) VALUES (${"external"}, ${1}, ${1_000})`.run(
+					db,
+				);
+			});
+			await expect(repo.delete(metadata)).rejects.toThrow("already claimed");
+			await withDb(metadata.path, (db) => {
+				sql`DELETE FROM writer_lease`.run(db);
+			});
+
+			await expect(repo.delete({ ...metadata, path: join(directory, "missing.sqlite") })).rejects.toThrow();
+			await repo.delete(metadata);
+			await expect(access(metadata.path)).rejects.toThrow();
 		});
 	});
 

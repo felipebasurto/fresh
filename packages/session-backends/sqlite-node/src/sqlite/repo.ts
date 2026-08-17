@@ -20,7 +20,13 @@ import {
 	readSingleSessionRow,
 	type SqliteSessionMetadata,
 } from "./session/session-row.ts";
-import { claimWriterLease, releaseWriterLease, renewWriterLease, type WriterLeaseRow } from "./session/writer-lease.ts";
+import {
+	claimWriterLease,
+	readWriterLease,
+	releaseWriterLease,
+	renewWriterLease,
+	type WriterLeaseRow,
+} from "./session/writer-lease.ts";
 import { SqliteOpenSession } from "./session.ts";
 import { sql } from "./sql.ts";
 import { SqliteStorage, type SqliteStorageSnapshot } from "./storage.ts";
@@ -355,30 +361,43 @@ export class SqliteSessionRepo {
 	}
 
 	async list(): Promise<SqliteSessionMetadata[]> {
-		// TODO: Decide whether incompatible/corrupt session files should be skipped or reported instead of failing the whole list.
 		await mkdir(this.directory, { recursive: true });
 		const names = await readdir(this.directory);
 		const sessions: SqliteSessionMetadata[] = [];
 		for (const name of names) {
 			if (!name.endsWith(SQLITE_SESSION_EXTENSION)) continue;
 			const path = join(this.directory, name);
-			const db = await this.databaseFactory.open(path);
+			let db: SqliteDatabase | undefined;
 			try {
+				db = await this.databaseFactory.open(path);
 				configureConnection(db);
 				sessions.push(
 					metadataFromSessionRow(path, sessionIdFromPath(path), readSingleSessionRow(db), SQLITE_STORAGE_VERSION),
 				);
+			} catch {
+				// Discovery is best-effort: corrupt files, incompatible versions, and
+				// unrelated *.sqlite files are reported when explicitly opened.
 			} finally {
-				db.close();
+				db?.close();
 			}
 		}
 		return sessions.sort((left, right) => right.createdAt - left.createdAt);
 	}
 
 	async delete(metadata: SqliteSessionMetadata): Promise<void> {
-		// TODO: Reject missing files and live external writer leases before unlinking once repo/session ownership is wired.
 		if (this.pendingIds.has(metadata.id)) throw new Error(`Session is open: ${metadata.id}`);
-		await rm(metadata.path, { force: true });
+		await access(metadata.path);
+		const db = await this.databaseFactory.open(metadata.path);
+		try {
+			configureConnection(db);
+			const lease = readWriterLease(db);
+			if (lease !== undefined && lease.expires_at_ms > this.now()) {
+				throw new Error(`SQLite session is already claimed by writer ${lease.owner_id}`);
+			}
+		} finally {
+			db.close();
+		}
+		await removeSessionFiles(metadata.path, { force: false });
 	}
 
 	async fork(source: SqliteSessionMetadata, options: ForkOptions): Promise<SqliteOpenSession> {

@@ -8,11 +8,15 @@ export interface WriterLeaseRow {
 	expires_at_ms: number;
 }
 
-export function claimWriterLease(db: SqliteDatabase, ownerId: string, now: number, leaseMs: number): WriterLeaseRow {
+export function readWriterLease(db: SqliteDatabase): WriterLeaseRow | undefined {
 	const rows = sql`SELECT rowid, owner_id, fence, expires_at_ms FROM writer_lease`.all<WriterLeaseRow>(db);
 	if (rows.length > 1) throw new Error(`Expected at most one writer lease row, found ${rows.length}`);
+	return rows[0];
+}
+
+export function claimWriterLease(db: SqliteDatabase, ownerId: string, now: number, leaseMs: number): WriterLeaseRow {
 	const expiresAt = now + leaseMs;
-	const current = rows[0];
+	const current = readWriterLease(db);
 	if (current === undefined) {
 		sql`INSERT INTO writer_lease (owner_id, fence, expires_at_ms) VALUES (${ownerId}, ${1}, ${expiresAt})`.run(db);
 		return { rowid: 1, owner_id: ownerId, fence: 1, expires_at_ms: expiresAt };
