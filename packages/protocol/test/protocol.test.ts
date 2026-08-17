@@ -16,6 +16,7 @@ import {
 	isSupportedProtocolVersion,
 	type JsonValue,
 	JsonValueSchema,
+	type LaneSnapshot,
 	PROTOCOL_VERSION,
 	PromptArgumentsSchema,
 	ProtocolValidationError,
@@ -45,6 +46,16 @@ const metadata = {
 	parentSessionId: "parent-1",
 } as const satisfies SessionMetadata;
 
+const laneSnapshot = {
+	lane: "main",
+	transcript: [],
+	leafId: null,
+	operation: null,
+	queues: { steer: [], followUp: [], nextRun: [] },
+	pendingWrites: [],
+	faulted: false,
+} satisfies LaneSnapshot;
+
 const completedRunResult = {
 	ok: true,
 	value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
@@ -64,6 +75,11 @@ describe("RPC manifest", () => {
 					return { sessionId: call.args[0] };
 				case "prompt":
 					return completedRunResult;
+				case "watch":
+					return { watchId: "watch-1", snapshot: laneSnapshot };
+				case "startWatch":
+				case "stopWatch":
+					return { watchId: call.args[1] };
 			}
 		});
 
@@ -71,11 +87,17 @@ describe("RPC manifest", () => {
 		await expect(client.create({ cwd: "/workspace" })).resolves.toEqual(metadata);
 		await expect(client.attach("session-1")).resolves.toEqual({ sessionId: "session-1" });
 		await expect(client.prompt("session-1", ["Hello"])).resolves.toEqual(completedRunResult);
+		await expect(client.watch("session-1")).resolves.toEqual({ watchId: "watch-1", snapshot: laneSnapshot });
+		await expect(client.startWatch("session-1", "watch-1")).resolves.toEqual({ watchId: "watch-1" });
+		await expect(client.stopWatch("session-1", "watch-1")).resolves.toEqual({ watchId: "watch-1" });
 		expect(calls).toEqual([
 			{ method: "list", args: [] },
 			{ method: "create", args: [{ cwd: "/workspace" }] },
 			{ method: "attach", args: ["session-1"] },
 			{ method: "prompt", args: ["session-1", ["Hello"]] },
+			{ method: "watch", args: ["session-1"] },
+			{ method: "startWatch", args: ["session-1", "watch-1"] },
+			{ method: "stopWatch", args: ["session-1", "watch-1"] },
 		]);
 	});
 
@@ -85,6 +107,9 @@ describe("RPC manifest", () => {
 			create: () => metadata,
 			attach: (_context, sessionId) => ({ sessionId }),
 			prompt: () => completedRunResult,
+			watch: () => ({ watchId: "watch-1", snapshot: laneSnapshot }),
+			startWatch: (_context, _sessionId, watchId) => ({ watchId }),
+			stopWatch: (_context, _sessionId, watchId) => ({ watchId }),
 		});
 		await expect(dispatch({ method: "list", args: [] }, undefined)).resolves.toEqual([metadata]);
 		await expect(dispatch({ method: "create", args: [{ cwd: "/workspace" }] }, undefined)).resolves.toEqual(metadata);
@@ -94,6 +119,10 @@ describe("RPC manifest", () => {
 		await expect(dispatch({ method: "prompt", args: ["session-1", ["Hello"]] }, undefined)).resolves.toEqual(
 			completedRunResult,
 		);
+		await expect(dispatch({ method: "watch", args: ["session-1"] }, undefined)).resolves.toEqual({
+			watchId: "watch-1",
+			snapshot: laneSnapshot,
+		});
 		await expect(dispatch({ method: "attach", args: [] } as never, undefined)).rejects.toThrow(/Invalid arguments/);
 		await expect(dispatch({ method: "prompt", args: ["session-1", []] } as never, undefined)).rejects.toThrow(
 			/Invalid arguments/,
@@ -109,6 +138,9 @@ describe("RPC manifest", () => {
 			create: () => metadata,
 			attach: (_context: undefined, sessionId: string) => ({ sessionId }),
 			prompt: () => completedRunResult,
+			watch: () => ({ watchId: "watch-1", snapshot: laneSnapshot }),
+			startWatch: (_context: undefined, _sessionId: string, watchId: string) => ({ watchId }),
+			stopWatch: (_context: undefined, _sessionId: string, watchId: string) => ({ watchId }),
 		} as never);
 		await expect(dispatch({ method: "list", args: [] }, undefined)).rejects.toThrow(/Invalid result.*list/);
 
@@ -289,6 +321,51 @@ describe("protocol validation", () => {
 		);
 	});
 
+	test("validates lane watch snapshots and events", () => {
+		const snapshotMessage: ServerMessage = {
+			type: "response",
+			id: "request-1",
+			ok: true,
+			result: { watchId: "watch-1", snapshot: laneSnapshot },
+		};
+		const eventMessage: ServerMessage = {
+			type: "event",
+			watchId: "watch-1",
+			event: { type: "run_start", lane: "main", runId: "run-1" },
+		};
+		expect(parseServerMessage(snapshotMessage)).toEqual(snapshotMessage);
+		expect(parseServerMessage(eventMessage)).toEqual(eventMessage);
+		expect(
+			parseServerMessage({
+				type: "event",
+				watchId: "watch-1",
+				event: {
+					type: "message_update",
+					lane: "main",
+					runId: "run-1",
+					frame: { type: "text_delta", contentIndex: 0, delta: "hello" },
+				},
+			}),
+		).toMatchObject({ event: { frame: { delta: "hello" } } });
+		expect(() => parseServerMessage({ ...eventMessage, event: { ...eventMessage.event, unknown: true } })).toThrow(
+			ProtocolValidationError,
+		);
+		expect(() =>
+			parseServerMessage({
+				type: "event",
+				watchId: "watch-1",
+				event: {
+					type: "run_end",
+					lane: "main",
+					runId: "run-1",
+					leafId: "leaf-1",
+					outcome: "completed",
+					finalEntryId: "entry-1",
+				},
+			}),
+		).toThrow(ProtocolValidationError);
+	});
+
 	test("validates attach results", () => {
 		const message: ServerMessage = {
 			type: "response",
@@ -407,6 +484,9 @@ describe("protocol validation", () => {
 		"session_not_found",
 		"session_in_use",
 		"session_not_attached",
+		"watch_not_found",
+		"watch_in_use",
+		"not_supported",
 		"server_draining",
 		"internal_error",
 	] as const)("accepts the %s error code", (code) => {

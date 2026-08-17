@@ -21,12 +21,23 @@ const client = await PiClient.connect({
 });
 const session = await client.createSession({ cwd: "/workspace" });
 const attachment = await client.attachSession(session.id);
+const watch = await client.watchSession(attachment.sessionId);
+await watch.start((event) => {
+  if (event.type === "message_update" && event.frame.type === "text_delta") {
+    process.stdout.write(event.frame.delta);
+  }
+});
 const result = await client.promptSession(attachment.sessionId, "Summarize this session");
+await watch.dispose();
 ```
 
 The client verifies that the physical endpoint reports the expected logical `serverId`. Every Session request carries that ID again so the final server can reject misdelivery.
 
-`createSession()` creates durable Session metadata without attaching or opening a Harness; pass `id` to request an exact ID or omit it to generate one. `attachSession()` returns only `{ sessionId }`; the attachment is exclusive to that client connection. `promptSession()` accepts the protocol's serializable Harness prompt overloads and returns a structural `RunResult`. On disconnect or disposal, pending prompts reject locally, but accepted work may still complete remotely before the attachment is released. The client never reconnects or replays requests automatically. After disconnection, call `reconnect()` and explicitly repeat only operations known to be safe.
+`createSession()` creates durable Session metadata without attaching or opening a Harness; pass `id` to request an exact ID or omit it to generate one. `attachSession()` returns only `{ sessionId }`; the attachment is exclusive to that client connection. `promptSession()` accepts the protocol's serializable Harness prompt overloads and returns a structural `RunResult`.
+
+`watchSession()` creates a main-lane watch and returns its authoritative snapshot without starting event delivery. Install the listener with `await watch.start(listener)`; this then flushes events buffered after the snapshot and continues with live events while `promptSession()` is pending. `watch.dispose()` stops server delivery and waits for already-received listener work. A disconnected watch is stale and cannot be reused after reconnection.
+
+On disconnect or disposal, pending prompts reject locally, but accepted work may still complete remotely before the attachment is released. The client never reconnects or replays requests automatically. After disconnection, call `reconnect()` and explicitly repeat only operations known to be safe.
 
 The experimental local coordinator only provides a stable endpoint and relays traffic. Replaceable server processes own session and worker lifecycle outside the public client protocol.
 

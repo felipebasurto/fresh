@@ -1,5 +1,7 @@
 import {
 	Closed,
+	type HarnessEvent,
+	type LaneSnapshot as HarnessLaneSnapshot,
 	type RunResult as HarnessRunResult,
 	InvalidMessage,
 	LaneBusy,
@@ -8,10 +10,21 @@ import {
 	UnknownTemplate,
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { type PromptArguments, type PromptMessage, RunResultSchema } from "@earendil-works/pi-protocol";
+import {
+	LaneEventSchema,
+	LaneSnapshotSchema,
+	type PromptArguments,
+	type PromptMessage,
+	RunResultSchema,
+} from "@earendil-works/pi-protocol";
 import { Check } from "typebox/value";
 import { describe, expect, test } from "vitest";
-import { toHarnessPromptArguments, toWireRunResult } from "../src/experimental/harness-wire-adapter.ts";
+import {
+	toHarnessPromptArguments,
+	toWireLaneEvent,
+	toWireLaneSnapshot,
+	toWireRunResult,
+} from "../src/experimental/harness-wire-adapter.ts";
 
 const usage = {
 	input: 1,
@@ -211,6 +224,53 @@ describe("Harness wire adapter", () => {
 		expect(Check(RunResultSchema, wire)).toBe(true);
 		expect(wire).toMatchObject({ ok: false, error: { _tag: error._tag, message: error.message } });
 		expect(wire.ok ? undefined : wire.error).not.toBeInstanceOf(Error);
+	});
+
+	test("projects lane snapshots through the closed wire schema", () => {
+		const snapshot: HarnessLaneSnapshot = {
+			lane: "main",
+			transcript: [
+				{
+					id: "entry-1",
+					parentId: null,
+					seq: 1,
+					timestamp: 1,
+					type: "message",
+					message: { role: "user", content: "hello", timestamp: 1 },
+				},
+			],
+			leafId: "entry-1",
+			operation: null,
+			queues: { steer: [], followUp: [], nextRun: [] },
+			pendingWrites: [],
+			faulted: false,
+		};
+		const wire = toWireLaneSnapshot(snapshot);
+		expect(Check(LaneSnapshotSchema, wire)).toBe(true);
+		expect(wire).toMatchObject({ lane: "main", transcript: [{ id: "entry-1" }] });
+	});
+
+	test("projects assistant updates as compact frames", () => {
+		const partial: AssistantMessage = {
+			...finalMessage,
+			content: [{ type: "text", text: "answer" }],
+			stopReason: "pending",
+		};
+		const event: HarnessEvent = {
+			type: "message_update",
+			lane: "main",
+			runId: "run-1",
+			message: partial,
+			event: { type: "text_delta", contentIndex: 0, delta: "swer", partial },
+		};
+		const wire = toWireLaneEvent(event);
+		expect(Check(LaneEventSchema, wire)).toBe(true);
+		expect(wire).toEqual({
+			type: "message_update",
+			lane: "main",
+			runId: "run-1",
+			frame: { type: "text_delta", contentIndex: 0, delta: "swer" },
+		});
 	});
 
 	test("rejects non-JSON values in Harness output", () => {

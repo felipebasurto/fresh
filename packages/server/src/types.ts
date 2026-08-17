@@ -1,5 +1,11 @@
 import type { SessionMetadata } from "@earendil-works/pi-agent-core";
-import type { PromptArguments, RunResult, SessionCreateOptions } from "@earendil-works/pi-protocol";
+import type {
+	LaneEvent,
+	LaneSnapshot,
+	PromptArguments,
+	RunResult,
+	SessionCreateOptions,
+} from "@earendil-works/pi-protocol";
 import type { PiServerListener } from "./listener.ts";
 
 export interface PiServerOptions {
@@ -19,12 +25,21 @@ export interface HostedHarnessAttachment {
 	release(): MaybePromise<void>;
 }
 
+/** Snapshot-first observation handle supplied by a hosted Harness adapter. */
+export interface HostedHarnessWatch {
+	readonly snapshot: LaneSnapshot;
+	start(listener: (event: LaneEvent) => MaybePromise<void>): MaybePromise<void>;
+	unsubscribe(): MaybePromise<void>;
+}
+
 /** A process-safe handle for the hosted Harness operations exposed by this server. */
 export interface HostedHarnessHandle {
 	/** Acquire the Session for one client connection. Sessions permit only one attachment at a time. */
 	attachClient?(): MaybePromise<HostedHarnessAttachment>;
 	/** Execute one serializable prompt against the hosted Harness. */
 	prompt(prompt: PromptArguments): Promise<RunResult>;
+	/** Observe the attached main lane when supported by this host. */
+	watch?(): Promise<HostedHarnessWatch>;
 	/** Resolves with an error for unexpected termination, or undefined after an expected close. */
 	readonly terminated?: Promise<Error | undefined>;
 	close(): Promise<void>;

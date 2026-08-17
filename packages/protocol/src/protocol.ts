@@ -1,6 +1,6 @@
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
-import { PromptArgumentsSchema, RunResultSchema } from "./harness.ts";
+import { LaneEventSchema, LaneSnapshotSchema, PromptArgumentsSchema, RunResultSchema } from "./harness.ts";
 import {
 	createRpcCallSchema,
 	createRpcResultSchema,
@@ -65,6 +65,18 @@ export const ServiceRpc = defineRpc({
 		args: Type.Tuple([SessionIdSchema, PromptArgumentsSchema]),
 		result: RunResultSchema,
 	},
+	watch: {
+		args: Type.Tuple([SessionIdSchema]),
+		result: StrictObject({ watchId: IdSchema, snapshot: LaneSnapshotSchema }),
+	},
+	startWatch: {
+		args: Type.Tuple([SessionIdSchema, IdSchema]),
+		result: StrictObject({ watchId: IdSchema }),
+	},
+	stopWatch: {
+		args: Type.Tuple([SessionIdSchema, IdSchema]),
+		result: StrictObject({ watchId: IdSchema }),
+	},
 });
 export type ServiceRpcManifest = typeof ServiceRpc;
 export type ServiceRpcMethod = RpcMethodName<ServiceRpcManifest>;
@@ -87,6 +99,9 @@ export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("session_ambiguous"),
 	Type.Literal("session_in_use"),
 	Type.Literal("session_not_attached"),
+	Type.Literal("watch_not_found"),
+	Type.Literal("watch_in_use"),
+	Type.Literal("not_supported"),
 	Type.Literal("server_draining"),
 	Type.Literal("invalid_request"),
 	Type.Literal("internal_error"),
@@ -138,8 +153,19 @@ export const ResponseEnvelopeSchema = Type.Union([
 		error: ProtocolErrorSchema,
 	}),
 ]);
-export const ServerMessageSchema = Type.Union([ServerHelloSchema, ServerHelloErrorSchema, ResponseEnvelopeSchema]);
+export const EventEnvelopeSchema = StrictObject({
+	type: Type.Literal("event"),
+	watchId: IdSchema,
+	event: LaneEventSchema,
+});
+export const ServerMessageSchema = Type.Union([
+	ServerHelloSchema,
+	ServerHelloErrorSchema,
+	ResponseEnvelopeSchema,
+	EventEnvelopeSchema,
+]);
 export type ServerHello = Static<typeof ServerHelloSchema>;
 export type ServerHelloError = Static<typeof ServerHelloErrorSchema>;
 export type ResponseEnvelope = Static<typeof ResponseEnvelopeSchema>;
+export type EventEnvelope = Static<typeof EventEnvelopeSchema>;
 export type ServerMessage = Static<typeof ServerMessageSchema>;

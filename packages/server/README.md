@@ -2,12 +2,13 @@
 
 Experimental local server for the new durable Session and Agent Harness interfaces.
 
-The current slice supports four client operations:
+The current slice supports Session discovery, creation, exclusive attachment, prompting, and optional main-lane observation. A host that implements `HostedHarnessHandle.watch()` supplies an authoritative snapshot plus buffered events. The server owns the attachment's single watch ID, starts delivery only after the client has received the snapshot, and removes the watch when the connection attachment is released.
 
 - `list` calls the host's Session catalog without opening sessions.
 - `create` asks the host to persist an optional Session ID and working directory without opening a Harness.
 - `attach` finds the requested metadata, passes it to the host, and retains the returned Harness handle in the server.
 - `prompt` executes one serializable Harness prompt through the requesting client's attached handle.
+- `watch`, `startWatch`, and `stopWatch` provide snapshot-first lane observation when supported by the host.
 
 A Session permits one attached client connection at a time. Repeating `attach` from that connection is idempotent; another connection receives `session_in_use`. Prompting requires that exact connection to own the targeted attachment. Losing the connection rejects the local response but releases its attachment lease only after accepted prompts settle. The host decides when zero client demand and Harness activity permit worker retirement. Server shutdown closes every hosted Harness, releasing its Session writer ownership.
 

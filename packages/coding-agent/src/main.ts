@@ -607,13 +607,21 @@ async function runExperimentalServerCommand(command: ServerCommand): Promise<voi
 }
 
 async function runClientCommand(command: ClientCommand): Promise<void> {
-	const result = await runClient(command);
+	let streamedText = false;
+	const result = await runClient(command, {
+		onEvent(event) {
+			if (event.type !== "message_update" || event.frame.type !== "text_delta") return;
+			streamedText = true;
+			process.stdout.write(event.frame.delta);
+		},
+	});
 	if (result.kind === "attached") {
 		console.log(`${result.serverId}\t${result.sessionId}\tattached`);
 		return;
 	}
 	if (result.kind === "prompted") {
-		console.log(result.text);
+		if (streamedText) process.stdout.write("\n");
+		else console.log(result.text);
 		return;
 	}
 	for (const session of result.sessions) console.log(`${session.serverId}\t${session.sessionId}`);

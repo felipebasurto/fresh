@@ -163,6 +163,41 @@ describe("AgentHarness runtime shell", () => {
 		expect((await harness.lanes()).map((lane) => lane.name).sort()).toEqual(["main", "worker"]);
 	});
 
+	it("captures a lane snapshot and streams later lane events", async () => {
+		const { harness, session } = await createFixture({ drive: "manual" });
+		const current = await installCheckpointRun(session);
+		const watch = await harness.watch();
+		expect(watch.snapshot).toMatchObject({
+			lane: "main",
+			leafId: current.entryId,
+			transcript: [{ id: current.entryId, message: { role: "user", content: "hello" } }],
+			operation: { id: current.operationId, kind: "run", status: "suspended", runningTools: [] },
+			queues: { steer: [], followUp: [], nextRun: [] },
+			pendingWrites: [],
+			faulted: false,
+		});
+		const events: string[] = [];
+		watch.start((event) => {
+			events.push(event.type);
+		});
+		watch.unsubscribe();
+		expect(events).toEqual([]);
+	});
+
+	it("buffers watch events emitted after an idle snapshot", async () => {
+		const { harness } = await createFixture({ drive: "manual" });
+		const watch = await harness.watch();
+		expect(watch.snapshot).toMatchObject({ transcript: [], operation: null });
+		const accepted = await harness.accept({ kind: "prompt", prompt: "hello" });
+		expect(accepted.ok).toBe(true);
+		const events: string[] = [];
+		watch.start((event) => {
+			events.push(event.type);
+		});
+		await vi.waitFor(() => expect(events).toEqual(["run_start", "message_start", "message_end", "entry_added"]));
+		watch.unsubscribe();
+	});
+
 	it("fences stale drives and yields before publishing a breakpoint", async () => {
 		const { harness, session } = await createFixture({ drive: "manual" });
 		const current = await installCheckpointRun(session);

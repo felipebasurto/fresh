@@ -2,8 +2,8 @@ import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
-import { createRpcClient } from "@earendil-works/pi-protocol";
-import type { HostedHarnessAttachment, HostedHarnessHandle } from "@earendil-works/pi-server";
+import { createRpcClient, type LaneEvent } from "@earendil-works/pi-protocol";
+import type { HostedHarnessAttachment, HostedHarnessHandle, HostedHarnessWatch } from "@earendil-works/pi-server";
 import { Check } from "typebox/value";
 import type { CoordinatorConnection, CoordinatorConnectionEvent } from "./coordinator.ts";
 import { spawnInternalProcess } from "./process.ts";
@@ -48,6 +48,13 @@ interface PendingDemand {
 	reject(error: Error): void;
 }
 
+interface WorkerLaneWatch {
+	readonly worker: WorkerRecord;
+	readonly scope: WorkerOperationScope;
+	listener?: (event: LaneEvent) => void | Promise<void>;
+	deliveryTail: Promise<void>;
+}
+
 interface PendingWorkerOperation {
 	readonly worker: WorkerRecord;
 	readonly scope: WorkerOperationScope;
@@ -80,6 +87,7 @@ export class SessionWorkerManager {
 	readonly #pending = new Map<string, PendingLaunch>();
 	readonly #pendingDemand = new Map<string, PendingDemand>();
 	readonly #pendingOperations = new Map<string, PendingWorkerOperation>();
+	readonly #laneWatches = new Map<string, WorkerLaneWatch>();
 	readonly #removeListener: () => void;
 	readonly #onWorkerCountChanged: ((count: number) => void) | undefined;
 	#discoveryPeers?: Set<string>;
@@ -146,6 +154,7 @@ export class SessionWorkerManager {
 			terminated: worker.terminated,
 			attachClient: () => this.#attachClient(worker),
 			prompt: (prompt) => operations.prompt(prompt),
+			watch: () => this.#createLaneWatch(worker, operations),
 			close: () => this.#stopWorker(worker),
 		};
 	}
@@ -183,6 +192,47 @@ export class SessionWorkerManager {
 		};
 	}
 
+	async #createLaneWatch(
+		worker: WorkerRecord,
+		operations: ReturnType<typeof createRpcClient<typeof SessionWorkerOperations>>,
+	): Promise<HostedHarnessWatch> {
+		const scope = this.#operationScope(worker);
+		const { watchId, snapshot } = await operations.watch();
+		if (this.#laneWatches.has(watchId)) {
+			await operations.stopWatch(watchId).catch(() => {});
+			throw new Error("Session worker reused an active lane watch ID");
+		}
+		const watch: WorkerLaneWatch = { worker, scope, deliveryTail: Promise.resolve() };
+		this.#laneWatches.set(watchId, watch);
+		let state: "ready" | "started" | "unsubscribed" = "ready";
+		return {
+			snapshot,
+			start: async (listener) => {
+				if (state !== "ready" || this.#laneWatches.get(watchId) !== watch) {
+					throw new Error("Session worker lane watch may be started only once");
+				}
+				state = "started";
+				watch.listener = listener;
+				try {
+					await operations.startWatch(watchId);
+				} catch (error) {
+					this.#laneWatches.delete(watchId);
+					delete watch.listener;
+					state = "unsubscribed";
+					await operations.stopWatch(watchId).catch(() => {});
+					throw error;
+				}
+			},
+			unsubscribe: async () => {
+				if (state === "unsubscribed") return;
+				state = "unsubscribed";
+				if (this.#laneWatches.get(watchId) === watch) this.#laneWatches.delete(watchId);
+				delete watch.listener;
+				await operations.stopWatch(watchId);
+			},
+		};
+	}
+
 	async #applyDemand(worker: WorkerRecord, attachmentId: string | null, compensateOnTimeout = true): Promise<void> {
 		if (worker.stopping || this.#workersByPeer.get(worker.peerId) !== worker) {
 			throw new Error("Experimental Session worker is stopping");
@@ -216,17 +266,13 @@ export class SessionWorkerManager {
 
 	/** Worker operations have no wall-clock timeout: completion, disconnect, replacement, or shutdown settles them. */
 	#invoke(worker: WorkerRecord, call: SessionWorkerOperationCall): Promise<unknown> {
-		if (this.#detached || this.#shuttingDown || worker.stopping) {
-			return Promise.reject(new Error("Experimental Session worker is stopping"));
-		}
-		if (this.#workersByPeer.get(worker.peerId) !== worker || worker.attachmentId === undefined) {
-			return Promise.reject(new Error("Experimental Session worker has no active attachment"));
+		let scope: WorkerOperationScope;
+		try {
+			scope = this.#operationScope(worker);
+		} catch (error) {
+			return Promise.reject(error);
 		}
 		const requestId = randomUUID();
-		const scope: WorkerOperationScope = {
-			serverConnectionId: this.#coordinator.serverConnectionId,
-			attachmentId: worker.attachmentId,
-		};
 		let resolve!: (result: unknown) => void;
 		let reject!: (error: Error) => void;
 		const result = new Promise<unknown>((resolvePromise, rejectPromise) => {
@@ -240,6 +286,19 @@ export class SessionWorkerManager {
 				this.#rejectOperation(requestId, error instanceof Error ? error : new Error(String(error))),
 			);
 		return result;
+	}
+
+	#operationScope(worker: WorkerRecord): WorkerOperationScope {
+		if (this.#detached || this.#shuttingDown || worker.stopping) {
+			throw new Error("Experimental Session worker is stopping");
+		}
+		if (this.#workersByPeer.get(worker.peerId) !== worker || worker.attachmentId === undefined) {
+			throw new Error("Experimental Session worker has no active attachment");
+		}
+		return {
+			serverConnectionId: this.#coordinator.serverConnectionId,
+			attachmentId: worker.attachmentId,
+		};
 	}
 
 	#stopWorker(worker: WorkerRecord): Promise<void> {
@@ -420,6 +479,17 @@ export class SessionWorkerManager {
 			this.#handleOperationResponse(event.from, message.token, message.sessionKey, message.response);
 			return;
 		}
+		if (message.type === "lane_event") {
+			this.#handleLaneEvent(
+				event.from,
+				message.token,
+				message.sessionKey,
+				message.scope,
+				message.watchId,
+				message.event,
+			);
+			return;
+		}
 		this.#recordReadyWorker(event.from, message);
 	}
 
@@ -450,6 +520,30 @@ export class SessionWorkerManager {
 		} else {
 			pending.resolve(response.result);
 		}
+	}
+
+	#handleLaneEvent(
+		peerId: string,
+		token: string,
+		sessionKey: string,
+		scope: WorkerOperationScope,
+		watchId: string,
+		event: LaneEvent,
+	): void {
+		const watch = this.#laneWatches.get(watchId);
+		const listener = watch?.listener;
+		if (
+			watch === undefined ||
+			listener === undefined ||
+			watch.worker.peerId !== peerId ||
+			watch.worker.token !== token ||
+			watch.worker.metadata.path !== sessionKey ||
+			watch.scope.serverConnectionId !== scope.serverConnectionId ||
+			watch.scope.attachmentId !== scope.attachmentId
+		) {
+			return;
+		}
+		watch.deliveryTail = watch.deliveryTail.then(() => listener(event)).catch(() => {});
 	}
 
 	#recordReadyWorker(peerId: string, message: Extract<SessionWorkerEvent, { type: "worker_ready" }>): void {
@@ -584,6 +678,9 @@ export class SessionWorkerManager {
 	#removeWorker(worker: WorkerRecord, error: Error | undefined): void {
 		if (this.#workersByPeer.get(worker.peerId) !== worker) return;
 		this.#rejectWorkerOperations(worker, new Error("Session worker disconnected during an operation"));
+		for (const [watchId, watch] of this.#laneWatches) {
+			if (watch.worker === worker) this.#laneWatches.delete(watchId);
+		}
 		for (const pending of [...this.#pendingDemand.values()]) {
 			if (pending.worker === worker) {
 				this.#rejectDemand(pending.requestId, new Error("Session worker disconnected during demand update"));
@@ -620,6 +717,7 @@ export class SessionWorkerManager {
 			pending.resolve();
 		}
 		this.#pending.clear();
+		this.#laneWatches.clear();
 		this.#workersByPeer.clear();
 		this.#workersBySession.clear();
 		this.workerPids.clear();

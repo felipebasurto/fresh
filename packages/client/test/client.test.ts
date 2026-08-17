@@ -154,6 +154,78 @@ describe("PiClient service operations", () => {
 		await client.dispose();
 	});
 
+	test("starts lane event delivery only after receiving the authoritative snapshot", async () => {
+		const server = new MemoryByteServer();
+		const client = await connectClient(server);
+		const opening = client.watchSession("session-1");
+		await server.waitForMessages(2);
+		expect(server.messages[1]).toMatchObject({ call: { method: "watch", args: ["session-1"] } });
+		server.send({
+			type: "response",
+			id: "request-1",
+			ok: true,
+			result: {
+				watchId: "watch-1",
+				snapshot: {
+					lane: "main",
+					transcript: [],
+					leafId: null,
+					operation: null,
+					queues: { steer: [], followUp: [], nextRun: [] },
+					pendingWrites: [],
+					faulted: false,
+				},
+			},
+		});
+		const watch = await opening;
+		expect(watch.snapshot).toMatchObject({ lane: "main", transcript: [] });
+
+		const events: string[] = [];
+		let releaseEvent!: () => void;
+		const eventGate = new Promise<void>((resolve) => {
+			releaseEvent = resolve;
+		});
+		const starting = watch.start(async (event) => {
+			await eventGate;
+			events.push(event.type);
+		});
+		await server.waitForMessages(3);
+		expect(server.messages[2]).toMatchObject({
+			call: { method: "startWatch", args: ["session-1", "watch-1"] },
+		});
+		server.send({
+			type: "event",
+			watchId: "watch-1",
+			event: { type: "run_start", lane: "main", runId: "run-1" },
+		});
+		await Promise.resolve();
+		expect(events).toEqual([]);
+		server.send({ type: "response", id: "request-2", ok: true, result: { watchId: "watch-1" } });
+		await starting;
+
+		let disposed = false;
+		const disposing = watch.dispose().then(() => {
+			disposed = true;
+		});
+		await server.waitForMessages(4);
+		expect(server.messages[3]).toMatchObject({
+			call: { method: "stopWatch", args: ["session-1", "watch-1"] },
+		});
+		server.send({ type: "response", id: "request-3", ok: true, result: { watchId: "watch-1" } });
+		await Promise.resolve();
+		expect(disposed).toBe(false);
+		releaseEvent();
+		await disposing;
+		expect(events).toEqual(["run_start"]);
+		server.send({
+			type: "event",
+			watchId: "watch-1",
+			event: { type: "run_resume", lane: "main", runId: "run-1" },
+		});
+		expect(events).toEqual(["run_start"]);
+		await client.dispose();
+	});
+
 	test("correlates out-of-order responses", async () => {
 		const server = new MemoryByteServer();
 		const client = await connectClient(server);

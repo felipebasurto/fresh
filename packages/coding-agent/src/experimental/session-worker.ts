@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,8 @@ import {
 	createRpcDispatcher,
 	createRpcResultSchema,
 	defineRpc,
+	LaneEventSchema,
+	LaneSnapshotSchema,
 	PromptArgumentsSchema,
 	type RpcCall,
 	type RpcResultUnion,
@@ -28,7 +31,12 @@ import { Check } from "typebox/value";
 import { findInitialModel, resolveCliModel } from "../core/model-resolver.ts";
 import { ModelRuntime } from "../core/model-runtime.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
-import { toHarnessPromptArguments, toWireRunResult } from "./harness-wire-adapter.ts";
+import {
+	toHarnessPromptArguments,
+	toWireLaneEvent,
+	toWireLaneSnapshot,
+	toWireRunResult,
+} from "./harness-wire-adapter.ts";
 import { consumeInternalProcessRole, encodeControlLine, MAX_CONTROL_LINE_BYTES } from "./process.ts";
 
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
@@ -62,6 +70,18 @@ export const SessionWorkerOperations = defineRpc({
 	prompt: {
 		args: Type.Tuple([PromptArgumentsSchema]),
 		result: RunResultSchema,
+	},
+	watch: {
+		args: Type.Tuple([]),
+		result: StrictObject({ watchId: Type.String({ minLength: 1 }), snapshot: LaneSnapshotSchema }),
+	},
+	startWatch: {
+		args: Type.Tuple([Type.String({ minLength: 1 })]),
+		result: StrictObject({ watchId: Type.String({ minLength: 1 }) }),
+	},
+	stopWatch: {
+		args: Type.Tuple([Type.String({ minLength: 1 })]),
+		result: StrictObject({ watchId: Type.String({ minLength: 1 }) }),
 	},
 });
 export type SessionWorkerOperationCall = RpcCall<typeof SessionWorkerOperations>;
@@ -151,6 +171,14 @@ export const SessionWorkerEventSchema = Type.Union([
 		token: Type.String(),
 		sessionKey: Type.String(),
 		response: WorkerOperationResponseSchema,
+	}),
+	Type.Object({
+		type: Type.Literal("lane_event"),
+		token: Type.String(),
+		sessionKey: Type.String(),
+		scope: WorkerOperationScopeSchema,
+		watchId: Type.String({ minLength: 1 }),
+		event: LaneEventSchema,
 	}),
 ]);
 export type SessionWorkerEvent = Static<typeof SessionWorkerEventSchema>;
@@ -420,6 +448,10 @@ function writeJsonLine(socket: Socket, message: unknown): Promise<void> {
 	});
 }
 
+function sameScope(left: WorkerOperationScope, right: WorkerOperationScope): boolean {
+	return left.serverConnectionId === right.serverConnectionId && left.attachmentId === right.attachmentId;
+}
+
 function lifecycleDelay(name: string, fallback: number): number {
 	const value = process.env[name];
 	if (value === undefined) return fallback;
@@ -496,12 +528,24 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 		throw error;
 	}
 
+	const laneWatches = new Map<
+		string,
+		{ readonly scope: WorkerOperationScope; readonly handle: Awaited<ReturnType<AgentHarnessInstance["watch"]>> }
+	>();
+	const removeLaneWatches = (matches: (scope: WorkerOperationScope) => boolean): void => {
+		for (const [watchId, watch] of laneWatches) {
+			if (!matches(watch.scope)) continue;
+			watch.handle.unsubscribe();
+			laneWatches.delete(watchId);
+		}
+	};
 	let lifecycle: WorkerLifecycle | undefined;
 	let removeLifecycleListeners: (() => void)[] = [];
 	let closing: Promise<void> | undefined;
 	const close = (): Promise<void> => {
 		if (closing) return closing;
 		lifecycle?.close();
+		removeLaneWatches(() => true);
 		for (const remove of removeLifecycleListeners) remove();
 		removeLifecycleListeners = [];
 		closing = closeResources({ harness, repo, executionEnv, releaseOwnership });
@@ -550,18 +594,41 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 	];
 
 	const dispatchWorkerOperation = createRpcDispatcher(SessionWorkerOperations, {
-		prompt: async (_context, prompt) => {
+		prompt: async (_scope: WorkerOperationScope, prompt) => {
 			const args = toHarnessPromptArguments(prompt);
 			const result =
 				typeof args[0] === "string" ? await harness.prompt(args[0], args[1]) : await harness.prompt(args[0]);
 			return toWireRunResult(result);
+		},
+		watch: async (scope: WorkerOperationScope, ..._args: never[]) => {
+			const handle = await harness.watch();
+			const watchId = randomUUID();
+			laneWatches.set(watchId, { scope, handle });
+			return { watchId, snapshot: toWireLaneSnapshot(handle.snapshot) };
+		},
+		startWatch: async (scope: WorkerOperationScope, watchId) => {
+			const watch = laneWatches.get(watchId);
+			if (!watch || !sameScope(watch.scope, scope)) throw new Error("Session worker lane watch was not found");
+			watch.handle.start(async (event) => {
+				const wireEvent = toWireLaneEvent(event);
+				if (wireEvent === undefined) return;
+				await control.send({ type: "lane_event", token, sessionKey, scope, watchId, event: wireEvent });
+			});
+			return { watchId };
+		},
+		stopWatch: async (scope: WorkerOperationScope, watchId) => {
+			const watch = laneWatches.get(watchId);
+			if (!watch || !sameScope(watch.scope, scope)) throw new Error("Session worker lane watch was not found");
+			watch.handle.unsubscribe();
+			laneWatches.delete(watchId);
+			return { watchId };
 		},
 	});
 	const handleOperation = async (request: WorkerOperationRequest): Promise<void> => {
 		let releaseRequest = (): void => {};
 		try {
 			releaseRequest = lifecycle!.beginRequest(request.scope.serverConnectionId, request.scope.attachmentId);
-			const result = await dispatchWorkerOperation(request.call, undefined);
+			const result = await dispatchWorkerOperation(request.call, request.scope);
 			await control.send({
 				type: "operation_response",
 				token,
@@ -606,6 +673,11 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 			const releaseRetirement = lifecycle?.holdRetirement() ?? (() => {});
 			try {
 				try {
+					removeLaneWatches(
+						(scope) =>
+							scope.serverConnectionId === command.serverConnectionId &&
+							scope.attachmentId !== command.attachmentId,
+					);
 					lifecycle?.setDemand(command.serverConnectionId, command.attachmentId);
 				} catch (error) {
 					await control.send({
@@ -632,7 +704,10 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 			void handleOperation(request).catch(() => closeAndExit());
 		},
 		onServerConnected: (serverConnectionId) => lifecycle?.serverConnected(serverConnectionId),
-		onServerDisconnected: (serverConnectionId) => lifecycle?.serverDisconnected(serverConnectionId),
+		onServerDisconnected: (serverConnectionId) => {
+			removeLaneWatches((scope) => scope.serverConnectionId === serverConnectionId);
+			lifecycle?.serverDisconnected(serverConnectionId);
+		},
 	}).catch(() => closeAndExit());
 	control.socket.once("close", closeAndExit);
 	control.socket.once("error", () => closeAndExit());

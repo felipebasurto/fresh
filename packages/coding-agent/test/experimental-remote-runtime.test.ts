@@ -338,6 +338,48 @@ describe("experimental durable server composition", () => {
 		}
 	});
 
+	test("streams prompt events from the worker to the client", async ({ onTestFinished }) => {
+		const spawn = vi
+			.spyOn(processRuntime, "spawnInternalProcess")
+			.mockImplementation((role, args, options) =>
+				realSpawnInternalProcess(
+					role,
+					args,
+					role === "session-worker" ? { ...options, entryUrl: fauxWorkerEntryUrl } : options,
+				),
+			);
+		onTestFinished(() => spawn.mockRestore());
+		const { directory } = await makeServer();
+		const eventTypes: string[] = [];
+		const text: string[] = [];
+
+		const result = await runClient(
+			{ command: "client", sessionId: "demo-1", prompt: "question" },
+			{
+				directory,
+				onEvent(event) {
+					eventTypes.push(event.type);
+					if (event.type === "message_update" && event.frame.type === "text_delta") {
+						text.push(event.frame.delta);
+					}
+				},
+			},
+		);
+
+		expect(result).toMatchObject({ kind: "prompted", text: "deterministic remote answer" });
+		expect(text.join("")).toBe("deterministic remote answer");
+		expect(eventTypes).toEqual(
+			expect.arrayContaining([
+				"run_start",
+				"message_start",
+				"message_update",
+				"message_end",
+				"entry_added",
+				"run_end",
+			]),
+		);
+	});
+
 	test("completes and persists a prompt through the worker-owned Harness", async ({ onTestFinished }) => {
 		const spawn = vi
 			.spyOn(processRuntime, "spawnInternalProcess")

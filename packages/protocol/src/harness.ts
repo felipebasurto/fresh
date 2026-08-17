@@ -13,18 +13,18 @@ export const PromptImageSchema = StrictObject({
 });
 export type PromptImage = Static<typeof PromptImageSchema>;
 
-const TextContentSchema = StrictObject({
+export const TextContentSchema = StrictObject({
 	type: Type.Literal("text"),
 	text: Type.String(),
 	textSignature: Type.Optional(Type.String()),
 });
-const ThinkingContentSchema = StrictObject({
+export const ThinkingContentSchema = StrictObject({
 	type: Type.Literal("thinking"),
 	thinking: Type.String(),
 	thinkingSignature: Type.Optional(Type.String()),
 	redacted: Type.Optional(Type.Boolean()),
 });
-const ToolCallSchema = StrictObject({
+export const ToolCallSchema = StrictObject({
 	type: Type.Literal("toolCall"),
 	id: Type.String(),
 	name: Type.String(),
@@ -32,7 +32,7 @@ const ToolCallSchema = StrictObject({
 	thoughtSignature: Type.Optional(Type.String()),
 	namespace: Type.Optional(Type.String()),
 });
-const UsageSchema = StrictObject({
+export const UsageSchema = StrictObject({
 	input: Type.Number(),
 	output: Type.Number(),
 	cacheRead: Type.Number(),
@@ -69,7 +69,7 @@ const AssistantMessageDiagnosticSchema = StrictObject({
 	error: Type.Optional(DiagnosticErrorSchema),
 	details: Type.Optional(Type.Record(Type.String(), JsonValueSchema)),
 });
-const AssistantMessageSchema = StrictObject({
+export const AssistantMessageSchema = StrictObject({
 	role: Type.Literal("assistant"),
 	content: Type.Array(Type.Union([TextContentSchema, ThinkingContentSchema, ToolCallSchema])),
 	api: Type.String(),
@@ -251,3 +251,331 @@ export const RunResultSchema = Type.Union([
 	StrictObject({ ok: Type.Literal(false), error: RunErrorSchema }),
 ]);
 export type RunResult = Static<typeof RunResultSchema>;
+
+export const ToolOutputSchema = StrictObject({
+	content: Type.Array(Type.Union([TextContentSchema, PromptImageSchema])),
+	details: Type.Optional(JsonValueSchema),
+	usage: Type.Optional(UsageSchema),
+});
+export type ToolOutput = Static<typeof ToolOutputSchema>;
+
+export const AssistantMessageFrameSchema = Type.Union([
+	StrictObject({ type: Type.Literal("start"), partial: AssistantMessageSchema }),
+	StrictObject({
+		type: Type.Literal("text_start"),
+		contentIndex: Type.Integer({ minimum: 0 }),
+		content: TextContentSchema,
+	}),
+	StrictObject({ type: Type.Literal("text_delta"), contentIndex: Type.Integer({ minimum: 0 }), delta: Type.String() }),
+	StrictObject({
+		type: Type.Literal("text_end"),
+		contentIndex: Type.Integer({ minimum: 0 }),
+		content: Type.String(),
+		textSignature: Type.Optional(Type.String()),
+	}),
+	StrictObject({
+		type: Type.Literal("thinking_start"),
+		contentIndex: Type.Integer({ minimum: 0 }),
+		content: ThinkingContentSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("thinking_delta"),
+		contentIndex: Type.Integer({ minimum: 0 }),
+		delta: Type.String(),
+	}),
+	StrictObject({
+		type: Type.Literal("thinking_end"),
+		contentIndex: Type.Integer({ minimum: 0 }),
+		content: Type.String(),
+		thinkingSignature: Type.Optional(Type.String()),
+		redacted: Type.Optional(Type.Boolean()),
+	}),
+	StrictObject({
+		type: Type.Literal("toolcall_start"),
+		contentIndex: Type.Integer({ minimum: 0 }),
+		toolCall: ToolCallSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("toolcall_delta"),
+		contentIndex: Type.Integer({ minimum: 0 }),
+		delta: Type.String(),
+	}),
+	StrictObject({
+		type: Type.Literal("toolcall_end"),
+		contentIndex: Type.Integer({ minimum: 0 }),
+		id: Type.String(),
+		name: Type.String(),
+		arguments: Type.Record(Type.String(), JsonValueSchema),
+		thoughtSignature: Type.Optional(Type.String()),
+		namespace: Type.Optional(Type.String()),
+	}),
+]);
+export type AssistantMessageFrame = Static<typeof AssistantMessageFrameSchema>;
+
+const MessageEntrySchema = StrictObject({
+	id: IdSchema,
+	parentId: Type.Union([IdSchema, Type.Null()]),
+	seq: Type.Integer({ minimum: 1 }),
+	timestamp: TimestampSchema,
+	type: Type.Literal("message"),
+	message: PromptMessageSchema,
+	terminate: Type.Optional(Type.Literal(true)),
+});
+const CompactionEntrySchema = StrictObject({
+	id: IdSchema,
+	parentId: Type.Union([IdSchema, Type.Null()]),
+	seq: Type.Integer({ minimum: 1 }),
+	timestamp: TimestampSchema,
+	type: Type.Literal("compaction"),
+	summary: Type.String(),
+	retainedTail: Type.Array(PromptMessageSchema),
+	tokensBefore: Type.Number(),
+	details: Type.Optional(JsonValueSchema),
+	usage: Type.Optional(UsageSchema),
+	fromHook: Type.Boolean(),
+});
+const BranchSummaryEntrySchema = StrictObject({
+	id: IdSchema,
+	parentId: Type.Union([IdSchema, Type.Null()]),
+	seq: Type.Integer({ minimum: 1 }),
+	timestamp: TimestampSchema,
+	type: Type.Literal("branch_summary"),
+	fromId: IdSchema,
+	summary: Type.String(),
+	details: Type.Optional(JsonValueSchema),
+	usage: Type.Optional(UsageSchema),
+	fromHook: Type.Boolean(),
+});
+const CustomEntrySchema = StrictObject({
+	id: IdSchema,
+	parentId: Type.Union([IdSchema, Type.Null()]),
+	seq: Type.Integer({ minimum: 1 }),
+	timestamp: TimestampSchema,
+	type: Type.Literal("custom"),
+	customType: Type.String({ minLength: 1 }),
+	data: Type.Optional(JsonValueSchema),
+});
+export const LaneEntrySchema = Type.Union([
+	MessageEntrySchema,
+	CompactionEntrySchema,
+	BranchSummaryEntrySchema,
+	CustomEntrySchema,
+]);
+export type LaneEntry = Static<typeof LaneEntrySchema>;
+
+const MissingIdentityListSchemaForSnapshot = StrictObject({
+	tools: Type.Array(Type.String()),
+	models: Type.Array(Type.String()),
+});
+const SuspendedOperationBase = {
+	lane: Type.String(),
+	operationId: IdSchema,
+	kind: Type.Union([Type.Literal("run"), Type.Literal("compaction"), Type.Literal("navigation")]),
+	startedAt: TimestampSchema,
+	prompt: Type.Optional(Type.Array(PromptMessageSchema)),
+	aborting: Type.Optional(
+		StrictObject({ steer: Type.Array(PromptMessageSchema), followUp: Type.Array(PromptMessageSchema) }),
+	),
+};
+const SuspendedOperationSchema = Type.Union([
+	StrictObject({ ...SuspendedOperationBase, reason: Type.Literal("deferred"), deferred: DeferredHandleSchema }),
+	StrictObject({
+		...SuspendedOperationBase,
+		reason: Type.Literal("missing_identities"),
+		missing: MissingIdentityListSchemaForSnapshot,
+	}),
+	StrictObject({
+		...SuspendedOperationBase,
+		reason: Type.Literal("crash"),
+		deferred: Type.Optional(DeferredHandleSchema),
+		missing: Type.Optional(MissingIdentityListSchemaForSnapshot),
+	}),
+]);
+const QueuedItemSchema = StrictObject({ entryId: IdSchema, message: PromptMessageSchema });
+const RunningToolSchema = StrictObject({
+	toolCallId: Type.String(),
+	toolName: Type.String(),
+	args: JsonValueSchema,
+	partialResult: Type.Optional(ToolOutputSchema),
+});
+const LaneOperationSchema = StrictObject({
+	id: IdSchema,
+	kind: Type.Union([Type.Literal("run"), Type.Literal("compaction"), Type.Literal("navigation")]),
+	status: Type.Union([Type.Literal("running"), Type.Literal("suspended"), Type.Literal("aborting")]),
+	startedAt: TimestampSchema,
+	suspended: Type.Optional(SuspendedOperationSchema),
+	streamingMessage: Type.Optional(AssistantMessageSchema),
+	runningTools: Type.Array(RunningToolSchema),
+	retry: Type.Optional(
+		StrictObject({
+			attempt: Type.Integer({ minimum: 1 }),
+			maxAttempts: Type.Integer({ minimum: 1 }),
+			nextAttemptAt: TimestampSchema,
+		}),
+	),
+});
+export const LaneSnapshotSchema = StrictObject({
+	lane: Type.String(),
+	transcript: Type.Array(LaneEntrySchema),
+	leafId: Type.Union([IdSchema, Type.Null()]),
+	operation: Type.Union([LaneOperationSchema, Type.Null()]),
+	queues: StrictObject({
+		steer: Type.Array(QueuedItemSchema),
+		followUp: Type.Array(QueuedItemSchema),
+		nextRun: Type.Array(QueuedItemSchema),
+	}),
+	pendingWrites: Type.Array(
+		StrictObject({
+			entryId: IdSchema,
+			type: Type.Union([
+				Type.Literal("message"),
+				Type.Literal("compaction"),
+				Type.Literal("branch_summary"),
+				Type.Literal("custom"),
+			]),
+			customType: Type.Optional(Type.String()),
+			message: Type.Optional(PromptMessageSchema),
+			data: Type.Optional(JsonValueSchema),
+		}),
+	),
+	faulted: Type.Boolean(),
+});
+export type LaneSnapshot = Static<typeof LaneSnapshotSchema>;
+
+const LaneEventBase = {
+	lane: Type.String(),
+	recovery: Type.Optional(Type.Literal(true)),
+};
+const RunEndBase = {
+	type: Type.Literal("run_end"),
+	runId: IdSchema,
+	leafId: Type.Union([IdSchema, Type.Null()]),
+	...LaneEventBase,
+};
+export const LaneEventSchema = Type.Union([
+	StrictObject({ type: Type.Literal("run_start"), runId: IdSchema, ...LaneEventBase }),
+	StrictObject({ type: Type.Literal("run_resume"), runId: IdSchema, ...LaneEventBase }),
+	StrictObject({
+		type: Type.Literal("run_suspend"),
+		runId: IdSchema,
+		reason: Type.Literal("deferred"),
+		deferred: DeferredHandleSchema,
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("run_suspend"),
+		runId: IdSchema,
+		reason: Type.Literal("missing_identities"),
+		missing: MissingIdentityListSchemaForSnapshot,
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("run_abort"),
+		runId: IdSchema,
+		steer: Type.Array(PromptMessageSchema),
+		followUp: Type.Array(PromptMessageSchema),
+		...LaneEventBase,
+	}),
+	StrictObject({
+		...RunEndBase,
+		outcome: Type.Union([Type.Literal("completed"), Type.Literal("aborted")]),
+	}),
+	StrictObject({
+		...RunEndBase,
+		outcome: Type.Union([Type.Literal("completed"), Type.Literal("aborted")]),
+		finalEntryId: IdSchema,
+		finalMessage: AssistantMessageSchema,
+	}),
+	StrictObject({ ...RunEndBase, outcome: Type.Literal("failed"), error: OperationErrorSchema }),
+	StrictObject({
+		...RunEndBase,
+		outcome: Type.Literal("failed"),
+		error: OperationErrorSchema,
+		finalEntryId: IdSchema,
+		finalMessage: AssistantMessageSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("message_start"),
+		runId: Type.Optional(IdSchema),
+		message: PromptMessageSchema,
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("message_update"),
+		runId: IdSchema,
+		frame: AssistantMessageFrameSchema,
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("message_end"),
+		runId: Type.Optional(IdSchema),
+		message: PromptMessageSchema,
+		entryId: Type.Optional(IdSchema),
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("tool_start"),
+		runId: IdSchema,
+		turnId: IdSchema,
+		toolCallId: Type.String(),
+		toolName: Type.String(),
+		args: JsonValueSchema,
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("tool_update"),
+		runId: IdSchema,
+		turnId: IdSchema,
+		toolCallId: Type.String(),
+		toolName: Type.String(),
+		partialResult: ToolOutputSchema,
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("tool_end"),
+		runId: IdSchema,
+		turnId: IdSchema,
+		toolCallId: Type.String(),
+		toolName: Type.String(),
+		result: ToolOutputSchema,
+		isError: Type.Boolean(),
+		terminate: Type.Boolean(),
+		...LaneEventBase,
+	}),
+	StrictObject({ type: Type.Literal("entry_added"), entry: LaneEntrySchema, ...LaneEventBase }),
+	StrictObject({
+		type: Type.Literal("queue_update"),
+		steer: Type.Array(QueuedItemSchema),
+		followUp: Type.Array(QueuedItemSchema),
+		nextRun: Type.Array(QueuedItemSchema),
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("retry_scheduled"),
+		runId: IdSchema,
+		step: IdSchema,
+		attempt: Type.Integer({ minimum: 1 }),
+		maxAttempts: Type.Integer({ minimum: 1 }),
+		delayMs: Type.Integer({ minimum: 0 }),
+		errorMessage: Type.String(),
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("retry_start"),
+		runId: IdSchema,
+		step: IdSchema,
+		attempt: Type.Integer({ minimum: 1 }),
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("retry_end"),
+		runId: IdSchema,
+		step: IdSchema,
+		attempt: Type.Integer({ minimum: 1 }),
+		success: Type.Boolean(),
+		finalError: Type.Optional(Type.String()),
+		...LaneEventBase,
+	}),
+	StrictObject({ type: Type.Literal("fault"), code: Type.String(), message: Type.String() }),
+]);
+export type LaneEvent = Static<typeof LaneEventSchema>;
