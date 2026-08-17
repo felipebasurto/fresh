@@ -481,7 +481,7 @@ async function closeResources(resources: {
 		errors.push(error);
 	}
 	try {
-		await resources.executionEnv.cleanup();
+		await resources.executionEnv.cleanup(TODO_CONTEXT);
 	} catch (error) {
 		errors.push(error);
 	}

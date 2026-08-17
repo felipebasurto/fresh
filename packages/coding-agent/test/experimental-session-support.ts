@@ -26,7 +26,7 @@ export async function createExperimentalSessions(
 		return metadata;
 	} finally {
 		await repo.close(BACKGROUND_CONTEXT);
-		await fileSystem.cleanup();
+		await fileSystem.cleanup(BACKGROUND_CONTEXT);
 	}
 }
 
@@ -60,6 +60,6 @@ export async function readExperimentalSessionState(
 	} finally {
 		await session?.close(BACKGROUND_CONTEXT);
 		await repo.close(BACKGROUND_CONTEXT);
-		await fileSystem.cleanup();
+		await fileSystem.cleanup(BACKGROUND_CONTEXT);
 	}
 }

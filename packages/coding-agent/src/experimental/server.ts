@@ -351,7 +351,7 @@ async function startServerBackend(
 	};
 	const socketPath = options.path;
 	const closeCatalog = async (): Promise<void> => {
-		const cleanup = await Promise.allSettled([repo.close(TODO_CONTEXT), executionEnv.cleanup()]);
+		const cleanup = await Promise.allSettled([repo.close(TODO_CONTEXT), executionEnv.cleanup(TODO_CONTEXT)]);
 		const errors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
 		if (errors.length === 1) throw errors[0];
 		if (errors.length > 1) throw new AggregateError(errors, "Experimental session catalog cleanup failed");
