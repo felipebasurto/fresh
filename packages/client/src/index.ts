@@ -6,5 +6,6 @@ export type {
 	ConnectionStateChange,
 	ListenerErrorHandler,
 	PiClientOptions,
+	PiLaneWatch,
 	Unsubscribe,
 } from "./types.ts";

@@ -153,6 +153,85 @@ describe("Session protocol", () => {
 			client.request("00000000-0000-4000-8000-000000000001", { method: "attach", args: ["session-1"] }),
 		).resolves.toMatchObject({ ok: true, result: { sessionId: "session-1" } });
 		expect(received).toBe(metadata);
+		await expect(
+			client.request("00000000-0000-4000-8000-000000000001", { method: "watch", args: ["session-1"] }),
+		).resolves.toMatchObject({ ok: false, error: { code: "not_supported" } });
+	});
+
+	test("delivers a lane snapshot before buffered and live watch events", async () => {
+		const host = new TestServerHost();
+		await host.seed("session-1");
+		const client = connect(createServer(host));
+		await client.hello();
+		await client.request("00000000-0000-4000-8000-000000000001", {
+			method: "attach",
+			args: ["session-1"],
+		});
+
+		const watched = await client.request("00000000-0000-4000-8000-000000000001", {
+			method: "watch",
+			args: ["session-1"],
+		});
+		expect(watched).toMatchObject({
+			ok: true,
+			result: { snapshot: { lane: "main", transcript: [], operation: null } },
+		});
+		if (
+			!watched.ok ||
+			typeof watched.result !== "object" ||
+			watched.result === null ||
+			!("watchId" in watched.result)
+		) {
+			throw new Error("Missing watch result");
+		}
+		const watchId = watched.result.watchId;
+		if (typeof watchId !== "string") throw new Error("Invalid watch ID");
+		await expect(
+			client.request("00000000-0000-4000-8000-000000000001", {
+				method: "watch",
+				args: ["session-1"],
+			}),
+		).resolves.toMatchObject({ ok: false, error: { code: "watch_in_use" } });
+		await host.latestHarness("session-1").emitEvent({
+			type: "run_start",
+			lane: "main",
+			runId: "run-1",
+		});
+		expect(client.messages.some((message) => message.type === "event")).toBe(false);
+
+		const messageIndex = client.messages.length;
+		const starting = client.request("00000000-0000-4000-8000-000000000001", {
+			method: "startWatch",
+			args: ["session-1", watchId],
+		});
+		await expect(client.nextFrom(messageIndex, (message) => message.type === "event")).resolves.toMatchObject({
+			type: "event",
+			watchId,
+			event: { type: "run_start", runId: "run-1" },
+		});
+		await expect(starting).resolves.toMatchObject({ ok: true, result: { watchId } });
+
+		await host.latestHarness("session-1").emitEvent({
+			type: "message_start",
+			lane: "main",
+			runId: "run-1",
+			message: { role: "user", content: "hello", timestamp: 1 },
+		});
+		await expect(client.nextFrom(messageIndex + 1, (message) => message.type === "event")).resolves.toMatchObject({
+			event: { type: "message_start" },
+		});
+
+		await client.request("00000000-0000-4000-8000-000000000001", {
+			method: "stopWatch",
+			args: ["session-1", watchId],
+		});
+		const stoppedAt = client.messages.length;
+		await host.latestHarness("session-1").emitEvent({
+			type: "run_resume",
+			lane: "main",
+			runId: "run-1",
+		});
+		expect(client.messages.slice(stoppedAt).some((message) => message.type === "event")).toBe(false);
 	});
 
 	test("permits only one client attachment per Session", async () => {

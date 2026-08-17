@@ -7,6 +7,9 @@ type PiServerOperationErrorCode = Extract<
 	| "session_ambiguous"
 	| "session_in_use"
 	| "session_not_attached"
+	| "watch_not_found"
+	| "watch_in_use"
+	| "not_supported"
 	| "server_draining"
 >;
 
@@ -55,6 +58,27 @@ export class SessionNotAttachedError extends PiServerError {
 	constructor() {
 		super("session_not_attached", "Session is not attached to this client");
 		this.name = "SessionNotAttachedError";
+	}
+}
+
+export class WatchNotFoundError extends PiServerError {
+	constructor() {
+		super("watch_not_found", "Lane watch was not found");
+		this.name = "WatchNotFoundError";
+	}
+}
+
+export class WatchInUseError extends PiServerError {
+	constructor() {
+		super("watch_in_use", "Session attachment already has a lane watch");
+		this.name = "WatchInUseError";
+	}
+}
+
+export class NotSupportedError extends PiServerError {
+	constructor(message: string) {
+		super("not_supported", message);
+		this.name = "NotSupportedError";
 	}
 }
 

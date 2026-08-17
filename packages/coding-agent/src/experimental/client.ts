@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
-import { isServerId } from "@earendil-works/pi-protocol";
+import { isServerId, type LaneEvent } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
 
@@ -16,6 +16,8 @@ export type ClientResult =
 export interface RunClientOptions {
 	/** Directory searched when --connect is omitted. Defaults to PI_SERVER_DIR or ~/.pi/server. */
 	readonly directory?: string;
+	/** Receives snapshot-ordered main-lane events while a prompt is running. */
+	readonly onEvent?: (event: LaneEvent) => void | Promise<void>;
 }
 
 /** Discover servers, then list Sessions, attach to one, or create one for a prompt. */
@@ -111,7 +113,17 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 		if (command.prompt === undefined) {
 			return { kind: "attached", serverId: match.route.serverId, sessionId: attached.sessionId };
 		}
-		const result = await match.client.promptSession(attached.sessionId, command.prompt);
+		const prompt = command.prompt;
+		const onEvent = options.onEvent;
+		const watch = onEvent === undefined ? undefined : await match.client.watchSession(attached.sessionId);
+		if (watch !== undefined && onEvent !== undefined) await watch.start(onEvent);
+		const result = await (async () => {
+			try {
+				return await match.client.promptSession(attached.sessionId, prompt);
+			} finally {
+				await watch?.dispose();
+			}
+		})();
 		if (!result.ok) throw new Error(result.error.message);
 		if (result.value.kind === "failed") throw new Error(result.value.error.message);
 		if (result.value.kind !== "completed") throw new Error(`Remote prompt ${result.value.kind}`);

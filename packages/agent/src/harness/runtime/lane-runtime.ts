@@ -40,6 +40,7 @@ import { Result } from "../result.ts";
 import { materializeCommittedEntry } from "../session/commit.ts";
 import { SessionInvariantError, SessionPendingAssistantMessageError } from "../session/session.ts";
 import type {
+	Entry,
 	JsonValue,
 	LaneConfiguration,
 	LaneLastResult,
@@ -47,6 +48,7 @@ import type {
 	OperationMeta,
 	PendingEntry,
 	RunState,
+	SessionReader,
 	SessionTree,
 } from "../session/types.ts";
 import { formatSkillInvocation } from "../skills.ts";
@@ -568,6 +570,108 @@ function suspensionForInspection<TContext extends object | undefined>(
 	return remembered?.operationId === restored.current?.operation.operationId ? remembered : undefined;
 }
 
+async function createLaneSnapshot<TContext extends object | undefined>(
+	runtime: LaneRuntimeContext<TContext>,
+	lane: string,
+	reader: SessionReader,
+): Promise<LaneSnapshot> {
+	const restored = await restoreLane(reader, lane);
+	const transcript: Entry[] = [];
+	const visited = new Set<string>();
+	let entryId = restored.leafId;
+	while (entryId !== null) {
+		if (visited.has(entryId)) throw new SessionInvariantError(`Lane ${JSON.stringify(lane)} branch contains a cycle`);
+		visited.add(entryId);
+		const entry = (await reader.getEntries([entryId])).get(entryId);
+		if (entry === undefined) {
+			throw new SessionInvariantError(`Lane ${JSON.stringify(lane)} references missing branch entry ${entryId}`);
+		}
+		transcript.push(entry);
+		if (entry.type === "compaction") break;
+		entryId = entry.parentId;
+	}
+	transcript.reverse();
+
+	const state = restored.current?.state;
+	const steerIds = state?.kind === "run" ? state.inbox.steer : [];
+	const followUpIds = state?.kind === "run" ? state.inbox.followUp : [];
+	const writeIds = state?.kind === "run" ? state.inbox.writes : [];
+	const pendingIds = [...new Set([...steerIds, ...followUpIds, ...restored.laneState.pendingNextRun, ...writeIds])];
+	const pendingEntries = new Map<string, PendingEntry>();
+	for (const id of pendingIds) {
+		const pending = await reader.getRegister("pending.entry", id);
+		if (pending === undefined) {
+			throw new SessionInvariantError(`Lane ${JSON.stringify(lane)} references missing pending entry ${id}`);
+		}
+		pendingEntries.set(id, pending.value);
+	}
+	const queue = (ids: string[]) =>
+		ids.map((id) => {
+			const pending = pendingEntries.get(id);
+			if (pending?.type !== "message") {
+				throw new SessionInvariantError(`Lane ${JSON.stringify(lane)} queue entry ${id} is not a message`);
+			}
+			return { entryId: id, message: pending.payload };
+		});
+
+	const current = currentInfo(runtime, lane, restored);
+	let operation: LaneSnapshot["operation"] = null;
+	if (current !== null && restored.current !== undefined) {
+		const runningTools: NonNullable<LaneSnapshot["operation"]>["runningTools"] = [];
+		let retry: NonNullable<LaneSnapshot["operation"]>["retry"];
+		if (state?.kind === "run" && state.phase.kind === "tools") {
+			const assistant = restored.current.entries.get(state.phase.batch.assistantEntryId);
+			if (assistant?.type !== "message" || assistant.message.role !== "assistant") {
+				throw new SessionInvariantError(`Lane ${JSON.stringify(lane)} tool batch assistant is missing`);
+			}
+			const sourceCalls = assistant.message.content.filter((content) => content.type === "toolCall");
+			for (const call of state.phase.batch.calls) {
+				if (call.status !== "effect_pending") continue;
+				const source = sourceCalls[call.sourceIndex];
+				const args = restored.current.toolArguments.get(
+					`${restored.current.operation.operationId}:${state.phase.batch.turnId}:${call.sourceIndex}`,
+				);
+				if (source === undefined || args === undefined) {
+					throw new SessionInvariantError(`Lane ${JSON.stringify(lane)} running tool state is incomplete`);
+				}
+				runningTools.push({ toolCallId: source.id, toolName: source.name, args });
+			}
+		}
+		if (state?.kind === "run" && state.phase.kind === "assistant" && state.phase.generation.status === "retry_wait") {
+			retry = {
+				attempt: state.phase.generation.nextAttempt,
+				maxAttempts: state.phase.generation.context.retryPolicy.maxAttempts,
+				nextAttemptAt: state.phase.generation.notBefore,
+			};
+		}
+		operation = { ...current, runningTools, ...(retry === undefined ? {} : { retry }) };
+	}
+
+	return {
+		lane,
+		transcript,
+		leafId: restored.leafId,
+		operation,
+		queues: {
+			steer: queue(steerIds),
+			followUp: queue(followUpIds),
+			nextRun: queue(restored.laneState.pendingNextRun),
+		},
+		pendingWrites: writeIds.map((id) => {
+			const pending = pendingEntries.get(id)!;
+			return pending.type === "message"
+				? { entryId: id, type: "message", message: pending.payload }
+				: {
+						entryId: id,
+						type: "custom",
+						customType: pending.customType,
+						...(pending.payload === undefined ? {} : { data: pending.payload }),
+					};
+		}),
+		faulted: false,
+	};
+}
+
 export class AgentLaneRuntime<TContext extends object | undefined> implements AgentLane {
 	readonly name: string;
 	readonly sessionTree: SessionTree;
@@ -737,8 +841,19 @@ export class AgentLaneRuntime<TContext extends object | undefined> implements Ag
 			lane: this.name,
 		});
 	}
-	watch(): Promise<WatchHandle<LaneSnapshot>> {
-		return this.notImplemented("watch");
+	async watch(): Promise<WatchHandle<LaneSnapshot>> {
+		this.harness.assertOpen();
+		try {
+			return await this.harness.events.watchFromSnapshot(
+				() =>
+					this.harness.sessionStorage.mutate(this.name, (reader) =>
+						createLaneSnapshot(this.harness, this.name, reader),
+					),
+				(event) => event.type === "usage" || !("lane" in event) || event.lane === this.name,
+			);
+		} catch (error) {
+			throw this.harness.fault(error);
+		}
 	}
 
 	private async runAccepted(

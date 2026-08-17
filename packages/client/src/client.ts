@@ -1,7 +1,9 @@
 import {
 	createRpcClient,
+	type EventEnvelope,
 	encodeClientMessage,
 	isServerId,
+	type LaneEvent,
 	type PromptArguments,
 	type PromptImage,
 	type PromptMessage,
@@ -17,11 +19,16 @@ import {
 import { Connection } from "./connection.ts";
 import { PiClientDisposedError, PiDisconnectedError, PiServerError, toError } from "./errors.ts";
 import { createPromiseResolvers } from "./promise.ts";
-import type { ConnectionState, ConnectionStateChange, PiClientOptions, Unsubscribe } from "./types.ts";
+import type { ConnectionState, ConnectionStateChange, PiClientOptions, PiLaneWatch, Unsubscribe } from "./types.ts";
 
 interface PendingRequest {
 	resolve(result: unknown): void;
 	reject(error: Error): void;
+}
+
+interface ActiveWatchListener {
+	readonly listener: (event: LaneEvent) => void | Promise<void>;
+	deliveryTail: Promise<void>;
 }
 
 export class PiClient {
@@ -29,6 +36,7 @@ export class PiClient {
 	readonly #connection: Connection;
 	readonly #pendingRequests = new Map<string, PendingRequest>();
 	readonly #connectionStateListeners = new Set<(change: ConnectionStateChange) => void>();
+	readonly #watchListeners = new Map<string, ActiveWatchListener>();
 	readonly #rpc: ReturnType<typeof createRpcClient<typeof ServiceRpc>>;
 	#requestSequence = 0;
 	#hello: ServerHello | undefined;
@@ -131,6 +139,45 @@ export class PiClient {
 		return this.#rpc.prompt(sessionId, [message]);
 	}
 
+	async watchSession(sessionId: string): Promise<PiLaneWatch> {
+		const { watchId, snapshot } = await this.#rpc.watch(sessionId);
+		const connection = this.#hello;
+		let state: "ready" | "starting" | "started" | "disposed" = "ready";
+		return {
+			id: watchId,
+			sessionId,
+			snapshot,
+			start: async (listener) => {
+				if (state !== "ready") throw new Error("Pi lane watch may be started only once");
+				if (this.#watchListeners.has(watchId)) {
+					this.#connection.fail(new ProtocolValidationError("Server reused an active lane watch ID"));
+					throw new ProtocolValidationError("Server reused an active lane watch ID");
+				}
+				state = "starting";
+				this.#watchListeners.set(watchId, { listener, deliveryTail: Promise.resolve() });
+				try {
+					await this.#rpc.startWatch(sessionId, watchId);
+					if (state === "starting") state = "started";
+				} catch (error) {
+					this.#watchListeners.delete(watchId);
+					state = "disposed";
+					throw error;
+				}
+			},
+			dispose: async () => {
+				if (state === "disposed") return;
+				state = "disposed";
+				const active = this.#watchListeners.get(watchId);
+				try {
+					if (this.connected && this.#hello === connection) await this.#rpc.stopWatch(sessionId, watchId);
+					await active?.deliveryTail;
+				} finally {
+					this.#watchListeners.delete(watchId);
+				}
+			},
+		};
+	}
+
 	#request(call: ServiceRpcCall): Promise<unknown> {
 		if (this.#disposed) return Promise.reject(new PiClientDisposedError());
 		if (!this.connected) return Promise.reject(new PiDisconnectedError());
@@ -151,7 +198,15 @@ export class PiClient {
 		return promise;
 	}
 
-	#handleMessage(message: ResponseEnvelope): void {
+	#handleMessage(message: ResponseEnvelope | EventEnvelope): void {
+		if (message.type === "event") {
+			const active = this.#watchListeners.get(message.watchId);
+			if (active === undefined) return;
+			active.deliveryTail = active.deliveryTail
+				.then(() => active.listener(message.event))
+				.catch((error: unknown) => this.#reportListenerError(error));
+			return;
+		}
 		const pending = this.#takePendingRequest(message.id);
 		if (!pending) {
 			this.#connection.fail(new ProtocolValidationError("Response has no matching request"));
@@ -168,6 +223,7 @@ export class PiClient {
 		if (change.state === "disconnected") {
 			this.#hello = undefined;
 			this.#rejectPendingRequests(change.error ?? new PiDisconnectedError());
+			this.#watchListeners.clear();
 		}
 		for (const listener of this.#connectionStateListeners) {
 			try {
@@ -199,6 +255,7 @@ export class PiClient {
 		this.#connection.disconnect(error);
 		this.#hello = undefined;
 		this.#connectionStateListeners.clear();
+		this.#watchListeners.clear();
 		return this.#disposePromise;
 	}
 

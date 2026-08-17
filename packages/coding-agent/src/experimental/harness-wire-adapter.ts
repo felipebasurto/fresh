@@ -1,29 +1,39 @@
 import type {
 	AgentMessage,
+	AgentToolResult,
 	BashExecutionMessage,
 	BranchSummaryMessage,
 	CompactionSummaryMessage,
 	CustomMessage,
+	Entry,
+	HarnessEvent,
+	LaneSnapshot as HarnessLaneSnapshot,
 	RunResult as HarnessRunResult,
 } from "@earendil-works/pi-agent-core";
-import type {
-	AssistantMessage,
-	DeferredHandle,
-	ImageContent,
-	TextContent,
-	ThinkingContent,
-	ToolCall,
-	ToolResultMessage,
-	Usage,
-	UserMessage,
+import {
+	type AssistantMessage,
+	assistantMessageEventToFrame,
+	type DeferredHandle,
+	type ImageContent,
+	type TextContent,
+	type ThinkingContent,
+	type ToolCall,
+	type ToolResultMessage,
+	type Usage,
+	type UserMessage,
 } from "@earendil-works/pi-ai";
 import {
+	type AssistantMessageFrame,
 	type JsonValue,
 	JsonValueSchema,
+	type LaneEntry,
+	type LaneEvent,
+	type LaneSnapshot,
 	type PromptArguments,
 	type PromptImage,
 	type PromptMessage,
 	type RunResult,
+	type ToolOutput,
 } from "@earendil-works/pi-protocol";
 import { Check } from "typebox/value";
 
@@ -429,6 +439,395 @@ function toWireDeferred(deferred: DeferredHandle): WireAssistantMessage["deferre
 function toWireJsonValue(value: unknown, field: string): JsonValue {
 	if (!Check(JsonValueSchema, value)) throw new TypeError(`Harness ${field} is not JSON-serializable`);
 	return value;
+}
+
+function toWireMessage(message: AgentMessage): PromptMessage {
+	switch (message.role) {
+		case "user":
+			return {
+				role: "user",
+				content:
+					typeof message.content === "string"
+						? message.content
+						: message.content.map((content) =>
+								content.type === "text"
+									? {
+											type: "text" as const,
+											text: content.text,
+											...(content.textSignature === undefined
+												? {}
+												: { textSignature: content.textSignature }),
+										}
+									: { type: "image" as const, data: content.data, mimeType: content.mimeType },
+							),
+				timestamp: message.timestamp,
+			};
+		case "assistant":
+			return toWireAssistantMessage(message);
+		case "toolResult":
+			return {
+				role: "toolResult",
+				toolCallId: message.toolCallId,
+				toolName: message.toolName,
+				content: message.content.map((content) =>
+					content.type === "text"
+						? {
+								type: "text" as const,
+								text: content.text,
+								...(content.textSignature === undefined ? {} : { textSignature: content.textSignature }),
+							}
+						: { type: "image" as const, data: content.data, mimeType: content.mimeType },
+				),
+				...(message.details === undefined
+					? {}
+					: { details: toWireJsonValue(message.details, "tool result details") }),
+				...(message.usage === undefined ? {} : { usage: toHarnessUsage(message.usage) }),
+				...(message.addedToolNames === undefined ? {} : { addedToolNames: [...message.addedToolNames] }),
+				isError: message.isError,
+				timestamp: message.timestamp,
+			};
+		case "bashExecution":
+			return {
+				role: "bashExecution",
+				command: message.command,
+				output: message.output,
+				...(message.exitCode === undefined ? {} : { exitCode: message.exitCode }),
+				cancelled: message.cancelled,
+				truncated: message.truncated,
+				...(message.fullOutputPath === undefined ? {} : { fullOutputPath: message.fullOutputPath }),
+				timestamp: message.timestamp,
+				...(message.excludeFromContext === undefined ? {} : { excludeFromContext: message.excludeFromContext }),
+			};
+		case "custom":
+			return {
+				role: "custom",
+				customType: message.customType,
+				content:
+					typeof message.content === "string"
+						? message.content
+						: message.content.map((content) =>
+								content.type === "text"
+									? {
+											type: "text" as const,
+											text: content.text,
+											...(content.textSignature === undefined
+												? {}
+												: { textSignature: content.textSignature }),
+										}
+									: { type: "image" as const, data: content.data, mimeType: content.mimeType },
+							),
+				display: message.display,
+				...(message.details === undefined
+					? {}
+					: { details: toWireJsonValue(message.details, "custom message details") }),
+				timestamp: message.timestamp,
+			};
+		case "branchSummary":
+			return {
+				role: "branchSummary",
+				summary: message.summary,
+				fromId: message.fromId,
+				timestamp: message.timestamp,
+			};
+		case "compactionSummary":
+			return {
+				role: "compactionSummary",
+				summary: message.summary,
+				tokensBefore: message.tokensBefore,
+				timestamp: message.timestamp,
+			};
+		default:
+			return assertNever(message);
+	}
+}
+
+function toWireEntry(entry: Entry): LaneEntry {
+	const base = { id: entry.id, parentId: entry.parentId, seq: entry.seq, timestamp: entry.timestamp };
+	switch (entry.type) {
+		case "message":
+			return {
+				...base,
+				type: "message",
+				message: toWireMessage(entry.message),
+				...(entry.terminate === undefined ? {} : { terminate: entry.terminate }),
+			};
+		case "compaction":
+			return {
+				...base,
+				type: "compaction",
+				summary: entry.summary,
+				retainedTail: entry.retainedTail.map(toWireMessage),
+				tokensBefore: entry.tokensBefore,
+				...(entry.details === undefined ? {} : { details: entry.details }),
+				...(entry.usage === undefined ? {} : { usage: toHarnessUsage(entry.usage) }),
+				fromHook: entry.fromHook,
+			};
+		case "branch_summary":
+			return {
+				...base,
+				type: "branch_summary",
+				fromId: entry.fromId,
+				summary: entry.summary,
+				...(entry.details === undefined ? {} : { details: entry.details }),
+				...(entry.usage === undefined ? {} : { usage: toHarnessUsage(entry.usage) }),
+				fromHook: entry.fromHook,
+			};
+		case "custom":
+			return {
+				...base,
+				type: "custom",
+				customType: entry.customType,
+				...(entry.data === undefined ? {} : { data: entry.data }),
+			};
+		default:
+			return assertNever(entry);
+	}
+}
+
+function toWireToolOutput(result: AgentToolResult<unknown>): ToolOutput {
+	return {
+		content: result.content.map((content) =>
+			content.type === "text"
+				? {
+						type: "text" as const,
+						text: content.text,
+						...(content.textSignature === undefined ? {} : { textSignature: content.textSignature }),
+					}
+				: { type: "image" as const, data: content.data, mimeType: content.mimeType },
+		),
+		...(result.details === undefined ? {} : { details: toWireJsonValue(result.details, "tool output details") }),
+		...(result.usage === undefined ? {} : { usage: toHarnessUsage(result.usage) }),
+	};
+}
+
+function toWireFrame(event: Extract<HarnessEvent, { type: "message_update" }>): AssistantMessageFrame {
+	const frame = assistantMessageEventToFrame(event.event);
+	if (frame === undefined) throw new TypeError(`Unsupported assistant message event: ${event.event.type}`);
+	switch (frame.type) {
+		case "start":
+			return { type: "start", partial: toWireAssistantMessage(frame.partial) };
+		case "text_start":
+			return { type: "text_start", contentIndex: frame.contentIndex, content: { ...frame.content } };
+		case "text_delta":
+		case "thinking_delta":
+		case "toolcall_delta":
+			return { ...frame };
+		case "text_end":
+			return { ...frame };
+		case "thinking_start":
+			return { type: "thinking_start", contentIndex: frame.contentIndex, content: { ...frame.content } };
+		case "thinking_end":
+			return { ...frame };
+		case "toolcall_start":
+			return {
+				type: "toolcall_start",
+				contentIndex: frame.contentIndex,
+				toolCall: {
+					...frame.toolCall,
+					arguments: Object.fromEntries(
+						Object.entries(frame.toolCall.arguments).map(([key, value]) => [
+							key,
+							toWireJsonValue(value, `tool argument ${key}`),
+						]),
+					),
+				},
+			};
+		case "toolcall_end":
+			return {
+				...frame,
+				arguments: Object.fromEntries(
+					Object.entries(frame.arguments).map(([key, value]) => [
+						key,
+						toWireJsonValue(value, `tool argument ${key}`),
+					]),
+				),
+			};
+		default:
+			return assertNever(frame);
+	}
+}
+
+function toWireMissing(missing: { tools: readonly string[]; model?: string }): { tools: string[]; models: string[] } {
+	return { tools: [...missing.tools], models: missing.model === undefined ? [] : [missing.model] };
+}
+
+function toWireSuspendedOperation(
+	suspended: NonNullable<NonNullable<HarnessLaneSnapshot["operation"]>["suspended"]>,
+): NonNullable<NonNullable<LaneSnapshot["operation"]>["suspended"]> {
+	const base = {
+		lane: suspended.lane,
+		operationId: suspended.operationId,
+		kind: suspended.kind,
+		startedAt: suspended.startedAt,
+		...(suspended.prompt === undefined ? {} : { prompt: suspended.prompt.map(toWireMessage) }),
+		...(suspended.aborting === undefined
+			? {}
+			: {
+					aborting: {
+						steer: suspended.aborting.steer.map(toWireMessage),
+						followUp: suspended.aborting.followUp.map(toWireMessage),
+					},
+				}),
+	};
+	if (suspended.reason === "deferred") {
+		return { ...base, reason: "deferred", deferred: toWireDeferred(suspended.deferred) };
+	}
+	if (suspended.reason === "missing_identities") {
+		return { ...base, reason: "missing_identities", missing: toWireMissing(suspended.missing) };
+	}
+	return {
+		...base,
+		reason: "crash",
+		...(suspended.deferred === undefined ? {} : { deferred: toWireDeferred(suspended.deferred) }),
+		...(suspended.missing === undefined ? {} : { missing: toWireMissing(suspended.missing) }),
+	};
+}
+
+export function toWireLaneSnapshot(snapshot: HarnessLaneSnapshot): LaneSnapshot {
+	return {
+		lane: snapshot.lane,
+		transcript: snapshot.transcript.map(toWireEntry),
+		leafId: snapshot.leafId,
+		operation:
+			snapshot.operation === null
+				? null
+				: {
+						id: snapshot.operation.id,
+						kind: snapshot.operation.kind,
+						status: snapshot.operation.status,
+						startedAt: snapshot.operation.startedAt,
+						...(snapshot.operation.suspended === undefined
+							? {}
+							: { suspended: toWireSuspendedOperation(snapshot.operation.suspended) }),
+						...(snapshot.operation.streamingMessage === undefined
+							? {}
+							: { streamingMessage: toWireAssistantMessage(snapshot.operation.streamingMessage) }),
+						runningTools: snapshot.operation.runningTools.map((tool) => ({
+							toolCallId: tool.toolCallId,
+							toolName: tool.toolName,
+							args: toWireJsonValue(tool.args, "running tool arguments"),
+							...(tool.partialResult === undefined
+								? {}
+								: { partialResult: toWireToolOutput(tool.partialResult) }),
+						})),
+						...(snapshot.operation.retry === undefined ? {} : { retry: { ...snapshot.operation.retry } }),
+					},
+		queues: {
+			steer: snapshot.queues.steer.map((item) => ({ entryId: item.entryId, message: toWireMessage(item.message) })),
+			followUp: snapshot.queues.followUp.map((item) => ({
+				entryId: item.entryId,
+				message: toWireMessage(item.message),
+			})),
+			nextRun: snapshot.queues.nextRun.map((item) => ({
+				entryId: item.entryId,
+				message: toWireMessage(item.message),
+			})),
+		},
+		pendingWrites: snapshot.pendingWrites.map((pending) => ({
+			entryId: pending.entryId,
+			type: pending.type,
+			...(pending.customType === undefined ? {} : { customType: pending.customType }),
+			...(pending.message === undefined ? {} : { message: toWireMessage(pending.message) }),
+			...(pending.data === undefined ? {} : { data: pending.data }),
+		})),
+		faulted: snapshot.faulted,
+	};
+}
+
+export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
+	const lane = "lane" in event && typeof event.lane === "string" ? event.lane : undefined;
+	const base = lane === undefined ? {} : { lane, ...(event.recovery === true ? { recovery: true as const } : {}) };
+	switch (event.type) {
+		case "run_start":
+		case "run_resume":
+			return { type: event.type, runId: event.runId, ...base, lane: event.lane };
+		case "run_suspend":
+			return event.reason === "deferred"
+				? {
+						type: "run_suspend",
+						runId: event.runId,
+						reason: "deferred",
+						deferred: event.deferred,
+						...base,
+						lane: event.lane,
+					}
+				: {
+						type: "run_suspend",
+						runId: event.runId,
+						reason: "missing_identities",
+						missing: toWireMissing(event.missing),
+						...base,
+						lane: event.lane,
+					};
+		case "run_abort":
+			return {
+				type: "run_abort",
+				runId: event.runId,
+				steer: event.steer.map(toWireMessage),
+				followUp: event.followUp.map(toWireMessage),
+				...base,
+				lane: event.lane,
+			};
+		case "run_end": {
+			const final =
+				event.finalEntryId === undefined
+					? {}
+					: { finalEntryId: event.finalEntryId, finalMessage: toWireAssistantMessage(event.finalMessage) };
+			return event.outcome === "failed"
+				? { ...event, error: { ...event.error }, ...final, ...base, lane: event.lane }
+				: { ...event, ...final, ...base, lane: event.lane };
+		}
+		case "message_start":
+		case "message_end":
+			return { ...event, message: toWireMessage(event.message), ...base, lane: event.lane };
+		case "message_update":
+			return { type: "message_update", runId: event.runId, frame: toWireFrame(event), ...base, lane: event.lane };
+		case "tool_start":
+			return {
+				...event,
+				args: toWireJsonValue(event.args, "tool arguments"),
+				...base,
+				lane: event.lane,
+			};
+		case "tool_update":
+			return { ...event, partialResult: toWireToolOutput(event.partialResult), ...base, lane: event.lane };
+		case "tool_end":
+			return { ...event, result: toWireToolOutput(event.result), ...base, lane: event.lane };
+		case "entry_added":
+			return { type: "entry_added", entry: toWireEntry(event.entry), ...base, lane: event.lane };
+		case "queue_update":
+			return {
+				type: "queue_update",
+				steer: event.steer.map((item) => ({ entryId: item.entryId, message: toWireMessage(item.message) })),
+				followUp: event.followUp.map((item) => ({ entryId: item.entryId, message: toWireMessage(item.message) })),
+				nextRun: event.nextRun.map((item) => ({ entryId: item.entryId, message: toWireMessage(item.message) })),
+				...base,
+				lane: event.lane,
+			};
+		case "retry_scheduled":
+		case "retry_start":
+		case "retry_end":
+			return { ...event, ...base, lane: event.lane };
+		case "fault":
+			return { type: "fault", code: event.code, message: event.message };
+		case "handler_error":
+		case "turn_start":
+		case "turn_end":
+		case "write_pending":
+		case "fact_update":
+		case "config_update":
+		case "compaction_start":
+		case "compaction_end":
+		case "compaction_suspend":
+		case "navigation_start":
+		case "navigation_suspend":
+		case "navigation_end":
+		case "lane_created":
+		case "usage":
+			return undefined;
+		default:
+			return assertNever(event);
+	}
 }
 
 function assertNever(value: never): never {

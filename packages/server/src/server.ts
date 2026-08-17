@@ -258,7 +258,9 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 	private async handleRequest(state: ConnectionState, envelope: RequestEnvelope): Promise<void> {
 		try {
 			if (envelope.serverId !== this.serverId) throw new WrongServerError();
-			const result: ProtocolRpcResult = await this.sessions.executeCall(envelope.call, state);
+			const result: ProtocolRpcResult = await this.sessions.executeCall(envelope.call, state, async (message) => {
+				await this.sendMessage(state, message);
+			});
 			await this.sendMessage(state, {
 				type: "response",
 				id: envelope.id,

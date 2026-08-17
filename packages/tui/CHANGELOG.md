@@ -2,9 +2,9 @@
 
 ## [Unreleased]
 
-### Added
+### Fixed
 
-- Added fullscreen component mouse dispatch with hit-testing, bubbling through `Container` and `Box`, pointer capture, focus transfer, overlays, render control, and the `MouseRegion` wrapper; `Input`, `Editor`, `SelectList`, and `SettingsList` now support pointer interaction.
+- Fixed duplicate fullscreen right-click paste in VS Code-based terminals on Windows ([#8186](https://github.com/earendil-works/pi/issues/8186)).
 
 ## [0.84.2] - 2026-08-14
 
