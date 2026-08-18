@@ -79,7 +79,6 @@ function buildForkSnapshot(source: SqliteStorageSnapshot, options: ForkOptions):
 		{
 			entries: source.entries,
 			scalarValues: source.scalarValues,
-			listValues: [],
 			entriesComplete: source.entriesComplete,
 		},
 		options,
