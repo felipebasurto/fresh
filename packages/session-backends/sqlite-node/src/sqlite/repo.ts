@@ -152,7 +152,6 @@ export class SqliteSessionRepo {
 
 	async create(options: SqliteSessionCreateOptions | undefined, _context: Context): Promise<SqliteOpenSession> {
 		options ??= {};
-		await mkdir(this.directory, { recursive: true });
 		const createdAt = this.now();
 		const id = options.id ?? uuidv7(createdAt);
 		this.reserveId(id);
@@ -163,6 +162,7 @@ export class SqliteSessionRepo {
 		let initialized = false;
 		let session: SqliteOpenSession | undefined;
 		try {
+			await mkdir(this.directory, { recursive: true });
 			const file = await openFile(path, "wx");
 			await file.close();
 			reservedFile = true;

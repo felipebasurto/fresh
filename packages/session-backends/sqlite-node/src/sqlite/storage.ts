@@ -106,12 +106,12 @@ export class SqliteStorage implements Storage {
 
 	scanBranch(query: StorageBranchScan, _context: Context): Promise<Entry[]> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
-		return Promise.resolve(scanBranchEntries(this.db, query));
+		return Promise.resolve().then(() => scanBranchEntries(this.db, query));
 	}
 
 	scanBranchStructure(query: StorageBranchScan, _context: Context): Promise<EntryStructure[]> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
-		return Promise.resolve(scanBranchEntryStructures(this.db, query));
+		return Promise.resolve().then(() => scanBranchEntryStructures(this.db, query));
 	}
 
 	scanEntries(query: EntryScan, _context: Context): Promise<Entry[]> {

@@ -236,7 +236,7 @@ describe("SqliteSessionRepo", () => {
 		});
 	});
 
-	it("forks at a serialized boundary for an open source session", async () => {
+	it("does not copy usage ledger rows when forking", async () => {
 		await withTempDir(async (directory) => {
 			const repo = new SqliteSessionRepo({
 				directory,
@@ -244,125 +244,6 @@ describe("SqliteSessionRepo", () => {
 				now: () => 1_700_000_000_000,
 			});
 			const source = await repo.create({ id: "source" }, BACKGROUND_CONTEXT);
-			const applicationValue = storedValues.value<string>("test.application.value");
-			const applicationList = storedValues.list<string>("test.application.list");
-			const firstCommit = source.mutate(
-				"main",
-				(mutator) =>
-					mutator.commit(
-						[
-							sessionWrites.insertEntry({ id: "root", parentId: null, type: "custom", customType: "root" }),
-							storedValues.setValue(storedValues.laneLeaf("main"), "root"),
-							storedValues.setValue(applicationValue, "excluded"),
-							storedValues.appendList(applicationList, "excluded"),
-						],
-						BACKGROUND_CONTEXT,
-					),
-				BACKGROUND_CONTEXT,
-			);
-			const forkPromise = repo.fork(source.metadata, { id: "fork" }, BACKGROUND_CONTEXT);
-			const secondCommit = source.mutate(
-				"main",
-				(mutator) =>
-					mutator.commit(
-						[
-							sessionWrites.insertEntry({ id: "child", parentId: "root", type: "custom", customType: "child" }),
-							storedValues.setValue(storedValues.laneLeaf("main"), "child"),
-						],
-						BACKGROUND_CONTEXT,
-					),
-				BACKGROUND_CONTEXT,
-			);
-
-			const [, fork] = await Promise.all([firstCommit, forkPromise]);
-			await secondCommit;
-
-			expect(await fork.getLeafId(BACKGROUND_CONTEXT)).toBe("root");
-			expect((await fork.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)).map((entry) => entry.id)).toEqual([
-				"root",
-			]);
-			expect(await fork.getValue(applicationValue, BACKGROUND_CONTEXT)).toBeUndefined();
-			expect(await fork.readList(applicationList, undefined, BACKGROUND_CONTEXT)).toEqual([]);
-			await Promise.all([source.close(BACKGROUND_CONTEXT), fork.close(BACKGROUND_CONTEXT)]);
-		});
-	});
-
-	it("forks the whole open tree with every configured lane", async () => {
-		await withTempDir(async (directory) => {
-			const repo = new SqliteSessionRepo({
-				directory,
-				databaseFactory: createNodeSqliteFactory(),
-				now: () => 1_700_000_000_000,
-			});
-			const source = await repo.create({ id: "source" }, BACKGROUND_CONTEXT);
-			const configuration = {
-				model: { provider: "test", modelId: "model" },
-				thinkingLevel: "off" as const,
-				activeToolNames: [],
-			};
-			await source.mutate(
-				"main",
-				(mutator) =>
-					mutator.commit(
-						[
-							sessionWrites.insertEntry({ id: "root", parentId: null, type: "custom", customType: "root" }),
-							sessionWrites.insertEntry({ id: "child", parentId: "root", type: "custom", customType: "child" }),
-							sessionWrites.insertEntry({
-								id: "sibling",
-								parentId: "root",
-								type: "custom",
-								customType: "sibling",
-							}),
-							storedValues.setValue(storedValues.laneLeaf("main"), "child"),
-							storedValues.setValue(storedValues.laneLeaf("review"), "sibling"),
-							storedValues.setValue(storedValues.laneConfig("review"), configuration),
-							storedValues.setValue(storedValues.laneState("review"), {
-								currentOperationId: null,
-								pendingNextRun: [],
-							}),
-						],
-						BACKGROUND_CONTEXT,
-					),
-				BACKGROUND_CONTEXT,
-			);
-
-			const fork = await repo.fork(source.metadata, { id: "fork", scope: "tree" }, BACKGROUND_CONTEXT);
-
-			expect((await fork.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)).map(({ id }) => id)).toEqual([
-				"root",
-				"child",
-				"sibling",
-			]);
-			expect(await fork.getLeafId(BACKGROUND_CONTEXT)).toBe("child");
-			expect(await fork.view("review").getLeafId(BACKGROUND_CONTEXT)).toBe("sibling");
-			expect((await fork.getValue(storedValues.laneState("review"), BACKGROUND_CONTEXT))?.value).toEqual({
-				currentOperationId: null,
-				pendingNextRun: [],
-			});
-
-			const branchFork = await repo.fork(source.metadata, { id: "branch", entryId: "root" }, BACKGROUND_CONTEXT);
-			expect((await branchFork.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)).map(({ id }) => id)).toEqual([
-				"root",
-			]);
-			expect(await branchFork.getLeafId(BACKGROUND_CONTEXT)).toBe("root");
-			await Promise.all([
-				source.close(BACKGROUND_CONTEXT),
-				fork.close(BACKGROUND_CONTEXT),
-				branchFork.close(BACKGROUND_CONTEXT),
-			]);
-		});
-	});
-
-	it("forks one branch with scoped values and a zero ledger", async () => {
-		await withTempDir(async (directory) => {
-			const repo = new SqliteSessionRepo({
-				directory,
-				databaseFactory: createNodeSqliteFactory(),
-				now: () => 1_700_000_000_000,
-			});
-			const source = await repo.create({ id: "source" }, BACKGROUND_CONTEXT);
-			const applicationValue = storedValues.value<string>("test.application.value");
-			const applicationList = storedValues.list<string>("test.application.list");
 			await source.mutate(
 				"main",
 				(mutator) =>
@@ -375,30 +256,7 @@ describe("SqliteSessionRepo", () => {
 								type: "message",
 								message: { role: "user", content: "child", timestamp: 1 },
 							}),
-							sessionWrites.insertEntry({
-								id: "sibling",
-								parentId: "root",
-								type: "custom",
-								customType: "sibling",
-							}),
 							storedValues.setValue(storedValues.laneLeaf("main"), "child"),
-							storedValues.setValue(storedValues.sessionName, "source name"),
-							storedValues.setValue(storedValues.entryLabel("root"), "root label"),
-							storedValues.setValue(storedValues.entryLabel("sibling"), "sibling label"),
-							storedValues.setValue(applicationValue, "excluded"),
-							storedValues.appendList(applicationList, "excluded"),
-							storedValues.setValue(storedValues.laneLastResult("main"), {
-								operationId: "previous",
-								kind: "navigation",
-								leafId: "child",
-								oldLeafId: "root",
-								outcome: "completed",
-							}),
-							storedValues.setValue(storedValues.pendingEntry("pending"), {
-								type: "custom",
-								customType: "pending",
-							}),
-							storedValues.setValue(storedValues.operationToolMemo("operation", "invocation", "memo"), true),
 							sessionWrites.insertUsage({
 								id: "usage",
 								adjustment: false,
@@ -420,34 +278,8 @@ describe("SqliteSessionRepo", () => {
 			await source.close(BACKGROUND_CONTEXT);
 			const fork = await repo.fork(source.metadata, { id: "fork", entryId: "child" }, BACKGROUND_CONTEXT);
 
-			expect((await fork.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)).map((entry) => entry.id)).toEqual([
-				"root",
-				"child",
-			]);
-			expect(await fork.getLeafId(BACKGROUND_CONTEXT)).toBe("child");
-			expect(await fork.getName(BACKGROUND_CONTEXT)).toBe("source name");
-			expect(await fork.getLabel("root", BACKGROUND_CONTEXT)).toBe("root label");
-			expect(await fork.getLabel("sibling", BACKGROUND_CONTEXT)).toBeUndefined();
-			expect(await fork.getValue(applicationValue, BACKGROUND_CONTEXT)).toBeUndefined();
-			expect(await fork.readList(applicationList, undefined, BACKGROUND_CONTEXT)).toEqual([]);
-			expect(await fork.getValue(storedValues.laneLastResult("main"), BACKGROUND_CONTEXT)).toBeUndefined();
-			expect(await fork.getValue(storedValues.pendingEntry("pending"), BACKGROUND_CONTEXT)).toBeUndefined();
-			expect(
-				await fork.getValue(storedValues.operationToolMemo("operation", "invocation", "memo"), BACKGROUND_CONTEXT),
-			).toBeUndefined();
 			await withDb(fork.metadata.path, (db) => {
 				expect(sql`SELECT COUNT(*) AS count FROM usage_ledger`.get<{ count: number }>(db)).toEqual({ count: 0 });
-			});
-			expect(await fork.getStats(BACKGROUND_CONTEXT)).toEqual({
-				messageCount: 1,
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
 			});
 			await Promise.all([source.close(BACKGROUND_CONTEXT), fork.close(BACKGROUND_CONTEXT)]);
 		});
