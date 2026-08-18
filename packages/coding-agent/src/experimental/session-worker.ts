@@ -576,17 +576,11 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 		harness.events.on("compaction_start", (event) =>
 			lifecycle?.operationStarted("compaction", event.lane, event.runId),
 		),
-		harness.events.on("compaction_suspend", (event) =>
-			lifecycle?.operationStopped("compaction", event.lane, event.runId),
-		),
 		harness.events.on("compaction_end", (event) =>
 			lifecycle?.operationStopped("compaction", event.lane, event.runId),
 		),
 		harness.events.on("navigation_start", (event) =>
 			lifecycle?.operationStarted("navigation", event.lane, event.runId),
-		),
-		harness.events.on("navigation_suspend", (event) =>
-			lifecycle?.operationStopped("navigation", event.lane, event.runId),
 		),
 		harness.events.on("navigation_end", (event) =>
 			lifecycle?.operationStopped("navigation", event.lane, event.runId),

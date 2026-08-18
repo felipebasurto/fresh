@@ -402,11 +402,9 @@ describe("protocol validation", () => {
 		{
 			ok: true,
 			value: {
-				kind: "suspended",
-				reason: "missing_identities",
+				kind: "action_required",
 				runId: "run-1",
-				leafId: "leaf-1",
-				missing: { tools: ["tool"], models: [] },
+				action: { kind: "confirm", description: "Confirm", details: { safe: true } },
 			},
 		},
 		{

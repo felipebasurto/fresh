@@ -289,24 +289,24 @@ function toWireRunValue(value: Extract<HarnessRunResult, { ok: true }>["value"])
 					};
 		}
 		case "suspended":
-			if (value.reason === "deferred") {
-				return {
-					kind: "suspended",
-					reason: "deferred",
-					runId: value.runId,
-					leafId: value.leafId,
-					finalEntryId: value.finalEntryId,
-					deferred: toWireDeferred(value.deferred),
-				};
-			}
 			return {
 				kind: "suspended",
-				reason: "missing_identities",
+				reason: "deferred",
 				runId: value.runId,
 				leafId: value.leafId,
-				missing: {
-					tools: [...value.missing.tools],
-					models: value.missing.model === undefined ? [] : [value.missing.model],
+				finalEntryId: value.finalEntryId,
+				deferred: toWireDeferred(value.deferred),
+			};
+		case "action_required":
+			return {
+				kind: "action_required",
+				runId: value.runId,
+				action: {
+					kind: value.action.kind,
+					description: value.action.description,
+					...(value.action.details === undefined
+						? {}
+						: { details: toWireJsonValue(value.action.details, "action details") }),
 				},
 			};
 		default:
@@ -322,14 +322,6 @@ function toWireRunError(error: Extract<HarnessRunResult, { ok: false }>["error"]
 				lane: error.lane,
 				operationId: error.operationId,
 				operationKind: error.operationKind,
-				message: error.message,
-			};
-		case "MissingIdentities":
-			return {
-				_tag: "MissingIdentities",
-				lane: error.lane,
-				tools: [...error.tools],
-				models: error.model === undefined ? [] : [error.model],
 				message: error.message,
 			};
 		case "InvalidMessage":
@@ -647,42 +639,6 @@ function toWireFrame(event: Extract<HarnessEvent, { type: "message_update" }>): 
 	}
 }
 
-function toWireMissing(missing: { tools: readonly string[]; model?: string }): { tools: string[]; models: string[] } {
-	return { tools: [...missing.tools], models: missing.model === undefined ? [] : [missing.model] };
-}
-
-function toWireSuspendedOperation(
-	suspended: NonNullable<NonNullable<HarnessLaneSnapshot["operation"]>["suspended"]>,
-): NonNullable<NonNullable<LaneSnapshot["operation"]>["suspended"]> {
-	const base = {
-		lane: suspended.lane,
-		operationId: suspended.operationId,
-		kind: suspended.kind,
-		startedAt: suspended.startedAt,
-		...(suspended.prompt === undefined ? {} : { prompt: suspended.prompt.map(toWireMessage) }),
-		...(suspended.aborting === undefined
-			? {}
-			: {
-					aborting: {
-						steer: suspended.aborting.steer.map(toWireMessage),
-						followUp: suspended.aborting.followUp.map(toWireMessage),
-					},
-				}),
-	};
-	if (suspended.reason === "deferred") {
-		return { ...base, reason: "deferred", deferred: toWireDeferred(suspended.deferred) };
-	}
-	if (suspended.reason === "missing_identities") {
-		return { ...base, reason: "missing_identities", missing: toWireMissing(suspended.missing) };
-	}
-	return {
-		...base,
-		reason: "crash",
-		...(suspended.deferred === undefined ? {} : { deferred: toWireDeferred(suspended.deferred) }),
-		...(suspended.missing === undefined ? {} : { missing: toWireMissing(suspended.missing) }),
-	};
-}
-
 export function toWireLaneSnapshot(snapshot: HarnessLaneSnapshot): LaneSnapshot {
 	return {
 		lane: snapshot.lane,
@@ -696,9 +652,44 @@ export function toWireLaneSnapshot(snapshot: HarnessLaneSnapshot): LaneSnapshot 
 						kind: snapshot.operation.kind,
 						status: snapshot.operation.status,
 						startedAt: snapshot.operation.startedAt,
-						...(snapshot.operation.suspended === undefined
+						...(snapshot.operation.action === undefined
 							? {}
-							: { suspended: toWireSuspendedOperation(snapshot.operation.suspended) }),
+							: {
+									action: {
+										kind: snapshot.operation.action.kind,
+										description: snapshot.operation.action.description,
+										...(snapshot.operation.action.details === undefined
+											? {}
+											: {
+													details: toWireJsonValue(
+														snapshot.operation.action.details,
+														"snapshot action details",
+													),
+												}),
+									},
+								}),
+						...(snapshot.operation.deferred === undefined
+							? {}
+							: {
+									deferred: {
+										handle: toWireDeferred(snapshot.operation.deferred.handle),
+										poll: snapshot.operation.deferred.poll,
+									},
+								}),
+						...(snapshot.operation.drained === undefined
+							? {}
+							: {
+									drained: {
+										steer: snapshot.operation.drained.steer.map((item) => ({
+											entryId: item.entryId,
+											message: toWireMessage(item.message),
+										})),
+										followUp: snapshot.operation.drained.followUp.map((item) => ({
+											entryId: item.entryId,
+											message: toWireMessage(item.message),
+										})),
+									},
+								}),
 						...(snapshot.operation.streamingMessage === undefined
 							? {}
 							: { streamingMessage: toWireAssistantMessage(snapshot.operation.streamingMessage) }),
@@ -742,23 +733,14 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 		case "run_resume":
 			return { type: event.type, runId: event.runId, ...base, lane: event.lane };
 		case "run_suspend":
-			return event.reason === "deferred"
-				? {
-						type: "run_suspend",
-						runId: event.runId,
-						reason: "deferred",
-						deferred: event.deferred,
-						...base,
-						lane: event.lane,
-					}
-				: {
-						type: "run_suspend",
-						runId: event.runId,
-						reason: "missing_identities",
-						missing: toWireMissing(event.missing),
-						...base,
-						lane: event.lane,
-					};
+			return {
+				type: "run_suspend",
+				runId: event.runId,
+				reason: "deferred",
+				deferred: toWireDeferred(event.deferred),
+				...base,
+				lane: event.lane,
+			};
 		case "run_abort":
 			return {
 				type: "run_abort",
@@ -818,9 +800,7 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 		case "config_update":
 		case "compaction_start":
 		case "compaction_end":
-		case "compaction_suspend":
 		case "navigation_start":
-		case "navigation_suspend":
 		case "navigation_end":
 		case "lane_created":
 		case "usage":

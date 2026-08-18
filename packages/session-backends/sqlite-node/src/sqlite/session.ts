@@ -12,6 +12,7 @@ import type {
 	SessionMutator,
 	SessionStats,
 	SessionTree,
+	StorageBranchScan,
 	StoredValue,
 	Value,
 	ValueList,
@@ -84,6 +85,10 @@ export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 		context: Context,
 	): Promise<ListElement<T>[]> {
 		return this.admit(() => this.session.readList(address, options, context));
+	}
+
+	scanBranch(query: StorageBranchScan, context: Context): Promise<Entry[]> {
+		return this.admit(() => this.session.scanBranch(query, context));
 	}
 
 	view(lane: string): SessionTree {

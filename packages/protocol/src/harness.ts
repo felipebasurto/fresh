@@ -168,9 +168,10 @@ const OperationErrorSchema = StrictObject({
 	message: Type.String(),
 	details: Type.Optional(JsonValueSchema),
 });
-const MissingIdentityListSchema = StrictObject({
-	tools: Type.Array(Type.String()),
-	models: Type.Array(Type.String()),
+const ActionInfoSchema = StrictObject({
+	kind: Type.String(),
+	description: Type.String(),
+	details: Type.Optional(JsonValueSchema),
 });
 const RunValueSchema = Type.Union([
 	StrictObject({ kind: Type.Literal("completed"), runId: IdSchema, leafId: IdSchema }),
@@ -212,11 +213,9 @@ const RunValueSchema = Type.Union([
 		deferred: DeferredHandleSchema,
 	}),
 	StrictObject({
-		kind: Type.Literal("suspended"),
-		reason: Type.Literal("missing_identities"),
+		kind: Type.Literal("action_required"),
 		runId: IdSchema,
-		leafId: IdSchema,
-		missing: MissingIdentityListSchema,
+		action: ActionInfoSchema,
 	}),
 ]);
 const RunErrorSchema = Type.Union([
@@ -225,13 +224,6 @@ const RunErrorSchema = Type.Union([
 		lane: Type.String(),
 		operationId: IdSchema,
 		operationKind: Type.Union([Type.Literal("run"), Type.Literal("compaction"), Type.Literal("navigation")]),
-		message: Type.String(),
-	}),
-	StrictObject({
-		_tag: Type.Literal("MissingIdentities"),
-		lane: Type.String(),
-		tools: Type.Array(Type.String()),
-		models: Type.Array(Type.String()),
 		message: Type.String(),
 	}),
 	StrictObject({
@@ -363,34 +355,6 @@ export const LaneEntrySchema = Type.Union([
 ]);
 export type LaneEntry = Static<typeof LaneEntrySchema>;
 
-const MissingIdentityListSchemaForSnapshot = StrictObject({
-	tools: Type.Array(Type.String()),
-	models: Type.Array(Type.String()),
-});
-const SuspendedOperationBase = {
-	lane: Type.String(),
-	operationId: IdSchema,
-	kind: Type.Union([Type.Literal("run"), Type.Literal("compaction"), Type.Literal("navigation")]),
-	startedAt: TimestampSchema,
-	prompt: Type.Optional(Type.Array(PromptMessageSchema)),
-	aborting: Type.Optional(
-		StrictObject({ steer: Type.Array(PromptMessageSchema), followUp: Type.Array(PromptMessageSchema) }),
-	),
-};
-const SuspendedOperationSchema = Type.Union([
-	StrictObject({ ...SuspendedOperationBase, reason: Type.Literal("deferred"), deferred: DeferredHandleSchema }),
-	StrictObject({
-		...SuspendedOperationBase,
-		reason: Type.Literal("missing_identities"),
-		missing: MissingIdentityListSchemaForSnapshot,
-	}),
-	StrictObject({
-		...SuspendedOperationBase,
-		reason: Type.Literal("crash"),
-		deferred: Type.Optional(DeferredHandleSchema),
-		missing: Type.Optional(MissingIdentityListSchemaForSnapshot),
-	}),
-]);
 const QueuedItemSchema = StrictObject({ entryId: IdSchema, message: PromptMessageSchema });
 const RunningToolSchema = StrictObject({
 	toolCallId: Type.String(),
@@ -401,9 +365,13 @@ const RunningToolSchema = StrictObject({
 const LaneOperationSchema = StrictObject({
 	id: IdSchema,
 	kind: Type.Union([Type.Literal("run"), Type.Literal("compaction"), Type.Literal("navigation")]),
-	status: Type.Union([Type.Literal("running"), Type.Literal("suspended"), Type.Literal("aborting")]),
+	status: Type.Union([Type.Literal("running"), Type.Literal("open"), Type.Literal("aborting")]),
 	startedAt: TimestampSchema,
-	suspended: Type.Optional(SuspendedOperationSchema),
+	action: Type.Optional(ActionInfoSchema),
+	deferred: Type.Optional(StrictObject({ handle: DeferredHandleSchema, poll: Type.Integer({ minimum: 0 }) })),
+	drained: Type.Optional(
+		StrictObject({ steer: Type.Array(QueuedItemSchema), followUp: Type.Array(QueuedItemSchema) }),
+	),
 	streamingMessage: Type.Optional(AssistantMessageSchema),
 	runningTools: Type.Array(RunningToolSchema),
 	retry: Type.Optional(
@@ -460,13 +428,6 @@ export const LaneEventSchema = Type.Union([
 		runId: IdSchema,
 		reason: Type.Literal("deferred"),
 		deferred: DeferredHandleSchema,
-		...LaneEventBase,
-	}),
-	StrictObject({
-		type: Type.Literal("run_suspend"),
-		runId: IdSchema,
-		reason: Type.Literal("missing_identities"),
-		missing: MissingIdentityListSchemaForSnapshot,
 		...LaneEventBase,
 	}),
 	StrictObject({

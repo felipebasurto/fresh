@@ -1,8 +1,10 @@
 import {
 	AgentHarness,
 	BACKGROUND_CONTEXT,
+	insertEntry,
 	MemorySessionRepo,
 	RemoteSession,
+	type StorageBranchScan,
 	setValue,
 	value,
 } from "@earendil-works/pi-agent-core";
@@ -86,6 +88,55 @@ describe("RemoteSession", () => {
 		await expect(capturedMutator?.getValue(applicationValue, BACKGROUND_CONTEXT)).rejects.toThrow(
 			"outside its mutation callback",
 		);
+		await expect(capturedMutator?.scanBranch({ start: "entry" }, BACKGROUND_CONTEXT)).rejects.toThrow(
+			"outside its mutation callback",
+		);
+
+		const rootId = "00000000-0000-7000-8000-000000000001";
+		const childId = "00000000-0000-7000-8000-000000000002";
+		await remote.mutate(
+			"main",
+			(mutator, context) =>
+				mutator.commit(
+					[
+						insertEntry({ id: rootId, parentId: null, type: "custom", customType: "root" }),
+						insertEntry({ id: childId, parentId: rootId, type: "custom", customType: "child" }),
+					],
+					context,
+				),
+			BACKGROUND_CONTEXT,
+		);
+		await expect(
+			remote.scanBranch({ start: childId, order: "oldestFirst" }, BACKGROUND_CONTEXT),
+		).resolves.toMatchObject([{ id: rootId }, { id: childId }]);
+		const child = (await remote.getEntries([childId], BACKGROUND_CONTEXT)).get(childId);
+		if (child === undefined) throw new Error("Expected child entry");
+		await expect(
+			remote.scanBranch(
+				{
+					start: childId,
+					stopAtId: rootId,
+					type: "custom",
+					customType: "root",
+					order: "newestFirst",
+					limit: 2,
+					cursor: { seq: child.seq },
+				},
+				BACKGROUND_CONTEXT,
+			),
+		).resolves.toMatchObject([{ id: rootId }]);
+		await expect(
+			remote.scanBranch({ start: childId, stopAtType: "custom" }, BACKGROUND_CONTEXT),
+		).resolves.toMatchObject([{ id: childId }]);
+		await remote.mutate(
+			"main",
+			async (mutator, context) => {
+				await expect(mutator.scanBranch({ start: childId, limit: 1 }, context)).resolves.toMatchObject([
+					{ id: childId },
+				]);
+			},
+			BACKGROUND_CONTEXT,
+		);
 
 		await remote.setValue(applicationValue, "tree-write", BACKGROUND_CONTEXT);
 		await expect(remote.getValue(applicationValue, BACKGROUND_CONTEXT)).resolves.toMatchObject({
@@ -102,6 +153,32 @@ describe("RemoteSession", () => {
 			BACKGROUND_CONTEXT,
 		);
 		await expect(review.getLeafId(BACKGROUND_CONTEXT)).resolves.toBeNull();
+		await remote.close(BACKGROUND_CONTEXT);
+	});
+
+	test("validates callback-scoped branch scan RPC arguments", async () => {
+		const { remote } = await createRemoteSession("remote-scan-validation");
+		const invalidQueries: unknown[] = [
+			null,
+			{},
+			{ start: "" },
+			{ start: "entry", type: "invalid" },
+			{ start: "entry", order: "sideways" },
+			{ start: "entry", limit: Number.NaN },
+			{ start: "entry", cursor: { seq: "one" } },
+		];
+		for (const query of invalidQueries) {
+			await expect(remote.scanBranch(query as StorageBranchScan, BACKGROUND_CONTEXT)).rejects.toThrow();
+		}
+		await remote.mutate(
+			"main",
+			async (mutator, context) => {
+				await expect(
+					mutator.scanBranch({ start: "entry", stopAtType: "invalid" } as unknown as StorageBranchScan, context),
+				).rejects.toThrow("query.stopAtType");
+			},
+			BACKGROUND_CONTEXT,
+		);
 		await remote.close(BACKGROUND_CONTEXT);
 	});
 

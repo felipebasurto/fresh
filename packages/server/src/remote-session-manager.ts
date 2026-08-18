@@ -4,12 +4,14 @@ import type {
 	BranchScan,
 	Context,
 	EntryQuery,
+	EntryType,
 	JsonValue,
 	LaneConfiguration,
 	ListReadOptions,
 	Session,
 	SessionMetadata,
 	SessionMutator,
+	StorageBranchScan,
 	Value,
 	ValueList,
 	Write,
@@ -101,6 +103,8 @@ export class RemoteSessionManager<TMetadata extends SessionMetadata = SessionMet
 				return owner.session.scanValues(expectValue(params.prefix), context);
 			case "session.readList":
 				return owner.session.readList(expectList(params.address), optionalOptions(params.options), context);
+			case "session.scanBranch":
+				return owner.session.scanBranch(expectStorageBranchScan(params.query), context);
 			case "session.createLane":
 				return owner.session
 					.createLane(
@@ -131,6 +135,10 @@ export class RemoteSessionManager<TMetadata extends SessionMetadata = SessionMet
 			case "session.mutation.readList": {
 				const mutation = this.#requireMutation(owner, params);
 				return mutation.mutator!.readList(expectList(params.address), optionalOptions(params.options), context);
+			}
+			case "session.mutation.scanBranch": {
+				const mutation = this.#requireMutation(owner, params);
+				return mutation.mutator!.scanBranch(expectStorageBranchScan(params.query), context);
 			}
 			case "session.mutation.commit": {
 				const mutation = this.#requireMutation(owner, params);
@@ -507,6 +515,46 @@ function optionalEntryQuery(value: unknown): EntryQuery | undefined {
 
 function optionalBranchScan(value: unknown): BranchScan | undefined {
 	return value === null ? undefined : (expectObject(value, "branch query") as unknown as BranchScan);
+}
+
+function expectStorageBranchScan(value: unknown): StorageBranchScan {
+	const query = expectObject(value, "storage branch query");
+	return {
+		start: expectString(query.start, "query.start"),
+		...(query.stopAtType === undefined ? {} : { stopAtType: expectEntryType(query.stopAtType, "query.stopAtType") }),
+		...(query.stopAtId === undefined ? {} : { stopAtId: expectString(query.stopAtId, "query.stopAtId") }),
+		...(query.type === undefined ? {} : { type: expectEntryType(query.type, "query.type") }),
+		...(query.customType === undefined ? {} : { customType: expectString(query.customType, "query.customType") }),
+		...(query.order === undefined ? {} : { order: expectBranchOrder(query.order) }),
+		...(query.limit === undefined ? {} : { limit: expectFiniteNumber(query.limit, "query.limit") }),
+		...(query.cursor === undefined ? {} : { cursor: expectEntryCursor(query.cursor) }),
+	};
+}
+
+function expectEntryType(value: unknown, name: string): EntryType {
+	if (value !== "message" && value !== "compaction" && value !== "branch_summary" && value !== "custom") {
+		throw new ProtocolValidationError(`${name} must be a valid entry type`);
+	}
+	return value;
+}
+
+function expectBranchOrder(value: unknown): "newestFirst" | "oldestFirst" {
+	if (value !== "newestFirst" && value !== "oldestFirst") {
+		throw new ProtocolValidationError("query.order must be newestFirst or oldestFirst");
+	}
+	return value;
+}
+
+function expectEntryCursor(value: unknown): { seq: number } {
+	const cursor = expectObject(value, "query.cursor");
+	return { seq: expectFiniteNumber(cursor.seq, "query.cursor.seq") };
+}
+
+function expectFiniteNumber(value: unknown, name: string): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		throw new ProtocolValidationError(`${name} must be a finite number`);
+	}
+	return value;
 }
 
 function abortError(signal: AbortSignal): Error {

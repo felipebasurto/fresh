@@ -78,6 +78,36 @@ describe("SqliteSessionRepo", () => {
 		});
 	});
 
+	it("exposes explicit branch scans through the open-session facade", async () => {
+		await withTempDir(async (directory) => {
+			const repo = new SqliteSessionRepo({
+				directory,
+				databaseFactory: createNodeSqliteFactory(),
+				now: () => 1_700_000_000_000,
+			});
+			const session = await repo.create({ id: "session" }, BACKGROUND_CONTEXT);
+			await session.mutate(
+				"main",
+				(mutator) =>
+					mutator.commit(
+						[
+							sessionWrites.insertEntry({ id: "root", parentId: null, type: "custom", customType: "root" }),
+							sessionWrites.insertEntry({ id: "child", parentId: "root", type: "custom", customType: "child" }),
+						],
+						BACKGROUND_CONTEXT,
+					),
+				BACKGROUND_CONTEXT,
+			);
+
+			expect(await session.scanBranch({ start: "child", order: "oldestFirst" }, BACKGROUND_CONTEXT)).toMatchObject([
+				{ id: "root" },
+				{ id: "child" },
+			]);
+			await session.close(BACKGROUND_CONTEXT);
+			await expect(session.scanBranch({ start: "child" }, BACKGROUND_CONTEXT)).rejects.toThrow("Session is closed");
+		});
+	});
+
 	it("rejects duplicate create without deleting the existing database", async () => {
 		await withTempDir(async (directory) => {
 			const repo = new SqliteSessionRepo({

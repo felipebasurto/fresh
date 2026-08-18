@@ -5,7 +5,6 @@ import {
 	type RunResult as HarnessRunResult,
 	InvalidMessage,
 	LaneBusy,
-	MissingIdentities,
 	UnknownSkill,
 	UnknownTemplate,
 } from "@earendil-works/pi-agent-core";
@@ -121,11 +120,12 @@ describe("Harness wire adapter", () => {
 	test.each([
 		{
 			ok: true,
-			value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+			value: { operation: "run", kind: "completed", runId: "run-1", leafId: "leaf-1" },
 		},
 		{
 			ok: true,
 			value: {
+				operation: "run",
 				kind: "completed",
 				runId: "run-1",
 				leafId: "leaf-1",
@@ -135,11 +135,12 @@ describe("Harness wire adapter", () => {
 		},
 		{
 			ok: true,
-			value: { kind: "aborted", runId: "run-1", leafId: "leaf-1" },
+			value: { operation: "run", kind: "aborted", runId: "run-1", leafId: "leaf-1" },
 		},
 		{
 			ok: true,
 			value: {
+				operation: "run",
 				kind: "aborted",
 				runId: "run-1",
 				leafId: "leaf-1",
@@ -150,6 +151,7 @@ describe("Harness wire adapter", () => {
 		{
 			ok: true,
 			value: {
+				operation: "run",
 				kind: "failed",
 				runId: "run-1",
 				leafId: "leaf-1",
@@ -159,6 +161,7 @@ describe("Harness wire adapter", () => {
 		{
 			ok: true,
 			value: {
+				operation: "run",
 				kind: "failed",
 				runId: "run-1",
 				leafId: "leaf-1",
@@ -170,6 +173,7 @@ describe("Harness wire adapter", () => {
 		{
 			ok: true,
 			value: {
+				operation: "run",
 				kind: "suspended",
 				reason: "deferred",
 				runId: "run-1",
@@ -178,33 +182,21 @@ describe("Harness wire adapter", () => {
 				deferred: { provider: "test", modelId: "model", api: "test", id: "deferred-1", data: { row: 1 } },
 			},
 		},
+		{
+			ok: true,
+			value: {
+				operation: "run",
+				kind: "action_required",
+				runId: "run-1",
+				action: { kind: "confirm", description: "Confirm", details: { safe: true } },
+			},
+		},
 	] satisfies HarnessRunResult[])("projects every Run outcome %#", (result) => {
 		const wire = toWireRunResult(result);
 		expect(Check(RunResultSchema, wire)).toBe(true);
-		expect(wire).toEqual(result);
-	});
-
-	test("projects singular Harness model identities to the wire list", () => {
-		const wire = toWireRunResult({
-			ok: true,
-			value: {
-				kind: "suspended",
-				reason: "missing_identities",
-				runId: "run-1",
-				leafId: "leaf-1",
-				missing: { tools: ["read"], model: "missing-model" },
-			},
-		});
-		expect(wire).toEqual({
-			ok: true,
-			value: {
-				kind: "suspended",
-				reason: "missing_identities",
-				runId: "run-1",
-				leafId: "leaf-1",
-				missing: { tools: ["read"], models: ["missing-model"] },
-			},
-		});
+		if (!result.ok || !wire.ok) throw new Error("Expected successful run result");
+		const { operation: _operation, ...expected } = result.value;
+		expect(wire.value).toEqual(expected);
 	});
 
 	test.each([
@@ -214,7 +206,6 @@ describe("Harness wire adapter", () => {
 			operationKind: "run",
 			message: "busy",
 		}),
-		new MissingIdentities({ lane: "main", tools: ["read"], model: "missing-model", message: "missing" }),
 		new InvalidMessage({ lane: "main", reason: "invalid", message: "invalid" }),
 		new UnknownSkill({ name: "skill", message: "unknown" }),
 		new UnknownTemplate({ name: "template", message: "unknown" }),
@@ -281,6 +272,7 @@ describe("Harness wire adapter", () => {
 		const result: HarnessRunResult = {
 			ok: true,
 			value: {
+				operation: "run",
 				kind: "completed",
 				runId: "run-1",
 				leafId: "leaf-1",
