@@ -666,6 +666,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (await runExperimentalCommand(args)) {
+		if (args[0] === "client") process.exit(process.exitCode ?? 0);
 		return;
 	}
 

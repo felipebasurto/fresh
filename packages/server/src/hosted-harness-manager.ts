@@ -69,6 +69,7 @@ interface HostedSession {
 interface HostedHarnessManagerOptions<TMetadata extends SessionMetadata> {
 	host: PiServerHost<TMetadata>;
 	isClosing: () => boolean;
+	isSessionUnavailable?: (sessionId: string) => boolean;
 	reportError: (error: unknown) => void;
 }
 
@@ -113,6 +114,10 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 			},
 			(message) => new ProtocolValidationError(message),
 		);
+	}
+
+	hasSession(sessionId: string): boolean {
+		return this.hostedSessions.has(sessionId) || this.openingSessions.has(sessionId);
 	}
 
 	executeCall(
@@ -198,6 +203,7 @@ export class HostedHarnessManager<TMetadata extends SessionMetadata = SessionMet
 		const current = this.attachmentsByClient.get(client);
 		if (current?.session.id === sessionId) return { sessionId };
 		if (current) await this.releaseAttachment(current, context);
+		if (this.options.isSessionUnavailable?.(sessionId)) throw new SessionInUseError();
 
 		const hosted = await this.acquire(sessionId, context);
 		if (this.options.isClosing() || this.disconnectedClients.has(client)) throw new ServerDrainingError();

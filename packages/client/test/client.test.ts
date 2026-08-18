@@ -263,6 +263,49 @@ describe("PiClient service operations", () => {
 		await client.dispose();
 	});
 
+	test("does not send a pre-aborted untyped RPC request", async () => {
+		const server = new MemoryByteServer();
+		const client = await connectClient(server);
+		const controller = new AbortController();
+		const reason = new Error("already cancelled");
+		controller.abort(reason);
+
+		await expect(client.invoke("session.test", {}, controller.signal)).rejects.toBe(reason);
+		expect(server.messages).toHaveLength(1);
+		await client.dispose();
+	});
+
+	test("cancels one untyped RPC request without disconnecting", async () => {
+		const server = new MemoryByteServer();
+		const client = await connectClient(server);
+		const controller = new AbortController();
+		const reason = new Error("stop this request");
+		const pending = client.invoke("session.test", { value: 42 }, controller.signal);
+		await server.waitForMessages(2);
+		expect(server.messages[1]).toMatchObject({
+			type: "request",
+			id: "request-1",
+			call: { method: "session.test", args: { value: 42 } },
+		});
+
+		controller.abort(reason);
+		await expect(pending).rejects.toBe(reason);
+		await server.waitForMessages(3);
+		expect(server.messages[2]).toEqual({
+			type: "cancel",
+			id: "request-1",
+			serverId: "00000000-0000-4000-8000-000000000001",
+		});
+		server.send({
+			type: "response",
+			id: "request-1",
+			ok: false,
+			error: { code: "cancelled", message: "cancelled" },
+		});
+		expect(client.connected).toBe(true);
+		await client.dispose();
+	});
+
 	test("rejects pending requests after disconnect or disposal", async () => {
 		const server = new MemoryByteServer();
 		const client = await connectClient(server);

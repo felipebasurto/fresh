@@ -29,6 +29,7 @@ import {
 	ServerMessageDecoder,
 	ServiceRpc,
 	type SessionMetadata,
+	SessionMetadataSchema,
 } from "../src/index.ts";
 
 const clientHello: ClientHello = { type: "hello", version: PROTOCOL_VERSION };
@@ -191,7 +192,7 @@ describe("protocol validation", () => {
 		).toThrow(ProtocolValidationError);
 	});
 
-	test("validates service RPC calls with logical targets", () => {
+	test("keeps transport RPC calls untyped while validating their envelope", () => {
 		const list: ClientMessage = {
 			type: "request",
 			id: "request-1",
@@ -220,18 +221,29 @@ describe("protocol validation", () => {
 		expect(parseClientMessage(create)).toEqual(create);
 		expect(parseClientMessage(attach)).toEqual(attach);
 		expect(parseClientMessage(prompt)).toEqual(prompt);
-		expect(() => parseClientMessage({ ...create, call: { method: "create", args: [{ cwd: "" }] } })).toThrow(
-			ProtocolValidationError,
-		);
-		expect(() => parseClientMessage({ ...attach, call: { method: "attach", args: [] } })).toThrow(
-			ProtocolValidationError,
-		);
-		expect(() => parseClientMessage({ ...attach, call: { method: "unknown", args: [] } })).toThrow(
-			ProtocolValidationError,
-		);
-		expect(() => parseClientMessage({ ...prompt, call: { method: "prompt", args: ["session-1", []] } })).toThrow(
-			ProtocolValidationError,
-		);
+		expect(parseClientMessage({ ...create, call: { method: "create", args: [{ cwd: "" }] } })).toMatchObject({
+			call: { method: "create" },
+		});
+		expect(parseClientMessage({ ...attach, call: { method: "attach", args: [] } })).toMatchObject({
+			call: { method: "attach", args: [] },
+		});
+		expect(parseClientMessage({ ...attach, call: { method: "unknown", args: { arbitrary: true } } })).toMatchObject({
+			call: { method: "unknown", args: { arbitrary: true } },
+		});
+		expect(parseClientMessage({ ...prompt, call: { method: "prompt", args: ["session-1", []] } })).toMatchObject({
+			call: { method: "prompt" },
+		});
+	});
+
+	test("validates request cancellation envelopes", () => {
+		const cancel: ClientMessage = {
+			type: "cancel",
+			id: "request-1",
+			serverId: "00000000-0000-4000-8000-000000000001",
+		};
+		expect(parseClientMessage(cancel)).toEqual(cancel);
+		expect(() => parseClientMessage({ ...cancel, id: "" })).toThrow(ProtocolValidationError);
+		expect(() => parseClientMessage({ ...cancel, extra: true })).toThrow(ProtocolValidationError);
 	});
 
 	test("validates recursively nested JSON values", () => {
@@ -308,7 +320,9 @@ describe("protocol validation", () => {
 		expect(Check(PromptArgumentsSchema, promptArguments)).toBe(false);
 	});
 
-	test("validates protocol Session metadata", () => {
+	test("keeps Session metadata validation at the typed service boundary", () => {
+		expect(Check(SessionMetadataSchema, metadata)).toBe(true);
+		expect(Check(SessionMetadataSchema, { id: "session-1", createdAt: 1 })).toBe(false);
 		const message: ServerMessage = {
 			type: "response",
 			id: "request-1",
@@ -316,9 +330,6 @@ describe("protocol validation", () => {
 			result: [metadata],
 		};
 		expect(parseServerMessage(message)).toEqual(message);
-		expect(() => parseServerMessage({ ...message, result: [{ id: "session-1", createdAt: 1 }] })).toThrow(
-			ProtocolValidationError,
-		);
 	});
 
 	test("validates lane watch snapshots and events", () => {
@@ -450,15 +461,6 @@ describe("protocol validation", () => {
 			},
 		],
 		[
-			"empty session id",
-			{
-				type: "request",
-				id: "request-1",
-				serverId: "00000000-0000-4000-8000-000000000001",
-				call: { method: "attach", args: [""] },
-			},
-		],
-		[
 			"extra call field",
 			{
 				type: "request",
@@ -488,6 +490,14 @@ describe("protocol validation", () => {
 		"watch_in_use",
 		"not_supported",
 		"server_draining",
+		"cancelled",
+		"session_invalid_lane",
+		"session_lane_exists",
+		"session_unknown_target",
+		"session_pending_message",
+		"session_invariant",
+		"mutation_not_found",
+		"mutation_expired",
 		"internal_error",
 	] as const)("accepts the %s error code", (code) => {
 		const message: ServerMessage = {

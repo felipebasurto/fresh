@@ -120,6 +120,10 @@ export class SessionWorkerManager {
 		return [...this.#workersBySession.values()].map((worker) => worker.metadata);
 	}
 
+	hasSession(path: string): boolean {
+		return this.#workersBySession.has(path) || this.#pending.has(path);
+	}
+
 	async discover(peerIds: ReadonlySet<string>): Promise<void> {
 		if (this.#detached) return;
 		const undiscovered = new Set(

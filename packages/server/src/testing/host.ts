@@ -214,6 +214,7 @@ export class TestServerHost implements PiServerHost {
 				await session.close(context);
 			}
 		},
+		open: (metadata, context) => this.repo.open(metadata, context),
 	};
 	private nextListDelay?: ListDelay;
 	private nextCreateHarnessGate?: OpenGate;

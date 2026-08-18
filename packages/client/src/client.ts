@@ -7,6 +7,7 @@ import {
 	type PromptArguments,
 	type PromptImage,
 	type PromptMessage,
+	type ProtocolRpcCall,
 	ProtocolValidationError,
 	type ResponseEnvelope,
 	type ServerHello,
@@ -24,6 +25,7 @@ import type { ConnectionState, ConnectionStateChange, PiClientOptions, PiLaneWat
 interface PendingRequest {
 	resolve(result: unknown): void;
 	reject(error: Error): void;
+	cleanup(): void;
 }
 
 interface ActiveWatchListener {
@@ -112,6 +114,12 @@ export class PiClient {
 		return () => this.#connectionStateListeners.delete(listener);
 	}
 
+	/** Invoke an untyped RPC method. Domain-specific facades own argument and result typing. */
+	invoke(method: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
+		if (method.length === 0) return Promise.reject(new TypeError("RPC method must not be empty"));
+		return this.#request({ method, args }, signal);
+	}
+
 	listSessions(): Promise<readonly SessionMetadata[]> {
 		return this.#rpc.list();
 	}
@@ -178,12 +186,44 @@ export class PiClient {
 		};
 	}
 
-	#request(call: ServiceRpcCall): Promise<unknown> {
+	#request(call: ProtocolRpcCall | ServiceRpcCall, signal?: AbortSignal): Promise<unknown> {
 		if (this.#disposed) return Promise.reject(new PiClientDisposedError());
 		if (!this.connected) return Promise.reject(new PiDisconnectedError());
+		if (signal?.aborted) return Promise.reject(abortError(signal));
 		const id = `request-${++this.#requestSequence}`;
 		const { promise, resolve, reject } = createPromiseResolvers<unknown>();
-		this.#pendingRequests.set(id, { resolve, reject });
+		let sent = false;
+		let aborted = false;
+		let onAbort: (() => void) | undefined;
+		const sendCancel = (): void => {
+			if (!sent || !this.connected) return;
+			try {
+				this.#connection.send(
+					encodeClientMessage(
+						{ type: "cancel", id, serverId: this.#options.serverId },
+						{ maxFrameLength: this.#connection.maxFrameLength },
+					),
+				);
+			} catch (error) {
+				this.#connection.fail(toError(error));
+			}
+		};
+		if (signal !== undefined) {
+			onAbort = () => {
+				if (aborted) return;
+				aborted = true;
+				reject(abortError(signal));
+				sendCancel();
+			};
+			signal.addEventListener("abort", onAbort, { once: true });
+		}
+		this.#pendingRequests.set(id, {
+			resolve,
+			reject,
+			cleanup: () => {
+				if (signal !== undefined && onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+			},
+		});
 		let frame: Uint8Array;
 		try {
 			frame = encodeClientMessage(
@@ -195,6 +235,8 @@ export class PiClient {
 			return promise;
 		}
 		this.#connection.send(frame);
+		sent = true;
+		if (aborted) sendCancel();
 		return promise;
 	}
 
@@ -236,14 +278,20 @@ export class PiClient {
 
 	#takePendingRequest(id: string): PendingRequest | undefined {
 		const request = this.#pendingRequests.get(id);
-		if (request) this.#pendingRequests.delete(id);
+		if (request) {
+			this.#pendingRequests.delete(id);
+			request.cleanup();
+		}
 		return request;
 	}
 
 	#rejectPendingRequests(error: Error): void {
 		const requests = [...this.#pendingRequests.values()];
 		this.#pendingRequests.clear();
-		for (const request of requests) request.reject(error);
+		for (const request of requests) {
+			request.cleanup();
+			request.reject(error);
+		}
 	}
 
 	dispose(): Promise<void> {
@@ -275,4 +323,9 @@ export class PiClient {
 			// Diagnostics cannot affect protocol or transport state.
 		}
 	}
+}
+
+function abortError(signal: AbortSignal): Error {
+	const reason: unknown = signal.reason;
+	return reason instanceof Error ? reason : new DOMException("The operation was aborted", "AbortError");
 }

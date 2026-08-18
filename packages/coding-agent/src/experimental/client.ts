@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import { BACKGROUND_CONTEXT, RemoteSession, type RemoteSessionRpc } from "@earendil-works/pi-agent-core";
 import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
 import { isServerId, type LaneEvent } from "@earendil-works/pi-protocol";
@@ -16,7 +17,7 @@ export type ClientResult =
 export interface RunClientOptions {
 	/** Directory searched when --connect is omitted. Defaults to PI_SERVER_DIR or ~/.pi/server. */
 	readonly directory?: string;
-	/** Receives snapshot-ordered main-lane events while a prompt is running. */
+	/** Reserved for snapshot-ordered main-lane events once remote harness prompting is implemented. */
 	readonly onEvent?: (event: LaneEvent) => void | Promise<void>;
 }
 
@@ -109,34 +110,19 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 				await match.client.createSession({ id: selectedSessionId, cwd: process.cwd() });
 			}
 		}
-		const attached = await match.client.attachSession(sessionId);
-		if (command.prompt === undefined) {
-			return { kind: "attached", serverId: match.route.serverId, sessionId: attached.sessionId };
-		}
-		const prompt = command.prompt;
-		const onEvent = options.onEvent;
-		const watch = onEvent === undefined ? undefined : await match.client.watchSession(attached.sessionId);
-		if (watch !== undefined && onEvent !== undefined) await watch.start(onEvent);
-		const result = await (async () => {
-			try {
-				return await match.client.promptSession(attached.sessionId, prompt);
-			} finally {
-				await watch?.dispose();
-			}
-		})();
-		if (!result.ok) throw new Error(result.error.message);
-		if (result.value.kind === "failed") throw new Error(result.value.error.message);
-		if (result.value.kind !== "completed") throw new Error(`Remote prompt ${result.value.kind}`);
-		if (!("finalMessage" in result.value)) throw new Error("Remote prompt completed without an assistant message");
-		const text = result.value.finalMessage.content
-			.flatMap((part) => (part.type === "text" ? [part.text] : []))
-			.join("");
-		return {
-			kind: "prompted",
-			serverId: match.route.serverId,
-			sessionId: attached.sessionId,
-			text,
+		const rpc: RemoteSessionRpc = {
+			invoke: (method, args, context) => match.client.invoke(method, args, context.abortSignal),
 		};
+		const session = await RemoteSession.open(rpc, sessionId, BACKGROUND_CONTEXT);
+		if (command.prompt === undefined) {
+			await session.close(BACKGROUND_CONTEXT);
+			return { kind: "attached", serverId: match.route.serverId, sessionId: session.metadata.id };
+		}
+		try {
+			throw new Error("Experimental client prompting through AgentHarness is not implemented");
+		} finally {
+			await session.close(BACKGROUND_CONTEXT);
+		}
 	} finally {
 		await Promise.all([...openedClients].map((client) => client.dispose()));
 	}

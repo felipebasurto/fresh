@@ -26,6 +26,7 @@ export interface ConnectionState {
 	disconnected: boolean;
 	handshake?: Promise<void>;
 	handshakeTimeout: NodeJS.Timeout;
+	activeRequests: Map<string, AbortController>;
 }
 
 export function isTerminalConnection(state: ConnectionState): boolean {

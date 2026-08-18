@@ -67,6 +67,7 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 						for (const byte of frame) socket.write(Uint8Array.of(byte));
 						continue;
 					}
+					if (message.type === "cancel") continue;
 					receivedMethods.push(message.call.method);
 					const frame = encodeServerMessage({
 						type: "response",

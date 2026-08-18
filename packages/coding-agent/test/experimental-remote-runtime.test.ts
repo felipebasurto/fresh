@@ -291,52 +291,16 @@ describe("experimental durable server composition", () => {
 		await expect(competing.attachSession("demo-1")).rejects.toMatchObject({ code: "session_in_use" });
 	});
 
-	// WP00 intentionally selects execution-incomplete runtime2. Re-enable with the no-tool run package.
-	test.skip("creates generated and requested Sessions for one-shot prompts", async ({ onTestFinished }) => {
-		const spawn = vi
-			.spyOn(processRuntime, "spawnInternalProcess")
-			.mockImplementation((role, args, options) =>
-				realSpawnInternalProcess(
-					role,
-					args,
-					role === "session-worker" ? { ...options, entryUrl: fauxWorkerEntryUrl } : options,
-				),
-			);
-		onTestFinished(() => spawn.mockRestore());
-		const { directory, runtime } = await makeServer();
-		const prompt = (sessionId?: string) =>
-			runClient(
-				{ command: "client", prompt: "question", ...(sessionId === undefined ? {} : { sessionId }) },
-				{ directory },
-			);
+	test("rejects prompting until AgentHarness prompting is implemented", async () => {
+		const { directory } = await makeServer();
 
-		const generated = await prompt();
-		expect(generated).toMatchObject({
-			kind: "prompted",
-			serverId: runtime.serverId,
-			sessionId: expect.any(String),
-			text: "deterministic remote answer",
+		await expect(
+			runClient({ command: "client", sessionId: "demo-1", prompt: "question" }, { directory }),
+		).rejects.toThrow("Experimental client prompting through AgentHarness is not implemented");
+		await expect(runClient({ command: "client", sessionId: "demo-1" }, { directory })).resolves.toMatchObject({
+			kind: "attached",
+			sessionId: "demo-1",
 		});
-		const requested = await prompt("created-by-prompt");
-		expect(requested).toEqual({
-			kind: "prompted",
-			serverId: runtime.serverId,
-			sessionId: "created-by-prompt",
-			text: "deterministic remote answer",
-		});
-
-		for (const result of [generated, requested]) {
-			if (result.kind !== "prompted") throw new Error("Expected a prompted client result");
-			await expect.poll(() => runtime.workerPids.has(result.sessionId)).toBe(false);
-			const { branch } = await readExperimentalSessionState(runtime.sessionDir, result.sessionId);
-			expect(branch).toHaveLength(2);
-			expect(branch[0]).toMatchObject({
-				message: { role: "user", content: [{ type: "text", text: "question" }] },
-			});
-			expect(branch[1]).toMatchObject({
-				message: { role: "assistant", content: [{ type: "text", text: "deterministic remote answer" }] },
-			});
-		}
 	});
 
 	// WP00 intentionally selects execution-incomplete runtime2. Re-enable with the no-tool run package.

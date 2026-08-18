@@ -87,10 +87,18 @@ export type ServiceRpcResultUnion = RpcResultUnion<ServiceRpcManifest>;
 export const ServiceRpcCallSchema = Type.Unsafe<ServiceRpcCall>(createRpcCallSchema(ServiceRpc));
 export const ServiceRpcResultSchema = Type.Unsafe<ServiceRpcResultUnion>(createRpcResultSchema(ServiceRpc));
 
-export type ProtocolRpcCall = ServiceRpcCall;
-export type ProtocolRpcResult = ServiceRpcResultUnion;
-const ProtocolRpcCallSchema = ServiceRpcCallSchema;
-const ProtocolRpcResultSchema = ServiceRpcResultSchema;
+/** Untyped transport call. Domain facades own method typing and result decoding. */
+export const ProtocolRpcCallSchema = StrictObject({
+	method: Type.String({ minLength: 1 }),
+	args: Type.Unknown(),
+});
+export type ProtocolRpcCall = Static<typeof ProtocolRpcCallSchema>;
+export type ProtocolRpcResult = unknown;
+const ProtocolRpcResultSchema = Type.Unknown();
+
+export function isServiceRpcCall(call: ProtocolRpcCall): call is ServiceRpcCall {
+	return Check(ServiceRpcCallSchema, call);
+}
 
 export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("version"),
@@ -104,6 +112,14 @@ export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("not_supported"),
 	Type.Literal("server_draining"),
 	Type.Literal("invalid_request"),
+	Type.Literal("cancelled"),
+	Type.Literal("session_invalid_lane"),
+	Type.Literal("session_lane_exists"),
+	Type.Literal("session_unknown_target"),
+	Type.Literal("session_pending_message"),
+	Type.Literal("session_invariant"),
+	Type.Literal("mutation_not_found"),
+	Type.Literal("mutation_expired"),
 	Type.Literal("internal_error"),
 ]);
 export const ProtocolErrorSchema = StrictObject({
@@ -126,8 +142,14 @@ export const RequestEnvelopeSchema = StrictObject({
 	serverId: ServerIdSchema,
 	call: ProtocolRpcCallSchema,
 });
+export const CancelEnvelopeSchema = StrictObject({
+	type: Type.Literal("cancel"),
+	id: IdSchema,
+	serverId: ServerIdSchema,
+});
 export type RequestEnvelope = Static<typeof RequestEnvelopeSchema>;
-export const ClientMessageSchema = Type.Union([ClientHelloSchema, RequestEnvelopeSchema]);
+export type CancelEnvelope = Static<typeof CancelEnvelopeSchema>;
+export const ClientMessageSchema = Type.Union([ClientHelloSchema, RequestEnvelopeSchema, CancelEnvelopeSchema]);
 export type ClientMessage = Static<typeof ClientMessageSchema>;
 
 export const ServerHelloSchema = StrictObject({

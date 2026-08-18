@@ -1,4 +1,4 @@
-import type { Context, SessionMetadata } from "@earendil-works/pi-agent-core";
+import type { Context, Session, SessionMetadata } from "@earendil-works/pi-agent-core";
 import type {
 	LaneEvent,
 	LaneSnapshot,
@@ -16,6 +16,8 @@ export interface PiServerOptions {
 	handshakeTimeoutMs?: number;
 	onConnectionCountChanged?: (count: number) => void;
 	onError?: (error: Error) => void;
+	/** Maximum time an acquired remote Session mutation may hold its lane. */
+	remoteMutationLeaseMs?: number;
 }
 
 export type MaybePromise<T> = T | Promise<T>;
@@ -50,6 +52,8 @@ export interface PiServerHost<TMetadata extends SessionMetadata = SessionMetadat
 	readonly sessions: {
 		list(context: Context): Promise<TMetadata[]>;
 		create(options: SessionCreateOptions, context: Context): Promise<TMetadata>;
+		/** Open one exclusive Session capability for a remote harness client. */
+		open?(metadata: TMetadata, context: Context): Promise<Session<TMetadata>>;
 	};
 	createHarness(metadata: TMetadata, context: Context): Promise<HostedHarnessHandle>;
 }

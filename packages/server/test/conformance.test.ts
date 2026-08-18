@@ -102,6 +102,93 @@ describe("Session protocol", () => {
 		expect(host.harnesses.size).toBe(0);
 	});
 
+	test("routes untyped remote Session calls through a connection-owned handle", async () => {
+		const host = new TestServerHost();
+		await host.seed("session-1");
+		const client = connect(createServer(host));
+		await client.hello();
+
+		const opened = await client.request("00000000-0000-4000-8000-000000000001", {
+			method: "session.open",
+			args: { sessionId: "session-1" },
+		});
+		expect(opened).toMatchObject({ ok: true, result: { metadata: { id: "session-1" } } });
+		if (!opened.ok || typeof opened.result !== "object" || opened.result === null || !("handle" in opened.result)) {
+			throw new Error("Missing remote Session handle");
+		}
+		const handle = opened.result.handle;
+		expect(typeof handle).toBe("string");
+		await expect(
+			client.request("00000000-0000-4000-8000-000000000001", {
+				method: "session.tree.getLeafId",
+				args: { handle, lane: "main" },
+			}),
+		).resolves.toMatchObject({ ok: true, result: null });
+		await expect(
+			client.request("00000000-0000-4000-8000-000000000001", {
+				method: "session.close",
+				args: { handle },
+			}),
+		).resolves.toMatchObject({ ok: true, result: null });
+	});
+
+	test("cancels a queued remote mutation without cancelling its lane owner", async () => {
+		const host = new TestServerHost();
+		await host.seed("session-1");
+		const client = connect(createServer(host));
+		const serverId = "00000000-0000-4000-8000-000000000001";
+		await client.hello();
+		const opened = await client.request(serverId, {
+			method: "session.open",
+			args: { sessionId: "session-1" },
+		});
+		if (!opened.ok || typeof opened.result !== "object" || opened.result === null || !("handle" in opened.result)) {
+			throw new Error("Missing remote Session handle");
+		}
+		const handle = opened.result.handle;
+		if (typeof handle !== "string") throw new Error("Invalid remote Session handle");
+		const first = await client.request(serverId, {
+			method: "session.mutation.begin",
+			args: { handle, lane: "main", mutationLane: "main" },
+		});
+		if (!first.ok || typeof first.result !== "object" || first.result === null || !("mutationId" in first.result)) {
+			throw new Error("Missing remote mutation ID");
+		}
+		const firstMutationId = first.result.mutationId;
+		if (typeof firstMutationId !== "string") throw new Error("Invalid remote mutation ID");
+
+		const queued = client.request(
+			serverId,
+			{
+				method: "session.mutation.begin",
+				args: { handle, lane: "main", mutationLane: "main" },
+			},
+			"queued-mutation",
+		);
+		await Promise.resolve();
+		await client.sendMessage({ type: "cancel", id: "queued-mutation", serverId });
+		await expect(queued).resolves.toMatchObject({ ok: false, error: { code: "cancelled" } });
+
+		await expect(
+			client.request(serverId, {
+				method: "session.mutation.finish",
+				args: { handle, mutationId: firstMutationId },
+			}),
+		).resolves.toMatchObject({ ok: true, result: null });
+		const next = await client.request(serverId, {
+			method: "session.mutation.begin",
+			args: { handle, lane: "main", mutationLane: "main" },
+		});
+		expect(next).toMatchObject({ ok: true, result: { mutationId: expect.any(String) } });
+		if (!next.ok || typeof next.result !== "object" || next.result === null || !("mutationId" in next.result)) {
+			throw new Error("Missing replacement mutation ID");
+		}
+		await client.request(serverId, {
+			method: "session.mutation.finish",
+			args: { handle, mutationId: next.result.mutationId },
+		});
+	});
+
 	test("attach passes concrete repository metadata to the Harness host", async () => {
 		type BackendMetadata = SessionMetadata & { path: string; modifiedAt: number };
 		const metadata: BackendMetadata = {
@@ -232,6 +319,38 @@ describe("Session protocol", () => {
 			runId: "run-1",
 		});
 		expect(client.messages.slice(stoppedAt).some((message) => message.type === "event")).toBe(false);
+	});
+
+	test("keeps hosted Harness and remote Session ownership mutually exclusive", async () => {
+		const host = new TestServerHost();
+		await host.seed("session-1");
+		const server = createServer(host);
+		const remoteClient = connect(server);
+		const hostedClient = connect(server);
+		const serverId = "00000000-0000-4000-8000-000000000001";
+		await Promise.all([remoteClient.hello(), hostedClient.hello()]);
+
+		const opened = await remoteClient.request(serverId, {
+			method: "session.open",
+			args: { sessionId: "session-1" },
+		});
+		await expect(hostedClient.request(serverId, { method: "attach", args: ["session-1"] })).resolves.toMatchObject({
+			ok: false,
+			error: { code: "session_in_use" },
+		});
+		if (!opened.ok || typeof opened.result !== "object" || opened.result === null || !("handle" in opened.result)) {
+			throw new Error("Missing remote Session handle");
+		}
+		await remoteClient.request(serverId, {
+			method: "session.close",
+			args: { handle: opened.result.handle },
+		});
+		await expect(hostedClient.request(serverId, { method: "attach", args: ["session-1"] })).resolves.toMatchObject({
+			ok: true,
+		});
+		await expect(
+			remoteClient.request(serverId, { method: "session.open", args: { sessionId: "session-1" } }),
+		).resolves.toMatchObject({ ok: false, error: { code: "session_in_use" } });
 	});
 
 	test("permits only one client attachment per Session", async () => {

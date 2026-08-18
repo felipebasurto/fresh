@@ -11,6 +11,8 @@ type PiServerOperationErrorCode = Extract<
 	| "watch_in_use"
 	| "not_supported"
 	| "server_draining"
+	| "mutation_not_found"
+	| "mutation_expired"
 >;
 
 export const INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error";
