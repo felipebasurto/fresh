@@ -143,6 +143,9 @@ export class SqliteSessionRepo {
 	private readonly now: () => number;
 	private readonly pendingIds = new Set<string>();
 	private readonly openStorages = new Map<string, SqliteStorage>();
+	private readonly openSessions = new Set<SqliteOpenSession>();
+	private closed = false;
+	private closePromise: Promise<void> | undefined;
 
 	constructor(options: SqliteSessionRepoOptions) {
 		this.directory = options.directory;
@@ -151,6 +154,7 @@ export class SqliteSessionRepo {
 	}
 
 	async create(options: SqliteSessionCreateOptions | undefined, _context: Context): Promise<SqliteOpenSession> {
+		this.assertOpen();
 		options ??= {};
 		const createdAt = this.now();
 		const id = options.id ?? uuidv7(createdAt);
@@ -203,6 +207,7 @@ export class SqliteSessionRepo {
 	}
 
 	async open(metadata: SqliteSessionMetadata, _context: Context): Promise<SqliteOpenSession> {
+		this.assertOpen();
 		this.reserveId(metadata.id);
 		let db: SqliteDatabase | undefined;
 		let lease: WriterLeaseRow | undefined;
@@ -243,6 +248,7 @@ export class SqliteSessionRepo {
 	}
 
 	async list(_options: undefined, _context: Context): Promise<SqliteSessionMetadata[]> {
+		this.assertOpen();
 		await mkdir(this.directory, { recursive: true });
 		const names = await readdir(this.directory);
 		const sessions: SqliteSessionMetadata[] = [];
@@ -267,6 +273,7 @@ export class SqliteSessionRepo {
 	}
 
 	async delete(metadata: SqliteSessionMetadata, _context: Context): Promise<void> {
+		this.assertOpen();
 		if (this.pendingIds.has(metadata.id)) throw new Error(`Session is open: ${metadata.id}`);
 		await access(metadata.path);
 		const db = await this.databaseFactory.open(metadata.path);
@@ -283,6 +290,7 @@ export class SqliteSessionRepo {
 	}
 
 	async fork(source: SqliteSessionMetadata, options: ForkOptions, context: Context): Promise<SqliteOpenSession> {
+		this.assertOpen();
 		const createdAt = this.now();
 		const id = options.id ?? uuidv7(createdAt);
 		this.reserveId(id);
@@ -369,6 +377,15 @@ export class SqliteSessionRepo {
 		}
 	}
 
+	close(context: Context): Promise<void> {
+		if (this.closePromise !== undefined) return this.closePromise;
+		this.closed = true;
+		this.closePromise = Promise.all([...this.openSessions].map((session) => session.close(context))).then(
+			() => undefined,
+		);
+		return this.closePromise;
+	}
+
 	private openStorageBackedSession(
 		metadata: SqliteSessionMetadata,
 		db: SqliteDatabase,
@@ -383,20 +400,27 @@ export class SqliteSessionRepo {
 		const storage = new SqliteStorage(db, { now: this.now, beforeCommit: renew });
 		this.openStorages.set(metadata.id, storage);
 		const session = new StorageBackedSession(metadata, storage);
-		return new SqliteOpenSession(session, {
+		const openSession = new SqliteOpenSession(session, {
 			renewWriterLease: renew,
 			releaseWriterLease: () => db.transaction(() => releaseWriterLease(db, lease.owner_id, lease.fence)),
 			renewIntervalMs: WRITER_LEASE_RENEW_INTERVAL_MS,
 			onClose: () => {
 				db.close();
 				this.openStorages.delete(metadata.id);
+				this.openSessions.delete(openSession);
 				this.pendingIds.delete(metadata.id);
 			},
 		});
+		this.openSessions.add(openSession);
+		return openSession;
 	}
 
 	private reserveId(id: string): void {
 		if (this.pendingIds.has(id)) throw new Error(`Session is already open: ${id}`);
 		this.pendingIds.add(id);
+	}
+
+	private assertOpen(): void {
+		if (this.closed) throw new Error("SqliteSessionRepo is closed");
 	}
 }

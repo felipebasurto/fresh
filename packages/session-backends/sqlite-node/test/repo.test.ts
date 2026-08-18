@@ -212,6 +212,24 @@ describe("SqliteSessionRepo", () => {
 		});
 	});
 
+	it("closes open sessions through repo close and rejects later operations", async () => {
+		await withTempDir(async (directory) => {
+			const repo = new SqliteSessionRepo({
+				directory,
+				databaseFactory: createNodeSqliteFactory(),
+				now: () => 1,
+			});
+			const session = await repo.create({ id: "session" }, BACKGROUND_CONTEXT);
+
+			await repo.close(BACKGROUND_CONTEXT);
+
+			await expect(session.getStats(BACKGROUND_CONTEXT)).rejects.toThrow("Session is closed");
+			await expect(repo.list(undefined, BACKGROUND_CONTEXT)).rejects.toThrow("SqliteSessionRepo is closed");
+			await expect(repo.create({ id: "other" }, BACKGROUND_CONTEXT)).rejects.toThrow("SqliteSessionRepo is closed");
+			await expect(repo.close(BACKGROUND_CONTEXT)).resolves.toBeUndefined();
+		});
+	});
+
 	it("opens a session through the version gate and rejects a live external writer lease", async () => {
 		await withTempDir(async (directory) => {
 			const repo = new SqliteSessionRepo({
