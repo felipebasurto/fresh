@@ -2,16 +2,19 @@
 
 Runtime-neutral schemas, types, CBOR encoding, and byte-stream framing for the experimental Pi protocol.
 
-Protocol version `2` contains the first routed Session-operation slice:
+Protocol version `3` adds the first plugin-service slice:
 
 - a version handshake that identifies the logical `serverId`;
 - explicit server and Session request targets;
-- a service RPC manifest with Session discovery, attachment, prompting, and lane-watch operations;
-- correlated responses, attachment-scoped lane events, and bounded protocol errors.
+- contract-agnostic service calls with optional keyed-instance identity;
+- singleton and keyed-service subscription snapshots plus ordered state, spawn, and close updates;
+- correlated responses, request cancellation, attachment-scoped events, and bounded protocol errors.
 
-The manifest generates typed client methods and validated endpoint dispatch. The transport carries contract-agnostic `{ serviceId, member, args }` calls. A server target contains `{ serverId }`; a Session target contains `{ serverId, sessionId, attachmentId }`. `list()` and `create()` return presentation-safe `SessionSummary` values containing no working directory, owner, storage, or parent metadata. The server derives private creation fields from authenticated workspace context. `attach()` creates or selects one presentation attachment and returns its Session and attachment IDs. `prompt()` targets that exact live attachment. The real `Session` and `AgentHarness` remain process-local. Disconnecting releases only that presentation's attachment after admitted work settles.
+The transport carries `{ serviceId, instance?, member, args }` calls. A server target contains `{ serverId }`; a Session target contains `{ serverId, sessionId, attachmentId }`. Keyed addresses contain a plugin key and provider-owned generation so delayed calls cannot reach a replacement instance. Service subscriptions return a complete member/state snapshot before update delivery starts. `list()` and `create()` return presentation-safe `SessionSummary` values containing no working directory, owner, storage, or parent metadata. The server derives private creation fields from authenticated workspace context. `attach()` creates or selects one presentation attachment and returns its Session and attachment IDs. `prompt()` targets that exact live attachment. The real `Session` and `AgentHarness` remain process-local. Disconnecting releases only that presentation's attachment after admitted work settles.
 
 `PromptArguments` contains one serializable `AgentLane.prompt()` overload. `PromptMessage` is the protocol's closed set of built-in message DTOs; application-defined `AgentMessage` extensions are not accepted implicitly. `RunResult` is the wire-safe structural equivalent of the Harness result and contains no JavaScript `Error` instances.
+
+The temporary `ServiceRpc` manifest still backs discovery, attachment, prompting, and transcript compatibility methods while those features migrate to plugin services. Session plugin calls outside that facade are routed opaquely to the attached worker, where the provider validates and invokes them.
 
 A lane watch uses three RPCs so snapshot ordering does not depend on response/event scheduling: `watch()` creates a buffering watch and returns its authoritative snapshot, `startWatch()` flushes buffered events and begins live delivery, and `stopWatch()` releases it. Events carry their watch ID. Streaming message updates carry compact assistant-message frames rather than cumulative partial messages. Reconnection creates a new watch and snapshot rather than replaying old events.
 

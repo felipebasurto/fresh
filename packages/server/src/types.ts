@@ -3,7 +3,10 @@ import type {
 	LaneEvent,
 	LaneSnapshot,
 	PromptArguments,
+	ProtocolRpcCall,
+	ProtocolRpcResult,
 	RunResult,
+	ServiceProviderUpdate,
 	SessionCreateOptions,
 } from "@earendil-works/pi-protocol";
 import type { PiServerListener } from "./listener.ts";
@@ -24,6 +27,12 @@ export type MaybePromise<T> = T | Promise<T>;
 export interface RoutedSessionAttachment {
 	/** Execute one serializable prompt through this attachment. */
 	prompt(prompt: PromptArguments, context: Context): Promise<RunResult>;
+	/** Route one contract-agnostic service operation to the attached Session endpoint. */
+	invokeService?(
+		call: ProtocolRpcCall,
+		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => MaybePromise<void>,
+		context: Context,
+	): Promise<ProtocolRpcResult>;
 	/** Observe the attached main lane when supported by this host. */
 	watch?(context: Context): Promise<RoutedSessionWatch>;
 	release(context: Context): MaybePromise<void>;

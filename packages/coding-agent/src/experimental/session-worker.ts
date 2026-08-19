@@ -5,26 +5,46 @@ import { fileURLToPath } from "node:url";
 import {
 	AgentHarness,
 	type AgentHarness as AgentHarnessInstance,
+	BACKGROUND_CONTEXT,
+	type Context,
+	type ServiceProviderUpdate as CoreServiceProviderUpdate,
 	createBashTool,
 	createReadTool,
 	createWriteTool,
 	type JsonlSessionMetadata,
 	JsonlSessionRepo,
+	type MutableRemoteState,
+	RemoteServiceError,
+	RemoteServiceProvider,
+	remoteState,
+	type ServiceProviderSubscription,
 	type Session,
 	TODO_CONTEXT,
+	withCancel,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
 	createRpcCallSchema,
 	createRpcDispatcher,
 	createRpcResultSchema,
+	decodeServiceControlCall,
 	defineRpc,
+	isJsonValue,
+	type JsonValue,
+	JsonValueSchema,
 	LaneEventSchema,
 	LaneSnapshotSchema,
 	PromptArgumentsSchema,
+	type ProtocolRpcCall,
+	ProtocolRpcCallSchema,
+	type ServiceProviderUpdate as ProtocolServiceProviderUpdate,
 	type RpcCall,
 	type RpcResultUnion,
 	RunResultSchema,
+	type ServiceErrorCode,
+	ServiceErrorCodeSchema,
+	ServiceProviderUpdateSchema,
 } from "@earendil-works/pi-protocol";
 import lockfile from "proper-lockfile";
 import Type, { type Static } from "typebox";
@@ -40,6 +60,7 @@ import {
 	toWireRunResult,
 } from "./harness-wire-adapter.ts";
 import { consumeInternalProcessRole, encodeControlLine, MAX_CONTROL_LINE_BYTES } from "./process.ts";
+import { Models, type ModelsState } from "./services/models.ts";
 
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 	Type.Object(properties, { additionalProperties: false });
@@ -68,6 +89,10 @@ export const SessionWorkerOptionsSchema = StrictObject({
 });
 export type SessionWorkerOptions = Static<typeof SessionWorkerOptionsSchema>;
 
+const ServiceOperationResultSchema = StrictObject({
+	result: Type.Optional(JsonValueSchema),
+});
+
 export const SessionWorkerOperations = defineRpc({
 	prompt: {
 		args: Type.Tuple([PromptArgumentsSchema]),
@@ -85,6 +110,10 @@ export const SessionWorkerOperations = defineRpc({
 		args: Type.Tuple([Type.String({ minLength: 1 })]),
 		result: StrictObject({ watchId: Type.String({ minLength: 1 }) }),
 	},
+	service: {
+		args: Type.Tuple([ProtocolRpcCallSchema]),
+		result: ServiceOperationResultSchema,
+	},
 });
 export type SessionWorkerOperationCall = RpcCall<typeof SessionWorkerOperations>;
 type SessionWorkerOperationResult = RpcResultUnion<typeof SessionWorkerOperations>;
@@ -95,6 +124,10 @@ const SessionWorkerOperationCallSchema = Type.Unsafe<SessionWorkerOperationCall>
 const SessionWorkerOperationResultSchema = Type.Unsafe<SessionWorkerOperationResult>(
 	createRpcResultSchema(SessionWorkerOperations),
 );
+
+export interface ServiceOperationResult {
+	readonly result?: JsonValue;
+}
 
 export const WorkerOperationScopeSchema = StrictObject({
 	serverConnectionId: Type.String(),
@@ -121,6 +154,7 @@ export const WorkerOperationResponseSchema = Type.Union([
 		type: Type.Literal("operation_error"),
 		requestId: Type.String({ minLength: 1 }),
 		scope: WorkerOperationScopeSchema,
+		code: Type.Optional(ServiceErrorCodeSchema),
 		message: Type.String(),
 	}),
 ]);
@@ -137,6 +171,11 @@ export const SessionWorkerCommandSchema = Type.Union([
 		attached: Type.Boolean(),
 	}),
 	WorkerOperationRequestSchema,
+	StrictObject({
+		type: Type.Literal("operation_cancel"),
+		requestId: Type.String({ minLength: 1 }),
+		scope: WorkerOperationScopeSchema,
+	}),
 ]);
 export type SessionWorkerCommand = Static<typeof SessionWorkerCommandSchema>;
 
@@ -183,6 +222,14 @@ export const SessionWorkerEventSchema = Type.Union([
 		scope: WorkerOperationScopeSchema,
 		watchId: Type.String({ minLength: 1 }),
 		event: LaneEventSchema,
+	}),
+	Type.Object({
+		type: Type.Literal("service_event"),
+		token: Type.String(),
+		sessionKey: Type.String(),
+		scope: WorkerOperationScopeSchema,
+		subscriptionId: Type.String({ minLength: 1 }),
+		update: ServiceProviderUpdateSchema,
 	}),
 ]);
 export type SessionWorkerEvent = Static<typeof SessionWorkerEventSchema>;
@@ -379,6 +426,7 @@ async function readCommands(
 		onDiscovery(): void;
 		onDemand(command: Extract<SessionWorkerCommand, { type: "session_demand" }>): Promise<void>;
 		onOperation(command: WorkerOperationRequest): void;
+		onOperationCancel(command: Extract<SessionWorkerCommand, { type: "operation_cancel" }>): void;
 		onServerConnected(serverConnectionId: string): void;
 		onServerDisconnected(serverConnectionId: string): void;
 	},
@@ -402,6 +450,7 @@ async function readCommands(
 		if (command.type === "shutdown") handlers.onShutdown();
 		else if (command.type === "discover_workers") handlers.onDiscovery();
 		else if (command.type === "session_demand") await handlers.onDemand(command);
+		else if (command.type === "operation_cancel") handlers.onOperationCancel(command);
 		else handlers.onOperation(command);
 	}
 }
@@ -462,6 +511,21 @@ function sameScope(left: WorkerOperationScope, right: WorkerOperationScope): boo
 	return left.serverConnectionId === right.serverConnectionId && left.attachmentId === right.attachmentId;
 }
 
+function scopedSubscriptionKey(scope: WorkerOperationScope, subscriptionId: string): string {
+	return `${scope.serverConnectionId}\0${scope.attachmentId}\0${subscriptionId}`;
+}
+
+function toProtocolJson(value: unknown): JsonValue {
+	if (!isJsonValue(value)) throw new Error("Service control value is not strict JSON");
+	return value;
+}
+
+function toProtocolServiceUpdate(update: CoreServiceProviderUpdate): ProtocolServiceProviderUpdate {
+	const candidate: unknown = update;
+	if (!Check(ServiceProviderUpdateSchema, candidate)) throw new Error("Service produced an invalid update");
+	return candidate;
+}
+
 function lifecycleDelay(name: string, fallback: number): number {
 	const value = process.env[name];
 	if (value === undefined) return fallback;
@@ -472,12 +536,18 @@ function lifecycleDelay(name: string, fallback: number): number {
 
 async function closeResources(resources: {
 	harness?: AgentHarnessInstance;
+	services?: RemoteServiceProvider;
 	session?: Session<JsonlSessionMetadata>;
 	repo: JsonlSessionRepo;
 	executionEnv: NodeExecutionEnv;
 	releaseOwnership: () => Promise<void>;
 }): Promise<void> {
 	const errors: unknown[] = [];
+	try {
+		resources.services?.dispose();
+	} catch (error) {
+		errors.push(error);
+	}
 	try {
 		if (resources.harness) await resources.harness.close(TODO_CONTEXT);
 		else await resources.session?.close(TODO_CONTEXT);
@@ -503,11 +573,101 @@ async function closeResources(resources: {
 	if (errors.length > 1) throw new AggregateError(errors, "Session worker cleanup failed");
 }
 
+export interface SessionWorkerRuntime {
+	readonly harness: AgentHarnessInstance;
+	readonly modelRuntime?: ModelRuntime;
+	readonly serviceTokens?: readonly { readonly id: string }[];
+	configureServices?(provider: RemoteServiceProvider): void | Promise<void>;
+}
+
 export type CreateSessionWorkerHarness = (
 	session: Session<JsonlSessionMetadata>,
 	options: SessionWorkerOptions,
 	executionEnv: NodeExecutionEnv,
-) => Promise<AgentHarnessInstance>;
+) => Promise<AgentHarnessInstance | SessionWorkerRuntime>;
+
+async function provideModelsService(
+	provider: RemoteServiceProvider,
+	harness: AgentHarnessInstance,
+	modelRuntime: ModelRuntime | undefined,
+): Promise<MutableRemoteState<ModelsState>> {
+	let catalogRevision = 0;
+	const readConfiguration = async (context: Context = BACKGROUND_CONTEXT): Promise<ModelsState["configuration"]> => {
+		const [selected, thinkingLevel] = await Promise.all([
+			harness.getModel(context),
+			harness.getThinkingLevel(context),
+		]);
+		return {
+			model: selected === undefined ? null : { provider: selected.provider, modelId: selected.id },
+			thinkingLevel,
+		};
+	};
+	const readCatalog = async (context: Context = BACKGROUND_CONTEXT): Promise<ModelsState["catalog"]> => {
+		const selected = await harness.getModel(context);
+		const available = modelRuntime?.getAvailableSnapshot() ?? (selected === undefined ? [] : [selected]);
+		catalogRevision += 1;
+		return {
+			revision: catalogRevision,
+			availableModels: available.map((model) => ({
+				provider: model.provider,
+				modelId: model.id,
+				name: model.name,
+				reasoning: model.reasoning,
+			})),
+		};
+	};
+	const state = remoteState<ModelsState>({
+		catalog: await readCatalog(),
+		configuration: await readConfiguration(),
+		refresh: { status: "idle" },
+	});
+	provider.provide(Models, {
+		state,
+		async cycleThinking(context) {
+			const selected = await harness.getModel(context);
+			if (selected === undefined) return;
+			const levels = getSupportedThinkingLevels(selected);
+			const current = await harness.getThinkingLevel(context);
+			const index = levels.indexOf(current);
+			const next = levels[(index + 1) % levels.length] ?? "off";
+			await harness.setThinkingLevel(next, context);
+			state.set({ ...state.value, configuration: await readConfiguration(context) }, context);
+		},
+		async refresh(context) {
+			state.set({ ...state.value, refresh: { status: "refreshing" } }, context);
+			if (modelRuntime === undefined) {
+				state.set(
+					{
+						...state.value,
+						catalog: await readCatalog(context),
+						configuration: await readConfiguration(context),
+						refresh: { status: "done" },
+					},
+					context,
+				);
+				return;
+			}
+			const result = await modelRuntime.refresh({ signal: context.abortSignal });
+			const errors = Object.fromEntries([...result.errors].map(([id, error]) => [id, error.message]));
+			state.set(
+				{
+					...state.value,
+					catalog: await readCatalog(context),
+					configuration: await readConfiguration(context),
+					refresh: Object.keys(errors).length === 0 ? { status: "done" } : { status: "warning", errors },
+				},
+				context,
+			);
+		},
+		async select(model, context) {
+			const selected = modelRuntime?.getModel(model.provider, model.modelId);
+			if (selected === undefined) throw new Error(`Unknown model: ${model.provider}/${model.modelId}`);
+			await harness.setModel(selected, context);
+			state.set({ ...state.value, configuration: await readConfiguration(context) }, context);
+		},
+	});
+	return state;
+}
 
 async function run(options: SessionWorkerOptions, createHarness: CreateSessionWorkerHarness): Promise<void> {
 	const { sessionDir, metadata } = options;
@@ -526,12 +686,23 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 	const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot: sessionDir });
 	let session: Session<JsonlSessionMetadata> | undefined;
 	let harness: AgentHarnessInstance | undefined;
+	let services: RemoteServiceProvider | undefined;
 	try {
 		session = await repo.open(metadata, TODO_CONTEXT);
-		harness = await createHarness(session, options, executionEnv);
+		const created = await createHarness(session, options, executionEnv);
+		if ("harness" in created) {
+			harness = created.harness;
+			services = new RemoteServiceProvider([Models, ...(created.serviceTokens ?? [])]);
+			await provideModelsService(services, harness, created.modelRuntime);
+			await created.configureServices?.(services);
+		} else {
+			harness = created;
+			services = new RemoteServiceProvider([Models]);
+			await provideModelsService(services, harness, undefined);
+		}
 	} catch (error) {
 		try {
-			await closeResources({ harness, session, repo, executionEnv, releaseOwnership });
+			await closeResources({ harness, services, session, repo, executionEnv, releaseOwnership });
 		} catch (cleanupError) {
 			throw new AggregateError([error, cleanupError], "Session worker startup and cleanup failed");
 		}
@@ -542,11 +713,26 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 		string,
 		{ readonly scope: WorkerOperationScope; readonly handle: Awaited<ReturnType<AgentHarnessInstance["watch"]>> }
 	>();
+	const serviceSubscriptions = new Map<
+		string,
+		{ readonly scope: WorkerOperationScope; readonly subscription: ServiceProviderSubscription }
+	>();
+	const activeRequests = new Map<
+		string,
+		{ readonly scope: WorkerOperationScope; readonly cancel: (reason?: unknown) => void }
+	>();
 	const removeLaneWatches = (matches: (scope: WorkerOperationScope) => boolean): void => {
 		for (const [watchId, watch] of laneWatches) {
 			if (!matches(watch.scope)) continue;
 			watch.handle.unsubscribe();
 			laneWatches.delete(watchId);
+		}
+	};
+	const removeServiceSubscriptions = (matches: (scope: WorkerOperationScope) => boolean): void => {
+		for (const [key, entry] of serviceSubscriptions) {
+			if (!matches(entry.scope)) continue;
+			entry.subscription.close();
+			serviceSubscriptions.delete(key);
 		}
 	};
 	let lifecycle: WorkerLifecycle | undefined;
@@ -556,9 +742,12 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 		if (closing) return closing;
 		lifecycle?.close();
 		removeLaneWatches(() => true);
+		removeServiceSubscriptions(() => true);
+		for (const request of activeRequests.values()) request.cancel(new Error("Session worker is closing"));
+		activeRequests.clear();
 		for (const remove of removeLifecycleListeners) remove();
 		removeLifecycleListeners = [];
-		closing = closeResources({ harness, repo, executionEnv, releaseOwnership });
+		closing = closeResources({ harness, services, repo, executionEnv, releaseOwnership });
 		return closing;
 	};
 	const closeAndExit = (): void => {
@@ -597,22 +786,26 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 		harness.events.on("fault", closeAndExit),
 	];
 
+	interface WorkerOperationContext {
+		readonly scope: WorkerOperationScope;
+		readonly context: Context;
+	}
 	const dispatchWorkerOperation = createRpcDispatcher(SessionWorkerOperations, {
-		prompt: async (_scope: WorkerOperationScope, prompt) => {
+		prompt: async ({ context }: WorkerOperationContext, prompt) => {
 			const args = toHarnessPromptArguments(prompt);
 			const result =
 				typeof args[0] === "string"
-					? await harness.prompt(args[0], args[1], TODO_CONTEXT)
-					: await harness.prompt(args[0], TODO_CONTEXT);
+					? await harness.prompt(args[0], args[1], context)
+					: await harness.prompt(args[0], context);
 			return toWireRunResult(result);
 		},
-		watch: async (scope: WorkerOperationScope, ..._args: never[]) => {
-			const handle = await harness.watch(TODO_CONTEXT);
+		watch: async ({ scope, context }: WorkerOperationContext, ..._args: never[]) => {
+			const handle = await harness.watch(context);
 			const watchId = randomUUID();
 			laneWatches.set(watchId, { scope, handle });
 			return { watchId, snapshot: toWireLaneSnapshot(handle.snapshot) };
 		},
-		startWatch: async (scope: WorkerOperationScope, watchId) => {
+		startWatch: async ({ scope }: WorkerOperationContext, watchId) => {
 			const watch = laneWatches.get(watchId);
 			if (!watch || !sameScope(watch.scope, scope)) throw new Error("Session worker lane watch was not found");
 			watch.handle.start(async (event) => {
@@ -622,19 +815,60 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 			});
 			return { watchId };
 		},
-		stopWatch: async (scope: WorkerOperationScope, watchId) => {
+		stopWatch: async ({ scope }: WorkerOperationContext, watchId) => {
 			const watch = laneWatches.get(watchId);
 			if (!watch || !sameScope(watch.scope, scope)) throw new Error("Session worker lane watch was not found");
 			watch.handle.unsubscribe();
 			laneWatches.delete(watchId);
 			return { watchId };
 		},
+		service: async ({ scope, context }: WorkerOperationContext, call) => {
+			const controlCall = decodeServiceControlCall(call);
+			if (controlCall?.type === "subscribe") {
+				const key = scopedSubscriptionKey(scope, controlCall.subscriptionId);
+				if (serviceSubscriptions.has(key)) throw new Error("Service subscription ID is already active");
+				const subscription = services.subscribe(
+					controlCall.serviceId,
+					controlCall.mode,
+					(update: CoreServiceProviderUpdate, _updateContext: Context) => {
+						void control
+							.send({
+								type: "service_event",
+								token,
+								sessionKey,
+								scope,
+								subscriptionId: controlCall.subscriptionId,
+								update: toProtocolServiceUpdate(update),
+							})
+							.catch(() => {});
+					},
+				);
+				serviceSubscriptions.set(key, { scope, subscription });
+				subscription.activate();
+				return { result: toProtocolJson(subscription.snapshot) };
+			}
+			if (controlCall?.type === "unsubscribe") {
+				const key = scopedSubscriptionKey(scope, controlCall.subscriptionId);
+				const entry = serviceSubscriptions.get(key);
+				if (entry === undefined) throw new Error("Service subscription was not found");
+				entry.subscription.close();
+				serviceSubscriptions.delete(key);
+				return {};
+			}
+			const result = await services.invoke(call as ProtocolRpcCall, context);
+			return result === undefined ? {} : { result: toProtocolJson(result) };
+		},
 	});
 	const handleOperation = async (request: WorkerOperationRequest): Promise<void> => {
 		let releaseRequest = (): void => {};
+		const cancellable = withCancel(BACKGROUND_CONTEXT);
 		try {
 			releaseRequest = lifecycle!.beginRequest(request.scope.serverConnectionId, request.scope.attachmentId);
-			const result = await dispatchWorkerOperation(request.call, request.scope);
+			activeRequests.set(request.requestId, { scope: request.scope, cancel: cancellable.cancel });
+			const result = await dispatchWorkerOperation(request.call, {
+				scope: request.scope,
+				context: cancellable.context,
+			});
 			await control.send({
 				type: "operation_response",
 				token,
@@ -642,6 +876,7 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 				response: { type: "operation_result", requestId: request.requestId, scope: request.scope, result },
 			});
 		} catch (error) {
+			const code: ServiceErrorCode | undefined = error instanceof RemoteServiceError ? error.code : undefined;
 			await control.send({
 				type: "operation_response",
 				token,
@@ -650,10 +885,14 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 					type: "operation_error",
 					requestId: request.requestId,
 					scope: request.scope,
+					...(code === undefined ? {} : { code }),
 					message: error instanceof Error ? error.message : String(error),
 				},
 			});
 		} finally {
+			if (activeRequests.get(request.requestId)?.cancel === cancellable.cancel) {
+				activeRequests.delete(request.requestId);
+			}
 			releaseRequest();
 		}
 	};
@@ -680,11 +919,11 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 			try {
 				try {
 					if (!command.attached) {
-						removeLaneWatches(
-							(scope) =>
-								scope.serverConnectionId === command.serverConnectionId &&
-								scope.attachmentId === command.attachmentId,
-						);
+						const matches = (scope: WorkerOperationScope): boolean =>
+							scope.serverConnectionId === command.serverConnectionId &&
+							scope.attachmentId === command.attachmentId;
+						removeLaneWatches(matches);
+						removeServiceSubscriptions(matches);
 					}
 					lifecycle?.setDemand(command.serverConnectionId, command.attachmentId, command.attached);
 				} catch (error) {
@@ -712,9 +951,20 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 		onOperation: (request) => {
 			void handleOperation(request).catch(() => closeAndExit());
 		},
+		onOperationCancel: (command) => {
+			const active = activeRequests.get(command.requestId);
+			if (active !== undefined && sameScope(active.scope, command.scope)) {
+				active.cancel(new DOMException("Service operation cancelled", "AbortError"));
+			}
+		},
 		onServerConnected: (serverConnectionId) => lifecycle?.serverConnected(serverConnectionId),
 		onServerDisconnected: (serverConnectionId) => {
-			removeLaneWatches((scope) => scope.serverConnectionId === serverConnectionId);
+			const matches = (scope: WorkerOperationScope): boolean => scope.serverConnectionId === serverConnectionId;
+			removeLaneWatches(matches);
+			removeServiceSubscriptions(matches);
+			for (const request of activeRequests.values()) {
+				if (matches(request.scope)) request.cancel(new Error("Server disconnected"));
+			}
 			lifecycle?.serverDisconnected(serverConnectionId);
 		},
 	}).catch(() => closeAndExit());
@@ -774,7 +1024,7 @@ async function createCodingAgentHarness(
 	session: Session<JsonlSessionMetadata>,
 	options: SessionWorkerOptions,
 	executionEnv: NodeExecutionEnv,
-): Promise<AgentHarnessInstance> {
+): Promise<SessionWorkerRuntime> {
 	const modelRuntime = await ModelRuntime.create();
 	let resolved: Awaited<ReturnType<typeof findInitialModel>> | ReturnType<typeof resolveCliModel>;
 	if (options.model === undefined) {
@@ -837,7 +1087,7 @@ async function createCodingAgentHarness(
 				await harness.setThinkingLevel(resolved.thinkingLevel, TODO_CONTEXT);
 			}
 		}
-		return harness;
+		return { harness, modelRuntime };
 	} catch (error) {
 		try {
 			await harness.close(TODO_CONTEXT);

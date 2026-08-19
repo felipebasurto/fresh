@@ -4,9 +4,12 @@ import {
 	createRpcDispatcher,
 	type EventEnvelope,
 	type PromptArguments,
+	type ProtocolRpcCall,
+	type ProtocolRpcResult,
 	ProtocolValidationError,
 	type RpcTarget,
 	type RunResult,
+	type ServerEventEnvelope,
 	ServiceRpc,
 	type ServiceRpcCall,
 	type ServiceRpcResultUnion,
@@ -39,7 +42,7 @@ interface ClientAttachment {
 	readonly id: string;
 	readonly client: object;
 	readonly session: HostedSession;
-	readonly prompts: Set<Promise<RunResult>>;
+	readonly operations: Set<Promise<unknown>>;
 	acquiring?: Promise<RoutedSessionAttachment>;
 	lease?: RoutedSessionAttachment;
 	releasing?: Promise<void>;
@@ -128,6 +131,19 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		return this.dispatchRpc(call, { client, target, publish, context });
 	}
 
+	async executeServiceCall(
+		call: ProtocolRpcCall,
+		target: RpcTarget,
+		client: object,
+		publish: (message: ServerEventEnvelope, context: Context) => Promise<void>,
+		context: Context,
+	): Promise<ProtocolRpcResult> {
+		const admitted = await this.runForClient(client, () =>
+			this.startServiceCall(client, target, call, publish, context),
+		);
+		return admitted.result;
+	}
+
 	async disconnect(client: object, context: Context): Promise<void> {
 		this.disconnectedClients.add(client);
 		try {
@@ -205,15 +221,14 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		if (this.options.isClosing() || this.disconnectedClients.has(client)) throw new ServerDrainingError();
 		const current = this.attachmentsByClient.get(client);
 		if (current?.session.id === sessionId) return { sessionId, attachmentId: current.id };
-		if (current) await this.releaseAttachment(current, context);
-
 		const hosted = await this.acquire(sessionId, context);
 		if (this.options.isClosing() || this.disconnectedClients.has(client)) throw new ServerDrainingError();
+		if (current) await this.releaseAttachment(current, context);
 		const attachment: ClientAttachment = {
 			id: randomUUID(),
 			client,
 			session: hosted,
-			prompts: new Set(),
+			operations: new Set(),
 		};
 		hosted.attachments.add(attachment);
 		try {
@@ -247,12 +262,37 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		const lease = attachment.lease;
 		if (lease === undefined) throw new SessionNotAttachedError();
 		const result = lease.prompt(prompt, context);
-		attachment.prompts.add(result);
+		this.trackOperation(attachment, result);
+		return { result };
+	}
+
+	private async startServiceCall(
+		client: object,
+		target: RpcTarget,
+		call: ProtocolRpcCall,
+		publish: (message: ServerEventEnvelope, context: Context) => Promise<void>,
+		context: Context,
+	): Promise<{ result: Promise<ProtocolRpcResult> }> {
+		const attachment = this.requireAttachment(client, target);
+		const invoke = attachment.lease?.invokeService;
+		if (invoke === undefined) throw new NotSupportedError("Routed Session does not support plugin services");
+		const result = invoke.call(
+			attachment.lease,
+			call,
+			(subscriptionId, update, updateContext) =>
+				publish({ type: "service_event", subscriptionId, update }, updateContext),
+			context,
+		);
+		this.trackOperation(attachment, result);
+		return { result };
+	}
+
+	private trackOperation(attachment: ClientAttachment, result: Promise<unknown>): void {
+		attachment.operations.add(result);
 		const remove = (): void => {
-			attachment.prompts.delete(result);
+			attachment.operations.delete(result);
 		};
 		void result.then(remove, remove);
-		return { result };
 	}
 
 	private async createWatch(
@@ -339,7 +379,7 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 				} catch (error) {
 					errors.push(error);
 				}
-				await Promise.allSettled(attachment.prompts);
+				await Promise.allSettled(attachment.operations);
 				try {
 					const lease = attachment.lease ?? (await attachment.acquiring);
 					if (lease) await lease.release(context);

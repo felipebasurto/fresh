@@ -5,7 +5,7 @@ import {
 	PROTOCOL_VERSION,
 	ProtocolValidationError,
 } from "@earendil-works/pi-protocol";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { type ByteTransportFactory, PiClient, PiClientDisposedError, PiDisconnectedError } from "../src/index.ts";
 import { MemoryByteServer } from "./support.ts";
 
@@ -274,6 +274,71 @@ describe("PiClient service operations", () => {
 			event: { type: "run_resume", lane: "main", runId: "run-1" },
 		});
 		expect(events).toEqual(["run_start"]);
+		await client.dispose();
+	});
+
+	test("buffers service updates until the subscription snapshot arrives", async () => {
+		const server = new MemoryByteServer();
+		const client = await connectClient(server);
+		const attaching = client.attachSession("session-1");
+		await server.waitForMessages(2);
+		server.send({
+			type: "response",
+			id: "request-1",
+			ok: true,
+			result: { sessionId: "session-1", attachmentId: "attachment-1" },
+		});
+		await attaching;
+		const target = client.attachment!;
+		const updates: string[] = [];
+		const opening = client.subscribeService(target, "models", "singleton", (update) => {
+			updates.push(update.type);
+		});
+		await server.waitForMessages(3);
+		expect(server.messages[2]).toMatchObject({
+			type: "request",
+			target,
+			call: {
+				serviceId: "$pi.service",
+				member: "subscribe",
+				args: ["service-1", "models", "singleton"],
+			},
+		});
+		server.send({
+			type: "service_event",
+			subscriptionId: "service-1",
+			update: { type: "state", member: "state", sequence: 1, value: { revision: 1 } },
+		});
+		await Promise.resolve();
+		expect(updates).toEqual([]);
+		server.send({
+			type: "response",
+			id: "request-2",
+			ok: true,
+			result: {
+				serviceId: "models",
+				mode: "singleton",
+				instances: [
+					{
+						members: [{ name: "state", kind: "state" }],
+						states: { state: { sequence: 0, value: { revision: 0 } } },
+					},
+				],
+			},
+		});
+		const subscription = await opening;
+		expect(updates).toEqual([]);
+		expect(subscription.snapshot.instances[0]?.states.state?.value).toEqual({ revision: 0 });
+		subscription.start();
+		await vi.waitFor(() => expect(updates).toEqual(["state"]));
+
+		const disposing = subscription.dispose();
+		await server.waitForMessages(4);
+		expect(server.messages[3]).toMatchObject({
+			call: { serviceId: "$pi.service", member: "unsubscribe", args: ["service-1"] },
+		});
+		server.send({ type: "response", id: "request-3", ok: true });
+		await disposing;
 		await client.dispose();
 	});
 

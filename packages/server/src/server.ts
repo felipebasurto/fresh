@@ -298,17 +298,27 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 					},
 					context,
 				);
+			} else if ("sessionId" in envelope.target) {
+				result = await this.sessions.executeServiceCall(
+					envelope.call,
+					envelope.target,
+					state,
+					async (message, _context) => {
+						await this.sendMessage(state, message);
+					},
+					context,
+				);
 			} else {
 				throw new ProtocolValidationError(
 					`Unknown service member ${envelope.call.serviceId}.${envelope.call.member}`,
 				);
 			}
-			await this.sendMessage(state, {
-				type: "response",
-				id: envelope.id,
-				ok: true,
-				result,
-			} satisfies ResponseEnvelope);
+			await this.sendMessage(
+				state,
+				result === undefined
+					? { type: "response", id: envelope.id, ok: true }
+					: { type: "response", id: envelope.id, ok: true, result },
+			);
 		} catch (error) {
 			await this.sendMessage(state, {
 				type: "response",

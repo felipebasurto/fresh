@@ -42,6 +42,10 @@ agent.subscribe((event) => {
 await agent.prompt("Hello!");
 ```
 
+## Experimental plugin services
+
+The package exports the transport-neutral plugin-service primitives used by the experimental application hosts: `defineRemoteService()`, `remoteState()`, `RemoteServiceProvider`, and `RemoteServiceNamespace`. Providers classify implementation methods and state members at runtime; consumers receive stable singleton facades through `use()` or lifecycle-scoped keyed instances through `observe()`. `RemoteState` values are borrowed immutable JSON: the runtime does not defensively clone them, so callers must not mutate or retain them. Wire framing and host routing remain outside this package.
+
 ## Core Concepts
 
 ### AgentMessage vs LLM Message

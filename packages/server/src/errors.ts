@@ -1,16 +1,18 @@
-import type { ProtocolErrorCode } from "@earendil-works/pi-protocol";
+import type { ProtocolErrorCode, ServiceErrorCode } from "@earendil-works/pi-protocol";
 
-type PiServerOperationErrorCode = Extract<
-	ProtocolErrorCode,
-	| "wrong_server"
-	| "session_not_found"
-	| "session_ambiguous"
-	| "session_not_attached"
-	| "watch_not_found"
-	| "watch_in_use"
-	| "not_supported"
-	| "server_draining"
->;
+type PiServerOperationErrorCode =
+	| ServiceErrorCode
+	| Extract<
+			ProtocolErrorCode,
+			| "wrong_server"
+			| "session_not_found"
+			| "session_ambiguous"
+			| "session_not_attached"
+			| "watch_not_found"
+			| "watch_in_use"
+			| "not_supported"
+			| "server_draining"
+	  >;
 
 export const INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error";
 

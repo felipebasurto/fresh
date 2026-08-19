@@ -1,6 +1,7 @@
 import {
 	createRpcClient,
-	type EventEnvelope,
+	createServiceSubscribeCall,
+	createServiceUnsubscribeCall,
 	encodeClientMessage,
 	encodeServiceRpcCall,
 	isServerId,
@@ -10,12 +11,17 @@ import {
 	type PromptMessage,
 	type ProtocolRpcCall,
 	ProtocolValidationError,
+	parseServiceSubscriptionSnapshot,
 	type ResponseEnvelope,
 	type RpcTarget,
+	type ServerEventEnvelope,
 	type ServerHello,
+	type ServiceMode,
+	type ServiceProviderUpdate,
 	ServiceRpc,
 	type ServiceRpcCall,
 	type ServiceRpcResult,
+	type ServiceSubscriptionSnapshot,
 	type SessionAddress,
 	type SessionCreateOptions,
 	type SessionSummary,
@@ -24,7 +30,15 @@ import {
 import { Connection } from "./connection.ts";
 import { PiClientDisposedError, PiDisconnectedError, PiServerError, toError } from "./errors.ts";
 import { createPromiseResolvers } from "./promise.ts";
-import type { ConnectionState, ConnectionStateChange, PiClientOptions, PiLaneWatch, Unsubscribe } from "./types.ts";
+import type {
+	AttachmentChangeListener,
+	ConnectionState,
+	ConnectionStateChange,
+	PiClientOptions,
+	PiLaneWatch,
+	PiServiceSubscription,
+	Unsubscribe,
+} from "./types.ts";
 
 interface PendingRequest {
 	resolve(result: unknown): void;
@@ -37,14 +51,25 @@ interface ActiveWatchListener {
 	deliveryTail: Promise<void>;
 }
 
+interface ActiveServiceListener {
+	readonly target: RpcTarget;
+	readonly listener: (update: ServiceProviderUpdate) => void | Promise<void>;
+	readonly queued: ServiceProviderUpdate[];
+	deliveryTail: Promise<void>;
+	ready: boolean;
+}
+
 export class PiClient {
 	readonly #options: PiClientOptions;
 	readonly #connection: Connection;
 	readonly #pendingRequests = new Map<string, PendingRequest>();
 	readonly #connectionStateListeners = new Set<(change: ConnectionStateChange) => void>();
+	readonly #attachmentListeners = new Set<AttachmentChangeListener>();
 	readonly #watchListeners = new Map<string, ActiveWatchListener>();
+	readonly #serviceListeners = new Map<string, ActiveServiceListener>();
 	readonly #rpc: ReturnType<typeof createRpcClient<typeof ServiceRpc>>;
 	#requestSequence = 0;
+	#serviceSubscriptionSequence = 0;
 	#hello: ServerHello | undefined;
 	#attachment: SessionTarget | undefined;
 	#disposed = false;
@@ -123,6 +148,12 @@ export class PiClient {
 		return () => this.#connectionStateListeners.delete(listener);
 	}
 
+	onAttachmentChange(listener: AttachmentChangeListener): Unsubscribe {
+		this.#assertNotDisposed();
+		this.#attachmentListeners.add(listener);
+		return () => this.#attachmentListeners.delete(listener);
+	}
+
 	/** Invoke one low-level protocol call against an explicit routed target. */
 	request(target: RpcTarget, call: ProtocolRpcCall, signal?: AbortSignal): Promise<unknown> {
 		return this.#request(target, call, signal);
@@ -142,7 +173,7 @@ export class PiClient {
 			throw new PiServerError({ code: "wrong_server", message: "Session belongs to another server" });
 		}
 		const attached = await this.#rpc.attach(sessionId);
-		this.#attachment = { serverId: this.#options.serverId, ...attached };
+		this.#setAttachment({ serverId: this.#options.serverId, ...attached });
 		return attached;
 	}
 
@@ -160,6 +191,69 @@ export class PiClient {
 		}
 		if (Array.isArray(message)) return this.#rpc.prompt([message]);
 		return this.#rpc.prompt([message]);
+	}
+
+	async subscribeService(
+		target: RpcTarget,
+		serviceId: string,
+		mode: ServiceMode,
+		listener: (update: ServiceProviderUpdate) => void | Promise<void>,
+		signal?: AbortSignal,
+	): Promise<PiServiceSubscription> {
+		const subscriptionId = `service-${++this.#serviceSubscriptionSequence}`;
+		const active: ActiveServiceListener = {
+			target,
+			listener,
+			queued: [],
+			deliveryTail: Promise.resolve(),
+			ready: false,
+		};
+		this.#serviceListeners.set(subscriptionId, active);
+		let snapshot: ServiceSubscriptionSnapshot;
+		try {
+			const result = await this.#request(
+				target,
+				createServiceSubscribeCall(subscriptionId, serviceId, mode),
+				signal,
+			);
+			try {
+				snapshot = parseServiceSubscriptionSnapshot(result);
+			} catch (error) {
+				const validationError = new ProtocolValidationError(
+					error instanceof Error ? error.message : "Invalid service subscription snapshot",
+				);
+				this.#connection.fail(validationError);
+				throw validationError;
+			}
+		} catch (error) {
+			if (this.#serviceListeners.get(subscriptionId) === active) this.#serviceListeners.delete(subscriptionId);
+			throw error;
+		}
+		if (this.#serviceListeners.get(subscriptionId) !== active) throw new PiDisconnectedError();
+		let disposed = false;
+		return {
+			id: subscriptionId,
+			target,
+			snapshot,
+			start: () => {
+				if (disposed || active.ready) return;
+				active.ready = true;
+				for (const update of active.queued.splice(0)) this.#deliverServiceUpdate(active, update);
+			},
+			dispose: async () => {
+				if (disposed) return;
+				disposed = true;
+				if (this.#serviceListeners.get(subscriptionId) === active) this.#serviceListeners.delete(subscriptionId);
+				try {
+					if (this.connected && this.#targetIsCurrent(target)) {
+						await this.#request(target, createServiceUnsubscribeCall(subscriptionId));
+					}
+					await active.deliveryTail;
+				} finally {
+					active.queued.length = 0;
+				}
+			},
+		};
 	}
 
 	async watchSession(sessionId: string): Promise<PiLaneWatch> {
@@ -256,13 +350,20 @@ export class PiClient {
 		return promise;
 	}
 
-	#handleMessage(message: ResponseEnvelope | EventEnvelope): void {
+	#handleMessage(message: ResponseEnvelope | ServerEventEnvelope): void {
 		if (message.type === "event") {
 			const active = this.#watchListeners.get(message.watchId);
 			if (active === undefined) return;
 			active.deliveryTail = active.deliveryTail
 				.then(() => active.listener(message.event))
 				.catch((error: unknown) => this.#reportListenerError(error));
+			return;
+		}
+		if (message.type === "service_event") {
+			const active = this.#serviceListeners.get(message.subscriptionId);
+			if (active === undefined) return;
+			if (active.ready) this.#deliverServiceUpdate(active, message.update);
+			else active.queued.push(message.update);
 			return;
 		}
 		const pending = this.#takePendingRequest(message.id);
@@ -280,9 +381,10 @@ export class PiClient {
 	#handleConnectionStateChange(change: ConnectionStateChange): void {
 		if (change.state === "disconnected") {
 			this.#hello = undefined;
-			this.#attachment = undefined;
+			this.#setAttachment(undefined);
 			this.#rejectPendingRequests(change.error ?? new PiDisconnectedError());
 			this.#watchListeners.clear();
+			this.#serviceListeners.clear();
 		}
 		for (const listener of this.#connectionStateListeners) {
 			try {
@@ -319,9 +421,11 @@ export class PiClient {
 		this.#rejectPendingRequests(error);
 		this.#connection.disconnect(error);
 		this.#hello = undefined;
-		this.#attachment = undefined;
+		this.#setAttachment(undefined);
 		this.#connectionStateListeners.clear();
+		this.#attachmentListeners.clear();
 		this.#watchListeners.clear();
+		this.#serviceListeners.clear();
 		return this.#disposePromise;
 	}
 
@@ -349,6 +453,41 @@ export class PiClient {
 			throw new PiServerError({ code: "session_not_attached", message: "Session is not attached" });
 		}
 		return attachment;
+	}
+
+	#setAttachment(attachment: SessionTarget | undefined): void {
+		const previous = this.#attachment;
+		if (
+			previous?.serverId === attachment?.serverId &&
+			previous?.sessionId === attachment?.sessionId &&
+			previous?.attachmentId === attachment?.attachmentId
+		) {
+			return;
+		}
+		this.#attachment = attachment;
+		for (const listener of this.#attachmentListeners) {
+			try {
+				listener(attachment);
+			} catch (error) {
+				this.#reportListenerError(error);
+			}
+		}
+	}
+
+	#deliverServiceUpdate(active: ActiveServiceListener, update: ServiceProviderUpdate): void {
+		active.deliveryTail = active.deliveryTail
+			.then(() => active.listener(update))
+			.catch((error: unknown) => this.#reportListenerError(error));
+	}
+
+	#targetIsCurrent(target: RpcTarget): boolean {
+		if (!("sessionId" in target)) return this.#hello?.serverId === target.serverId;
+		const attachment = this.#attachment;
+		return (
+			attachment?.serverId === target.serverId &&
+			attachment.sessionId === target.sessionId &&
+			attachment.attachmentId === target.attachmentId
+		);
 	}
 
 	#assertNotDisposed(): void {

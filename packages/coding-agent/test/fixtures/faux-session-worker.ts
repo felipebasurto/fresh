@@ -1,9 +1,10 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentHarness, BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
+import { AgentHarness, BACKGROUND_CONTEXT, remoteState } from "@earendil-works/pi-agent-core";
 import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { consumeInternalProcessRole } from "../../src/experimental/process.ts";
 import { runSessionWorkerWithHarness } from "../../src/experimental/session-worker.ts";
+import { KeyedProbe } from "./keyed-service.ts";
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	const role = consumeInternalProcessRole();
@@ -16,7 +17,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
 		faux.setResponses([fauxAssistantMessage("deterministic remote answer", { timestamp: 20 })]);
 		const models = createModels();
 		models.setProvider(faux.provider);
-		return (
+		const harness = (
 			await AgentHarness.create(
 				{
 					session,
@@ -28,8 +29,39 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
 				BACKGROUND_CONTEXT,
 			)
 		).harness;
+		return {
+			harness,
+			serviceTokens: [KeyedProbe],
+			configureServices(provider) {
+				const spawn = (value: string): void => {
+					const state = remoteState({ value });
+					let close = (): void => {};
+					close = provider.spawn(KeyedProbe, "probe", {
+						state,
+						async replace(next) {
+							close();
+							spawn(next);
+						},
+						async wait(context) {
+							const signal = context.abortSignal;
+							if (signal === undefined) throw new Error("Probe wait requires cancellation");
+							if (signal.aborted) throw abortError(signal);
+							await new Promise<void>((_resolve, reject) => {
+								signal.addEventListener("abort", () => reject(abortError(signal)), { once: true });
+							});
+						},
+					});
+				};
+				spawn("first");
+			},
+		};
 	}).catch((error: unknown) => {
 		console.error(error);
 		process.exit(1);
 	});
+}
+
+function abortError(signal: AbortSignal): Error {
+	const reason: unknown = signal.reason;
+	return reason instanceof Error ? reason : new DOMException("The operation was aborted", "AbortError");
 }

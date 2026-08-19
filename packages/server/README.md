@@ -2,12 +2,14 @@
 
 Experimental local server for the new durable Session and Agent Harness interfaces.
 
-The current slice supports Session discovery, creation, multi-presentation attachment, prompting, and optional main-lane observation. `RoutedSessionHandle.attachClient()` returns a presentation-scoped capability whose optional `watch()` supplies an authoritative snapshot plus buffered events. The server owns each attachment's single watch ID, starts delivery only after the client has received the snapshot, and removes the watch when that attachment is released.
+The current slice supports Session discovery, creation, multi-presentation attachment, plugin-service routing, prompting, and optional main-lane observation. `RoutedSessionHandle.attachClient()` returns a presentation-scoped capability. Its optional `invokeService()` forwards an opaque service/member envelope to the selected Session endpoint; the server validates the attachment route but does not load the plugin contract. Its optional `watch()` supplies an authoritative snapshot plus buffered events.
 
 - `list` calls the host's private Session catalog without opening Sessions and projects presentation-safe summaries.
 - `create` asks the host to persist an optional Session ID; private workspace and working-directory data are server-derived.
 - `attach` finds the requested metadata, passes it to the host, and retains the returned routed Session handle in the server.
 - `prompt` executes one serializable prompt through the requesting presentation's attachment capability.
+- unknown Session service calls route through `invokeService` without server-side business-payload decoding;
+- service subscription updates remain scoped to the requesting attachment;
 - `watch`, `startWatch`, and `stopWatch` provide snapshot-first lane observation when supported by the host.
 
 A Session may have multiple presentation attachments. Repeating `attach` from one connection is idempotent; every successful attachment has a server-generated `attachmentId`. Session requests carry `{ serverId, sessionId, attachmentId }`, and the server rejects stale or mismatched routes. Losing a connection rejects its local responses but releases its attachment only after admitted prompts settle. The host decides when zero presentation demand and worker-local Harness activity permit worker retirement. Server shutdown closes every routed Session handle, releasing its worker and Session writer ownership.

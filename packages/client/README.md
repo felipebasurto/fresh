@@ -37,6 +37,8 @@ The client verifies that the physical endpoint reports the expected logical `ser
 
 `watchSession()` creates a main-lane watch and returns its authoritative snapshot without starting event delivery. Install the listener with `await watch.start(listener)`; this then flushes events buffered after the snapshot and continues with live events while `promptSession()` is pending. `watch.dispose()` stops server delivery and waits for already-received listener work. A disconnected watch is stale and cannot be reused after reconnection.
 
+Plugin presentation hosts use `request()` and `subscribeService()` as low-level transport adapters. A service subscription returns a complete provider snapshot; the host installs it and then calls `start()` to release updates buffered during hydration. `PiClient` deliberately does not construct typed service proxies or interpret plugin contracts.
+
 On disconnect or disposal, pending prompts reject locally, but accepted work may still complete remotely before the attachment is released. The client clears its live attachment route. It never reconnects or replays requests automatically. After disconnection, call `reconnect()`, attach again, and explicitly repeat only operations known to be safe.
 
 The experimental local coordinator only provides a stable endpoint and relays traffic. Replaceable server processes own session and worker lifecycle outside the public client protocol.

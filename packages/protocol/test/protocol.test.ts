@@ -6,7 +6,10 @@ import {
 	ClientMessageDecoder,
 	createRpcClient,
 	createRpcDispatcher,
+	createServiceSubscribeCall,
+	createServiceUnsubscribeCall,
 	decodeCbor,
+	decodeServiceControlCall,
 	decodeServiceRpcCall,
 	defineRpc,
 	encodeCbor,
@@ -167,11 +170,11 @@ describe("RPC manifest", () => {
 });
 
 describe("protocol validation", () => {
-	test("negotiates protocol version 2", () => {
-		expect(PROTOCOL_VERSION).toBe(2);
-		expect(isSupportedProtocolVersion(2)).toBe(true);
-		expect(isSupportedProtocolVersion(1)).toBe(false);
-		expect(isSupportedProtocolVersion(2.5)).toBe(false);
+	test("negotiates protocol version 3", () => {
+		expect(PROTOCOL_VERSION).toBe(3);
+		expect(isSupportedProtocolVersion(3)).toBe(true);
+		expect(isSupportedProtocolVersion(2)).toBe(false);
+		expect(isSupportedProtocolVersion(3.5)).toBe(false);
 	});
 
 	test.each([0, PROTOCOL_VERSION, PROTOCOL_VERSION + 1])(
@@ -202,6 +205,36 @@ describe("protocol validation", () => {
 				call: { method: "list", args: [] },
 			}),
 		).toThrow(ProtocolValidationError);
+	});
+
+	test("encodes service control and keyed instance addresses", () => {
+		const subscribe = createServiceSubscribeCall("subscription-1", "models", "singleton");
+		expect(decodeServiceControlCall(subscribe)).toEqual({
+			type: "subscribe",
+			subscriptionId: "subscription-1",
+			serviceId: "models",
+			mode: "singleton",
+		});
+		expect(decodeServiceControlCall(createServiceUnsubscribeCall("subscription-1"))).toEqual({
+			type: "unsubscribe",
+			subscriptionId: "subscription-1",
+		});
+		const keyed: ClientMessage = {
+			type: "request",
+			id: "request-1",
+			target: {
+				serverId: "00000000-0000-4000-8000-000000000001",
+				sessionId: "session-1",
+				attachmentId: "attachment-1",
+			},
+			call: {
+				serviceId: "question-dialog",
+				instance: { key: "invocation-1", generation: 2 },
+				member: "submit",
+				args: [{ outcome: "selected", index: 0 }],
+			},
+		};
+		expect(parseClientMessage(keyed)).toEqual(keyed);
 	});
 
 	test("keeps transport RPC calls untyped while validating their envelope", () => {
@@ -490,9 +523,16 @@ describe("protocol validation", () => {
 		expect(() => parseClientMessage(message)).toThrow(ProtocolValidationError);
 	});
 
+	test("accepts a successful void response without a result field", () => {
+		expect(parseServerMessage({ type: "response", id: "request-1", ok: true })).toEqual({
+			type: "response",
+			id: "request-1",
+			ok: true,
+		});
+	});
+
 	test.each([
 		["invalid server id", { ...serverHello, serverId: "server-1" }],
-		["missing response result", { type: "response", id: "request-1", ok: true }],
 		["extra response field", { type: "response", id: "request-1", ok: true, result: [], extra: true }],
 	] as const)("rejects malformed server boundaries: %s", (_label, message) => {
 		expect(() => parseServerMessage(message)).toThrow(ProtocolValidationError);

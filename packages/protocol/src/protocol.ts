@@ -1,7 +1,7 @@
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import { LaneEventSchema, LaneSnapshotSchema, PromptArgumentsSchema, RunResultSchema } from "./harness.ts";
-import { JsonValueSchema } from "./json-value.ts";
+import { type JsonValue, JsonValueSchema } from "./json-value.ts";
 import {
 	createRpcCallSchema,
 	createRpcResultSchema,
@@ -13,7 +13,7 @@ import {
 	type RpcResultUnion,
 } from "./rpc.ts";
 
-export const PROTOCOL_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 3 as const;
 
 const IdSchema = Type.String({ minLength: 1 });
 const TimestampSchema = Type.Integer({ minimum: 0 });
@@ -44,7 +44,7 @@ export const SessionCreateOptionsSchema = StrictObject({
 });
 export type SessionCreateOptions = Static<typeof SessionCreateOptionsSchema>;
 
-/** Session operations available to normal Pi clients in protocol v1. */
+/** Temporary typed facade for the pre-plugin Session operations. */
 export const ServiceRpc = defineRpc({
 	list: {
 		args: Type.Tuple([]),
@@ -84,15 +84,123 @@ export type ServiceRpcResultUnion = RpcResultUnion<ServiceRpcManifest>;
 export const ServiceRpcCallSchema = Type.Unsafe<ServiceRpcCall>(createRpcCallSchema(ServiceRpc));
 export const ServiceRpcResultSchema = Type.Unsafe<ServiceRpcResultUnion>(createRpcResultSchema(ServiceRpc));
 
+export const ServiceModeSchema = Type.Union([Type.Literal("singleton"), Type.Literal("keyed")]);
+export type ServiceMode = Static<typeof ServiceModeSchema>;
+
+export const ServiceInstanceAddressSchema = StrictObject({
+	key: IdSchema,
+	generation: Type.Integer({ minimum: 1 }),
+});
+export type ServiceInstanceAddress = Static<typeof ServiceInstanceAddressSchema>;
+
 /** Contract-agnostic service/member invocation carried by the transport. */
 export const ProtocolRpcCallSchema = StrictObject({
 	serviceId: Type.String({ minLength: 1 }),
+	instance: Type.Optional(ServiceInstanceAddressSchema),
 	member: Type.String({ minLength: 1 }),
 	args: Type.Array(JsonValueSchema),
 });
 export type ProtocolRpcCall = Static<typeof ProtocolRpcCallSchema>;
-export type ProtocolRpcResult = unknown;
-const ProtocolRpcResultSchema = Type.Unknown();
+export type ProtocolRpcResult = JsonValue | undefined;
+
+export const ServiceMemberDescriptionSchema = StrictObject({
+	name: IdSchema,
+	kind: Type.Union([Type.Literal("method"), Type.Literal("state")]),
+});
+export type ServiceMemberDescription = Static<typeof ServiceMemberDescriptionSchema>;
+
+export const ServiceStateSnapshotSchema = StrictObject({
+	sequence: Type.Integer({ minimum: 0 }),
+	value: JsonValueSchema,
+});
+export type ServiceStateSnapshot = Static<typeof ServiceStateSnapshotSchema>;
+
+export const ServiceInstanceSnapshotSchema = StrictObject({
+	instance: Type.Optional(ServiceInstanceAddressSchema),
+	members: Type.Array(ServiceMemberDescriptionSchema),
+	states: Type.Record(Type.String(), ServiceStateSnapshotSchema),
+});
+export type ServiceInstanceSnapshot = Static<typeof ServiceInstanceSnapshotSchema>;
+
+export const ServiceSubscriptionSnapshotSchema = StrictObject({
+	serviceId: Type.String({ minLength: 1 }),
+	mode: ServiceModeSchema,
+	instances: Type.Array(ServiceInstanceSnapshotSchema),
+});
+export type ServiceSubscriptionSnapshot = Static<typeof ServiceSubscriptionSnapshotSchema>;
+
+export function parseServiceSubscriptionSnapshot(value: unknown): ServiceSubscriptionSnapshot {
+	if (!Check(ServiceSubscriptionSnapshotSchema, value)) {
+		throw new TypeError("Invalid service subscription snapshot");
+	}
+	return value;
+}
+
+export const ServiceProviderUpdateSchema = Type.Union([
+	StrictObject({
+		type: Type.Literal("state"),
+		instance: Type.Optional(ServiceInstanceAddressSchema),
+		member: IdSchema,
+		sequence: Type.Integer({ minimum: 1 }),
+		value: JsonValueSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("spawned"),
+		instance: ServiceInstanceSnapshotSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("closed"),
+		instance: ServiceInstanceAddressSchema,
+	}),
+]);
+export type ServiceProviderUpdate = Static<typeof ServiceProviderUpdateSchema>;
+
+export const SERVICE_CONTROL_ID = "$pi.service";
+export const SERVICE_SUBSCRIBE_MEMBER = "subscribe";
+export const SERVICE_UNSUBSCRIBE_MEMBER = "unsubscribe";
+
+export type ServiceControlCall =
+	| {
+			readonly type: "subscribe";
+			readonly subscriptionId: string;
+			readonly serviceId: string;
+			readonly mode: ServiceMode;
+	  }
+	| { readonly type: "unsubscribe"; readonly subscriptionId: string };
+
+export function createServiceSubscribeCall(
+	subscriptionId: string,
+	serviceId: string,
+	mode: ServiceMode,
+): ProtocolRpcCall {
+	return { serviceId: SERVICE_CONTROL_ID, member: SERVICE_SUBSCRIBE_MEMBER, args: [subscriptionId, serviceId, mode] };
+}
+
+export function createServiceUnsubscribeCall(subscriptionId: string): ProtocolRpcCall {
+	return { serviceId: SERVICE_CONTROL_ID, member: SERVICE_UNSUBSCRIBE_MEMBER, args: [subscriptionId] };
+}
+
+export function decodeServiceControlCall(call: ProtocolRpcCall): ServiceControlCall | undefined {
+	if (call.serviceId !== SERVICE_CONTROL_ID || call.instance !== undefined) return undefined;
+	if (
+		call.member === SERVICE_SUBSCRIBE_MEMBER &&
+		call.args.length === 3 &&
+		typeof call.args[0] === "string" &&
+		typeof call.args[1] === "string" &&
+		(call.args[2] === "singleton" || call.args[2] === "keyed")
+	) {
+		return {
+			type: "subscribe",
+			subscriptionId: call.args[0],
+			serviceId: call.args[1],
+			mode: call.args[2],
+		};
+	}
+	if (call.member === SERVICE_UNSUBSCRIBE_MEMBER && call.args.length === 1 && typeof call.args[0] === "string") {
+		return { type: "unsubscribe", subscriptionId: call.args[0] };
+	}
+	return undefined;
+}
 
 const ServiceRpcAddresses = {
 	list: { serviceId: "session-directory", member: "list" },
@@ -111,6 +219,7 @@ export function encodeServiceRpcCall(call: ServiceRpcCall): ProtocolRpcCall {
 
 /** Validate and decode one generic envelope against the current built-in contract. */
 export function decodeServiceRpcCall(call: ProtocolRpcCall): ServiceRpcCall | undefined {
+	if (call.instance !== undefined) return undefined;
 	for (const [method, address] of Object.entries(ServiceRpcAddresses)) {
 		if (call.serviceId !== address.serviceId || call.member !== address.member) continue;
 		const candidate = { method, args: call.args };
@@ -118,6 +227,18 @@ export function decodeServiceRpcCall(call: ProtocolRpcCall): ServiceRpcCall | un
 	}
 	return undefined;
 }
+
+export const ServiceErrorCodeSchema = Type.Union([
+	Type.Literal("service_not_allowed"),
+	Type.Literal("service_not_found"),
+	Type.Literal("service_mode_mismatch"),
+	Type.Literal("service_member_not_found"),
+	Type.Literal("service_member_mismatch"),
+	Type.Literal("service_instance_not_found"),
+	Type.Literal("service_stale_instance"),
+	Type.Literal("service_invalid_value"),
+]);
+export type ServiceErrorCode = Static<typeof ServiceErrorCodeSchema>;
 
 export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("version"),
@@ -129,6 +250,7 @@ export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("watch_in_use"),
 	Type.Literal("not_supported"),
 	Type.Literal("server_draining"),
+	ServiceErrorCodeSchema,
 	Type.Literal("invalid_request"),
 	Type.Literal("cancelled"),
 	Type.Literal("internal_error"),
@@ -204,7 +326,7 @@ export const ResponseEnvelopeSchema = Type.Union([
 		type: Type.Literal("response"),
 		id: IdSchema,
 		ok: Type.Literal(true),
-		result: ProtocolRpcResultSchema,
+		result: Type.Optional(JsonValueSchema),
 	}),
 	StrictObject({
 		type: Type.Literal("response"),
@@ -218,14 +340,22 @@ export const EventEnvelopeSchema = StrictObject({
 	watchId: IdSchema,
 	event: LaneEventSchema,
 });
+export const ServiceEventEnvelopeSchema = StrictObject({
+	type: Type.Literal("service_event"),
+	subscriptionId: IdSchema,
+	update: ServiceProviderUpdateSchema,
+});
 export const ServerMessageSchema = Type.Union([
 	ServerHelloSchema,
 	ServerHelloErrorSchema,
 	ResponseEnvelopeSchema,
 	EventEnvelopeSchema,
+	ServiceEventEnvelopeSchema,
 ]);
 export type ServerHello = Static<typeof ServerHelloSchema>;
 export type ServerHelloError = Static<typeof ServerHelloErrorSchema>;
 export type ResponseEnvelope = Static<typeof ResponseEnvelopeSchema>;
 export type EventEnvelope = Static<typeof EventEnvelopeSchema>;
+export type ServiceEventEnvelope = Static<typeof ServiceEventEnvelopeSchema>;
+export type ServerEventEnvelope = EventEnvelope | ServiceEventEnvelope;
 export type ServerMessage = Static<typeof ServerMessageSchema>;

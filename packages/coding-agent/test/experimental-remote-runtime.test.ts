@@ -1,16 +1,20 @@
 import { lstat, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { BACKGROUND_CONTEXT, type Context, withCancel } from "@earendil-works/pi-agent-core";
 import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { runClient } from "../src/experimental/client.ts";
 import * as processRuntime from "../src/experimental/process.ts";
 import { activateServer, type RunningServer, startServer } from "../src/experimental/server.ts";
+import { createPiSessionServiceNamespace } from "../src/experimental/services/connection.ts";
+import { Models } from "../src/experimental/services/models.ts";
 import {
 	configureExperimentalWorkerModel,
 	createExperimentalSessions,
 	readExperimentalSessionState,
 } from "./experimental-session-support.ts";
+import { KeyedProbe, type KeyedProbeService } from "./fixtures/keyed-service.ts";
 
 const servers = new Set<RunningServer>();
 const clients = new Set<PiClient>();
@@ -290,6 +294,95 @@ describe("experimental durable server composition", () => {
 		clients.add(competing);
 		await expect(competing.attachSession("demo-1")).resolves.toMatchObject({ sessionId: "demo-1" });
 		expect(runtime.workerPids.get("demo-1")).toBe(firstPid);
+	});
+
+	test("hydrates and updates the Models service across concurrent framed clients", async () => {
+		const { runtime } = await makeServer();
+		const firstClient = await attachClient(runtime, "demo-1");
+		const secondClient = await attachClient(runtime, "demo-1");
+		const errors: Error[] = [];
+		const firstServices = createPiSessionServiceNamespace(firstClient, {
+			services: [Models],
+			onError: (error) => errors.push(error),
+		});
+		const secondServices = createPiSessionServiceNamespace(secondClient, {
+			services: [Models],
+			onError: (error) => errors.push(error),
+		});
+		const firstModels = firstServices.use(Models);
+		const secondModels = secondServices.use(Models);
+
+		await vi.waitFor(() => {
+			expect(firstModels.state.value?.configuration.model).toEqual({
+				provider: "anthropic",
+				modelId: "claude-sonnet-4-5",
+			});
+			expect(secondModels.state.value).toEqual(firstModels.state.value);
+		});
+		const previousThinking = firstModels.state.value!.configuration.thinkingLevel;
+		await firstModels.cycleThinking(BACKGROUND_CONTEXT);
+		await vi.waitFor(() => {
+			expect(firstModels.state.value!.configuration.thinkingLevel).not.toBe(previousThinking);
+			expect(secondModels.state.value).toEqual(firstModels.state.value);
+		});
+		expect(errors).toEqual([]);
+
+		await Promise.all([firstServices.dispose(BACKGROUND_CONTEXT), secondServices.dispose(BACKGROUND_CONTEXT)]);
+	});
+
+	test("observes keyed service instances and fences replacement generations over framed transport", async ({
+		onTestFinished,
+	}) => {
+		const spawn = vi
+			.spyOn(processRuntime, "spawnInternalProcess")
+			.mockImplementation((role, args, options) =>
+				realSpawnInternalProcess(
+					role,
+					args,
+					role === "session-worker" ? { ...options, entryUrl: fauxWorkerEntryUrl } : options,
+				),
+			);
+		onTestFinished(() => spawn.mockRestore());
+		const { runtime } = await makeServer();
+		const client = await attachClient(runtime, "demo-1");
+		const errors: Error[] = [];
+		const services = createPiSessionServiceNamespace(client, {
+			services: [KeyedProbe],
+			onError: (error) => errors.push(error),
+		});
+		const observed: { service: KeyedProbeService; context: Context; value: string | undefined }[] = [];
+		const stop = services.observe(KeyedProbe, (instance, context) => {
+			observed.push({ service: instance.service, context, value: instance.service.state.value?.value });
+		});
+
+		await vi.waitFor(() => expect(observed).toHaveLength(1));
+		expect(observed[0]!.value).toBe("first");
+		const stale = observed[0]!.service;
+		const cancellable = withCancel(BACKGROUND_CONTEXT);
+		const waiting = stale.wait(cancellable.context);
+		const cancellation = new Error("cancel probe wait");
+		cancellable.cancel(cancellation);
+		await expect(waiting).rejects.toBe(cancellation);
+		await expect(stale.replace("second", BACKGROUND_CONTEXT)).resolves.toBeUndefined();
+		await vi.waitFor(() => expect(observed).toHaveLength(2));
+		expect(observed[0]!.context.abortSignal?.aborted).toBe(true);
+		expect(observed[1]!.value).toBe("second");
+		await expect(stale.replace("late", BACKGROUND_CONTEXT)).rejects.toMatchObject({
+			code: "service_stale_instance",
+		});
+
+		const replaced = observed[1]!.service;
+		await expect(client.attachSession("demo-2")).resolves.toMatchObject({ sessionId: "demo-2" });
+		await vi.waitFor(() => expect(observed).toHaveLength(3));
+		expect(observed[1]!.context.abortSignal?.aborted).toBe(true);
+		expect(observed[2]!.value).toBe("first");
+		await expect(replaced.replace("late", BACKGROUND_CONTEXT)).rejects.toMatchObject({
+			code: "service_stale_instance",
+		});
+		expect(errors).toEqual([]);
+
+		stop();
+		await expect(services.dispose(BACKGROUND_CONTEXT)).resolves.toBeUndefined();
 	});
 
 	test("routes prompting through the worker-owned Harness and sanitizes runtime failures", async () => {
