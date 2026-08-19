@@ -132,7 +132,7 @@ const CustomMessageSchema = StrictObject({
 const BranchSummaryMessageSchema = StrictObject({
 	role: Type.Literal("branchSummary"),
 	summary: Type.String(),
-	fromId: Type.String(),
+	fromId: Type.Union([Type.String(), Type.Null()]),
 	timestamp: TimestampSchema,
 });
 const CompactionSummaryMessageSchema = StrictObject({
@@ -332,7 +332,7 @@ const BranchSummaryEntrySchema = StrictObject({
 	seq: Type.Integer({ minimum: 1 }),
 	timestamp: TimestampSchema,
 	type: Type.Literal("branch_summary"),
-	fromId: IdSchema,
+	fromId: Type.Union([IdSchema, Type.Null()]),
 	summary: Type.String(),
 	details: Type.Optional(JsonValueSchema),
 	usage: Type.Optional(UsageSchema),
