@@ -25,12 +25,12 @@ import {
 import { Check } from "typebox/value";
 import type { CoordinatorConnection, CoordinatorConnectionEvent } from "./coordinator.ts";
 import { spawnInternalProcess } from "./process.ts";
+import type { ServiceOperationResult } from "./services/worker.ts";
 import {
 	SESSION_WORKER_CONTROL_ADDRESS_ENV,
 	SESSION_WORKER_CONTROL_TOKEN_ENV,
 	SESSION_WORKER_PEER_ID_ENV,
 	SESSION_WORKER_SESSION_KEY_ENV,
-	type ServiceOperationResult,
 	type SessionWorkerEvent,
 	SessionWorkerEventSchema,
 	type SessionWorkerOperationCall,
