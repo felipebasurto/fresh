@@ -111,6 +111,7 @@ export class RemoteSessionManager<TMetadata extends SessionMetadata = SessionMet
 						expectString(params.name, "name"),
 						expectNullableString(params.at, "at"),
 						expectObject(params.configuration, "configuration") as unknown as LaneConfiguration,
+						undefined,
 						context,
 					)
 					.then(() => null);

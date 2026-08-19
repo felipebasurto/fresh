@@ -122,10 +122,11 @@ export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 		name: string,
 		at: string | null,
 		configuration: LaneConfiguration,
+		onCommitted: ((context: Context) => void | Promise<void>) | undefined,
 		context: Context,
 	): Promise<SessionTree> {
 		return this.admit(async () => {
-			await this.session.createLane(name, at, configuration, context);
+			await this.session.createLane(name, at, configuration, onCommitted, context);
 			return this.view(name);
 		});
 	}

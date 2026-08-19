@@ -150,6 +150,7 @@ describe("RemoteSession", () => {
 				thinkingLevel: "off",
 				activeToolNames: [],
 			},
+			undefined,
 			BACKGROUND_CONTEXT,
 		);
 		await expect(review.getLeafId(BACKGROUND_CONTEXT)).resolves.toBeNull();
