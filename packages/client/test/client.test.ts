@@ -33,6 +33,19 @@ describe("PiClient service operations", () => {
 		await expect(connectClient(wrong)).rejects.toBeInstanceOf(ProtocolValidationError);
 	});
 
+	test("rejects a Session address belonging to another server", async () => {
+		const server = new MemoryByteServer();
+		const client = await connectClient(server);
+		await expect(
+			client.attachSession({
+				serverId: "00000000-0000-4000-8000-000000000002",
+				sessionId: "session-1",
+			}),
+		).rejects.toMatchObject({ code: "wrong_server" });
+		expect(server.messages).toHaveLength(1);
+		await client.dispose();
+	});
+
 	test("addresses Session operations to the configured server", async () => {
 		const server = new MemoryByteServer();
 		const client = await connectClient(server);
@@ -41,58 +54,77 @@ describe("PiClient service operations", () => {
 		expect(server.messages[1]).toEqual({
 			type: "request",
 			id: "request-1",
-			serverId: "00000000-0000-4000-8000-000000000001",
-			call: { method: "list", args: [] },
+			target: { serverId: "00000000-0000-4000-8000-000000000001" },
+			call: { serviceId: "session-directory", member: "list", args: [] },
 		});
 		server.send({
 			type: "response",
 			id: "request-1",
 			ok: true,
-			result: [{ id: "session-1", createdAt: 1, storageVersion: 1 }],
+			result: [
+				{
+					serverId: "00000000-0000-4000-8000-000000000001",
+					sessionId: "session-1",
+					createdAt: 1,
+				},
+			],
 		});
-		await expect(listing).resolves.toEqual([{ id: "session-1", createdAt: 1, storageVersion: 1 }]);
+		await expect(listing).resolves.toEqual([
+			{
+				serverId: "00000000-0000-4000-8000-000000000001",
+				sessionId: "session-1",
+				createdAt: 1,
+			},
+		]);
 
-		const creating = client.createSession({ cwd: "/workspace" });
+		const creating = client.createSession({});
 		await server.waitForMessages(3);
 		expect(server.messages[2]).toMatchObject({
 			type: "request",
-			serverId: "00000000-0000-4000-8000-000000000001",
-			call: { method: "create", args: [{ cwd: "/workspace" }] },
+			target: { serverId: "00000000-0000-4000-8000-000000000001" },
+			call: { serviceId: "session-management", member: "create", args: [{}] },
 		});
 		server.send({
 			type: "response",
 			id: "request-2",
 			ok: true,
-			result: { id: "session-2", createdAt: 2, storageVersion: 1, cwd: "/workspace" },
+			result: {
+				serverId: "00000000-0000-4000-8000-000000000001",
+				sessionId: "session-2",
+				createdAt: 2,
+			},
 		});
 		await expect(creating).resolves.toEqual({
-			id: "session-2",
+			serverId: "00000000-0000-4000-8000-000000000001",
+			sessionId: "session-2",
 			createdAt: 2,
-			storageVersion: 1,
-			cwd: "/workspace",
 		});
 
 		const attaching = client.attachSession("session-1");
 		await server.waitForMessages(4);
 		expect(server.messages[3]).toMatchObject({
 			type: "request",
-			serverId: "00000000-0000-4000-8000-000000000001",
-			call: { method: "attach", args: ["session-1"] },
+			target: { serverId: "00000000-0000-4000-8000-000000000001" },
+			call: { serviceId: "session-management", member: "attach", args: ["session-1"] },
 		});
 		server.send({
 			type: "response",
 			id: "request-3",
 			ok: true,
-			result: { sessionId: "session-1" },
+			result: { sessionId: "session-1", attachmentId: "attachment-1" },
 		});
-		await expect(attaching).resolves.toEqual({ sessionId: "session-1" });
+		await expect(attaching).resolves.toEqual({ sessionId: "session-1", attachmentId: "attachment-1" });
 
 		const prompting = client.promptSession("session-1", "Hello");
 		await server.waitForMessages(5);
 		expect(server.messages[4]).toMatchObject({
 			type: "request",
-			serverId: "00000000-0000-4000-8000-000000000001",
-			call: { method: "prompt", args: ["session-1", ["Hello"]] },
+			target: {
+				serverId: "00000000-0000-4000-8000-000000000001",
+				sessionId: "session-1",
+				attachmentId: "attachment-1",
+			},
+			call: { serviceId: "chat", member: "prompt", args: [["Hello"]] },
 		});
 		server.send({
 			type: "response",
@@ -110,6 +142,15 @@ describe("PiClient service operations", () => {
 	test("serializes every supported prompt overload as one argument tuple", async () => {
 		const server = new MemoryByteServer();
 		const client = await connectClient(server);
+		const attaching = client.attachSession("session-1");
+		await server.waitForMessages(2);
+		server.send({
+			type: "response",
+			id: "request-1",
+			ok: true,
+			result: { sessionId: "session-1", attachmentId: "attachment-1" },
+		});
+		await attaching;
 		const calls = [
 			client.promptSession("session-1", "text"),
 			client.promptSession("session-1", "image", [{ type: "image", data: "aW1n", mimeType: "image/png" }]),
@@ -119,20 +160,21 @@ describe("PiClient service operations", () => {
 				{ role: "user", content: "second", timestamp: 2 },
 			]),
 		];
-		await server.waitForMessages(5);
+		await server.waitForMessages(6);
 		expect(
-			server.messages.slice(1).map((message) => (message.type === "request" ? message.call : undefined)),
+			server.messages.slice(2).map((message) => (message.type === "request" ? message.call : undefined)),
 		).toEqual([
-			{ method: "prompt", args: ["session-1", ["text"]] },
+			{ serviceId: "chat", member: "prompt", args: [["text"]] },
 			{
-				method: "prompt",
-				args: ["session-1", ["image", [{ type: "image", data: "aW1n", mimeType: "image/png" }]]],
+				serviceId: "chat",
+				member: "prompt",
+				args: [["image", [{ type: "image", data: "aW1n", mimeType: "image/png" }]]],
 			},
-			{ method: "prompt", args: ["session-1", [{ role: "user", content: "message", timestamp: 1 }]] },
+			{ serviceId: "chat", member: "prompt", args: [[{ role: "user", content: "message", timestamp: 1 }]] },
 			{
-				method: "prompt",
+				serviceId: "chat",
+				member: "prompt",
 				args: [
-					"session-1",
 					[
 						[
 							{ role: "user", content: "first", timestamp: 1 },
@@ -145,7 +187,7 @@ describe("PiClient service operations", () => {
 		for (let index = 0; index < calls.length; index++) {
 			server.send({
 				type: "response",
-				id: `request-${index + 1}`,
+				id: `request-${index + 2}`,
 				ok: true,
 				result: { ok: false, error: { _tag: "Closed", message: "closed" } },
 			});
@@ -157,12 +199,21 @@ describe("PiClient service operations", () => {
 	test("starts lane event delivery only after receiving the authoritative snapshot", async () => {
 		const server = new MemoryByteServer();
 		const client = await connectClient(server);
-		const opening = client.watchSession("session-1");
+		const attaching = client.attachSession("session-1");
 		await server.waitForMessages(2);
-		expect(server.messages[1]).toMatchObject({ call: { method: "watch", args: ["session-1"] } });
 		server.send({
 			type: "response",
 			id: "request-1",
+			ok: true,
+			result: { sessionId: "session-1", attachmentId: "attachment-1" },
+		});
+		await attaching;
+		const opening = client.watchSession("session-1");
+		await server.waitForMessages(3);
+		expect(server.messages[2]).toMatchObject({ call: { serviceId: "transcript", member: "watch", args: [] } });
+		server.send({
+			type: "response",
+			id: "request-2",
 			ok: true,
 			result: {
 				watchId: "watch-1",
@@ -189,9 +240,9 @@ describe("PiClient service operations", () => {
 			await eventGate;
 			events.push(event.type);
 		});
-		await server.waitForMessages(3);
-		expect(server.messages[2]).toMatchObject({
-			call: { method: "startWatch", args: ["session-1", "watch-1"] },
+		await server.waitForMessages(4);
+		expect(server.messages[3]).toMatchObject({
+			call: { serviceId: "transcript", member: "startWatch", args: ["watch-1"] },
 		});
 		server.send({
 			type: "event",
@@ -200,18 +251,18 @@ describe("PiClient service operations", () => {
 		});
 		await Promise.resolve();
 		expect(events).toEqual([]);
-		server.send({ type: "response", id: "request-2", ok: true, result: { watchId: "watch-1" } });
+		server.send({ type: "response", id: "request-3", ok: true, result: { watchId: "watch-1" } });
 		await starting;
 
 		let disposed = false;
 		const disposing = watch.dispose().then(() => {
 			disposed = true;
 		});
-		await server.waitForMessages(4);
-		expect(server.messages[3]).toMatchObject({
-			call: { method: "stopWatch", args: ["session-1", "watch-1"] },
+		await server.waitForMessages(5);
+		expect(server.messages[4]).toMatchObject({
+			call: { serviceId: "transcript", member: "stopWatch", args: ["watch-1"] },
 		});
-		server.send({ type: "response", id: "request-3", ok: true, result: { watchId: "watch-1" } });
+		server.send({ type: "response", id: "request-4", ok: true, result: { watchId: "watch-1" } });
 		await Promise.resolve();
 		expect(disposed).toBe(false);
 		releaseEvent();
@@ -236,7 +287,7 @@ describe("PiClient service operations", () => {
 			type: "response",
 			id: "request-2",
 			ok: true,
-			result: { sessionId: "session-1" },
+			result: { sessionId: "session-1", attachmentId: "attachment-1" },
 		});
 		server.send({
 			type: "response",
@@ -244,7 +295,10 @@ describe("PiClient service operations", () => {
 			ok: true,
 			result: [],
 		});
-		await expect(Promise.all([first, second])).resolves.toEqual([[], { sessionId: "session-1" }]);
+		await expect(Promise.all([first, second])).resolves.toEqual([
+			[],
+			{ sessionId: "session-1", attachmentId: "attachment-1" },
+		]);
 		await client.dispose();
 	});
 
@@ -270,7 +324,13 @@ describe("PiClient service operations", () => {
 		const reason = new Error("already cancelled");
 		controller.abort(reason);
 
-		await expect(client.invoke("session.test", {}, controller.signal)).rejects.toBe(reason);
+		await expect(
+			client.request(
+				{ serverId: "00000000-0000-4000-8000-000000000001" },
+				{ serviceId: "test", member: "noop", args: [] },
+				controller.signal,
+			),
+		).rejects.toBe(reason);
 		expect(server.messages).toHaveLength(1);
 		await client.dispose();
 	});
@@ -280,12 +340,18 @@ describe("PiClient service operations", () => {
 		const client = await connectClient(server);
 		const controller = new AbortController();
 		const reason = new Error("stop this request");
-		const pending = client.invoke("session.test", { value: 42 }, controller.signal);
+		const target = { serverId: "00000000-0000-4000-8000-000000000001" } as const;
+		const pending = client.request(
+			target,
+			{ serviceId: "test", member: "mutate", args: [{ value: 42 }] },
+			controller.signal,
+		);
 		await server.waitForMessages(2);
 		expect(server.messages[1]).toMatchObject({
 			type: "request",
 			id: "request-1",
-			call: { method: "session.test", args: { value: 42 } },
+			target,
+			call: { serviceId: "test", member: "mutate", args: [{ value: 42 }] },
 		});
 
 		controller.abort(reason);
@@ -294,7 +360,7 @@ describe("PiClient service operations", () => {
 		expect(server.messages[2]).toEqual({
 			type: "cancel",
 			id: "request-1",
-			serverId: "00000000-0000-4000-8000-000000000001",
+			target,
 		});
 		server.send({
 			type: "response",
@@ -396,9 +462,18 @@ describe("PiClient connection lifecycle", () => {
 		const states: string[] = [];
 		client.onConnectionStateChange(({ state }) => states.push(state));
 		await client.connect();
-		const pending = client.promptSession("session-1", "Hello");
+		const attaching = client.attachSession("session-1");
 		await first.waitForMessages(2);
-		expect(first.messages[1]).toMatchObject({ call: { method: "prompt" } });
+		first.send({
+			type: "response",
+			id: "request-1",
+			ok: true,
+			result: { sessionId: "session-1", attachmentId: "attachment-1" },
+		});
+		await attaching;
+		const pending = client.promptSession("session-1", "Hello");
+		await first.waitForMessages(3);
+		expect(first.messages[2]).toMatchObject({ call: { serviceId: "chat", member: "prompt" } });
 		first.disconnect();
 
 		await expect(pending).rejects.toBeInstanceOf(PiDisconnectedError);

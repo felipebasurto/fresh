@@ -1,6 +1,7 @@
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import { LaneEventSchema, LaneSnapshotSchema, PromptArgumentsSchema, RunResultSchema } from "./harness.ts";
+import { JsonValueSchema } from "./json-value.ts";
 import {
 	createRpcCallSchema,
 	createRpcResultSchema,
@@ -12,7 +13,7 @@ import {
 	type RpcResultUnion,
 } from "./rpc.ts";
 
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
 
 const IdSchema = Type.String({ minLength: 1 });
 const TimestampSchema = Type.Integer({ minimum: 0 });
@@ -30,20 +31,16 @@ export function isServerId(value: unknown): value is ServerId {
 	return Check(ServerIdSchema, value);
 }
 
-/** Durable Session metadata exposed by the wire protocol. */
-export const SessionMetadataSchema = StrictObject({
-	id: SessionIdSchema,
+/** Presentation-safe Session directory record. */
+export const SessionSummarySchema = StrictObject({
+	serverId: ServerIdSchema,
+	sessionId: SessionIdSchema,
 	createdAt: TimestampSchema,
-	storageVersion: Type.Integer({ minimum: 1 }),
-	cwd: Type.Optional(Type.String({ minLength: 1 })),
-	parentSessionId: Type.Optional(SessionIdSchema),
-	legacyParentSessionPath: Type.Optional(Type.String({ minLength: 1 })),
 });
-export type SessionMetadata = Static<typeof SessionMetadataSchema>;
+export type SessionSummary = Static<typeof SessionSummarySchema>;
 
 export const SessionCreateOptionsSchema = StrictObject({
 	id: Type.Optional(SessionIdSchema),
-	cwd: Type.String({ minLength: 1 }),
 });
 export type SessionCreateOptions = Static<typeof SessionCreateOptionsSchema>;
 
@@ -51,30 +48,30 @@ export type SessionCreateOptions = Static<typeof SessionCreateOptionsSchema>;
 export const ServiceRpc = defineRpc({
 	list: {
 		args: Type.Tuple([]),
-		result: Type.Array(SessionMetadataSchema),
+		result: Type.Array(SessionSummarySchema),
 	},
 	create: {
 		args: Type.Tuple([SessionCreateOptionsSchema]),
-		result: SessionMetadataSchema,
+		result: SessionSummarySchema,
 	},
 	attach: {
 		args: Type.Tuple([SessionIdSchema]),
-		result: StrictObject({ sessionId: SessionIdSchema }),
+		result: StrictObject({ sessionId: SessionIdSchema, attachmentId: IdSchema }),
 	},
 	prompt: {
-		args: Type.Tuple([SessionIdSchema, PromptArgumentsSchema]),
+		args: Type.Tuple([PromptArgumentsSchema]),
 		result: RunResultSchema,
 	},
 	watch: {
-		args: Type.Tuple([SessionIdSchema]),
+		args: Type.Tuple([]),
 		result: StrictObject({ watchId: IdSchema, snapshot: LaneSnapshotSchema }),
 	},
 	startWatch: {
-		args: Type.Tuple([SessionIdSchema, IdSchema]),
+		args: Type.Tuple([IdSchema]),
 		result: StrictObject({ watchId: IdSchema }),
 	},
 	stopWatch: {
-		args: Type.Tuple([SessionIdSchema, IdSchema]),
+		args: Type.Tuple([IdSchema]),
 		result: StrictObject({ watchId: IdSchema }),
 	},
 });
@@ -87,17 +84,39 @@ export type ServiceRpcResultUnion = RpcResultUnion<ServiceRpcManifest>;
 export const ServiceRpcCallSchema = Type.Unsafe<ServiceRpcCall>(createRpcCallSchema(ServiceRpc));
 export const ServiceRpcResultSchema = Type.Unsafe<ServiceRpcResultUnion>(createRpcResultSchema(ServiceRpc));
 
-/** Untyped transport call. Domain facades own method typing and result decoding. */
+/** Contract-agnostic service/member invocation carried by the transport. */
 export const ProtocolRpcCallSchema = StrictObject({
-	method: Type.String({ minLength: 1 }),
-	args: Type.Unknown(),
+	serviceId: Type.String({ minLength: 1 }),
+	member: Type.String({ minLength: 1 }),
+	args: Type.Array(JsonValueSchema),
 });
 export type ProtocolRpcCall = Static<typeof ProtocolRpcCallSchema>;
 export type ProtocolRpcResult = unknown;
 const ProtocolRpcResultSchema = Type.Unknown();
 
-export function isServiceRpcCall(call: ProtocolRpcCall): call is ServiceRpcCall {
-	return Check(ServiceRpcCallSchema, call);
+const ServiceRpcAddresses = {
+	list: { serviceId: "session-directory", member: "list" },
+	create: { serviceId: "session-management", member: "create" },
+	attach: { serviceId: "session-management", member: "attach" },
+	prompt: { serviceId: "chat", member: "prompt" },
+	watch: { serviceId: "transcript", member: "watch" },
+	startWatch: { serviceId: "transcript", member: "startWatch" },
+	stopWatch: { serviceId: "transcript", member: "stopWatch" },
+} as const satisfies Record<ServiceRpcMethod, { serviceId: string; member: string }>;
+
+/** Translate the current built-in contract to its generic service envelope. */
+export function encodeServiceRpcCall(call: ServiceRpcCall): ProtocolRpcCall {
+	return { ...ServiceRpcAddresses[call.method], args: call.args };
+}
+
+/** Validate and decode one generic envelope against the current built-in contract. */
+export function decodeServiceRpcCall(call: ProtocolRpcCall): ServiceRpcCall | undefined {
+	for (const [method, address] of Object.entries(ServiceRpcAddresses)) {
+		if (call.serviceId !== address.serviceId || call.member !== address.member) continue;
+		const candidate = { method, args: call.args };
+		return Check(ServiceRpcCallSchema, candidate) ? (candidate as ServiceRpcCall) : undefined;
+	}
+	return undefined;
 }
 
 export const ProtocolErrorCodeSchema = Type.Union([
@@ -105,7 +124,6 @@ export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("wrong_server"),
 	Type.Literal("session_not_found"),
 	Type.Literal("session_ambiguous"),
-	Type.Literal("session_in_use"),
 	Type.Literal("session_not_attached"),
 	Type.Literal("watch_not_found"),
 	Type.Literal("watch_in_use"),
@@ -113,13 +131,6 @@ export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("server_draining"),
 	Type.Literal("invalid_request"),
 	Type.Literal("cancelled"),
-	Type.Literal("session_invalid_lane"),
-	Type.Literal("session_lane_exists"),
-	Type.Literal("session_unknown_target"),
-	Type.Literal("session_pending_message"),
-	Type.Literal("session_invariant"),
-	Type.Literal("mutation_not_found"),
-	Type.Literal("mutation_expired"),
 	Type.Literal("internal_error"),
 ]);
 export const ProtocolErrorSchema = StrictObject({
@@ -136,16 +147,43 @@ export const ClientHelloSchema = StrictObject({
 });
 export type ClientHello = Static<typeof ClientHelloSchema>;
 
+/** A server-wide call, fenced to one logical server. */
+export const ServerTargetSchema = StrictObject({
+	serverId: ServerIdSchema,
+});
+export type ServerTarget = Static<typeof ServerTargetSchema>;
+
+/** Durable Session identity, unique within the addressed logical server. */
+export const SessionAddressSchema = StrictObject({
+	serverId: ServerIdSchema,
+	sessionId: SessionIdSchema,
+});
+export type SessionAddress = Static<typeof SessionAddressSchema>;
+
+/** A session call, fenced to one logical server, durable session, and live attachment. */
+export const SessionTargetSchema = StrictObject({
+	serverId: ServerIdSchema,
+	sessionId: SessionIdSchema,
+	attachmentId: IdSchema,
+});
+export type SessionTarget = Static<typeof SessionTargetSchema>;
+export const RpcTargetSchema = Type.Union([ServerTargetSchema, SessionTargetSchema]);
+export type RpcTarget = Static<typeof RpcTargetSchema>;
+
+export function isSessionTarget(target: RpcTarget): target is SessionTarget {
+	return "sessionId" in target;
+}
+
 export const RequestEnvelopeSchema = StrictObject({
 	type: Type.Literal("request"),
 	id: IdSchema,
-	serverId: ServerIdSchema,
+	target: RpcTargetSchema,
 	call: ProtocolRpcCallSchema,
 });
 export const CancelEnvelopeSchema = StrictObject({
 	type: Type.Literal("cancel"),
 	id: IdSchema,
-	serverId: ServerIdSchema,
+	target: RpcTargetSchema,
 });
 export type RequestEnvelope = Static<typeof RequestEnvelopeSchema>;
 export type CancelEnvelope = Static<typeof CancelEnvelopeSchema>;

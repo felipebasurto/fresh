@@ -2,13 +2,14 @@
 
 Runtime-neutral schemas, types, CBOR encoding, and byte-stream framing for the experimental Pi protocol.
 
-Protocol version `1` currently contains the first Session-operation slice:
+Protocol version `2` contains the first routed Session-operation slice:
 
 - a version handshake that identifies the logical `serverId`;
+- explicit server and Session request targets;
 - a service RPC manifest with Session discovery, attachment, prompting, and lane-watch operations;
 - correlated responses, attachment-scoped lane events, and bounded protocol errors.
 
-The manifest generates typed client methods and validated server dispatch. The wire uses generic `{ serverId, method, args }` calls rather than a hand-written command union. `list()` returns durable `SessionMetadata`. `create()` creates durable metadata for a working directory without opening a Harness; its ID is optional. `attach()` exclusively binds that Session to the client connection and returns only its `sessionId`. `prompt()` targets an explicitly identified Session attached to the requesting connection. The real `Session` and `AgentHarness` remain hosted by the server. Disconnecting releases the attachment after accepted work settles.
+The manifest generates typed client methods and validated endpoint dispatch. The transport carries contract-agnostic `{ serviceId, member, args }` calls. A server target contains `{ serverId }`; a Session target contains `{ serverId, sessionId, attachmentId }`. `list()` and `create()` return presentation-safe `SessionSummary` values containing no working directory, owner, storage, or parent metadata. The server derives private creation fields from authenticated workspace context. `attach()` creates or selects one presentation attachment and returns its Session and attachment IDs. `prompt()` targets that exact live attachment. The real `Session` and `AgentHarness` remain process-local. Disconnecting releases only that presentation's attachment after admitted work settles.
 
 `PromptArguments` contains one serializable `AgentLane.prompt()` overload. `PromptMessage` is the protocol's closed set of built-in message DTOs; application-defined `AgentMessage` extensions are not accepted implicitly. `RunResult` is the wire-safe structural equivalent of the Harness result and contains no JavaScript `Error` instances.
 

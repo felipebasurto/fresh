@@ -2,27 +2,27 @@
 
 Experimental local server for the new durable Session and Agent Harness interfaces.
 
-The current slice supports Session discovery, creation, exclusive attachment, prompting, and optional main-lane observation. A host that implements `HostedHarnessHandle.watch()` supplies an authoritative snapshot plus buffered events. The server owns the attachment's single watch ID, starts delivery only after the client has received the snapshot, and removes the watch when the connection attachment is released.
+The current slice supports Session discovery, creation, multi-presentation attachment, prompting, and optional main-lane observation. `RoutedSessionHandle.attachClient()` returns a presentation-scoped capability whose optional `watch()` supplies an authoritative snapshot plus buffered events. The server owns each attachment's single watch ID, starts delivery only after the client has received the snapshot, and removes the watch when that attachment is released.
 
-- `list` calls the host's Session catalog without opening sessions.
-- `create` asks the host to persist an optional Session ID and working directory without opening a Harness.
-- `attach` finds the requested metadata, passes it to the host, and retains the returned Harness handle in the server.
-- `prompt` executes one serializable Harness prompt through the requesting client's attached handle.
+- `list` calls the host's private Session catalog without opening Sessions and projects presentation-safe summaries.
+- `create` asks the host to persist an optional Session ID; private workspace and working-directory data are server-derived.
+- `attach` finds the requested metadata, passes it to the host, and retains the returned routed Session handle in the server.
+- `prompt` executes one serializable prompt through the requesting presentation's attachment capability.
 - `watch`, `startWatch`, and `stopWatch` provide snapshot-first lane observation when supported by the host.
 
-A Session permits one attached client connection at a time. Repeating `attach` from that connection is idempotent; another connection receives `session_in_use`. Prompting requires that exact connection to own the targeted attachment. Losing the connection rejects the local response but releases its attachment lease only after accepted prompts settle. The host decides when zero client demand and Harness activity permit worker retirement. Server shutdown closes every hosted Harness, releasing its Session writer ownership.
+A Session may have multiple presentation attachments. Repeating `attach` from one connection is idempotent; every successful attachment has a server-generated `attachmentId`. Session requests carry `{ serverId, sessionId, attachmentId }`, and the server rejects stale or mismatched routes. Losing a connection rejects its local responses but releases its attachment only after admitted prompts settle. The host decides when zero presentation demand and worker-local Harness activity permit worker retirement. Server shutdown closes every routed Session handle, releasing its worker and Session writer ownership.
 
 ```ts
 import { randomUUID } from "node:crypto";
 import { MemorySessionRepo, type Session } from "@earendil-works/pi-agent-core";
 import {
-  type HostedHarnessHandle,
+  type RoutedSessionHandle,
   type PiServerHost,
 } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 
 async function startServer(
-  createHarnessForSession: (session: Session) => Promise<HostedHarnessHandle>,
+  openRoutedSession: (session: Session) => Promise<RoutedSessionHandle>,
 ) {
   const sessions = new MemorySessionRepo();
   const host: PiServerHost = {
@@ -37,10 +37,10 @@ async function startServer(
         }
       },
     },
-    async createHarness(metadata) {
+    async openSession(metadata) {
       const session = await sessions.open(metadata);
       try {
-        return await createHarnessForSession(session);
+        return await openRoutedSession(session);
       } catch (error) {
         try {
           await session.close();
@@ -65,7 +65,7 @@ async function startServer(
 }
 ```
 
-Applications supply a Session catalog and a Harness factory. The catalog lists and creates durable metadata; the host receives the repository's concrete metadata and owns opening the Session, creating the Harness, and cleaning up failed Harness creation. This permits the host to perform those operations in a worker process without passing an open JavaScript Session across processes.
+Applications supply a private Session catalog and a routed Session factory. The server projects catalog records to summaries before transport; the host receives the repository's concrete metadata and owns acquiring the worker-local Session and Harness. Failures are cleaned up in that worker. Neither an open JavaScript Session nor a Harness crosses the process boundary.
 
 `serverId` is a logical identity supplied by the launcher, not a socket address. The Unix preset requires an explicit physical `path`; `getUnixSocketPath()` derives one from a caller-selected directory. Choose a short, private runtime directory rather than deriving the route from an unbounded home-directory path. A long-lived launcher can reuse the same ID and path when replacing a server process.
 

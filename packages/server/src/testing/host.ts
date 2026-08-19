@@ -1,7 +1,7 @@
 import type { Context, Session, SessionMetadata } from "@earendil-works/pi-agent-core";
 import { BACKGROUND_CONTEXT, MemorySessionRepo } from "@earendil-works/pi-agent-core";
 import type { LaneEvent, LaneSnapshot, PromptArguments, RunResult } from "@earendil-works/pi-protocol";
-import type { HostedHarnessHandle, HostedHarnessWatch, PiServerHost } from "../types.ts";
+import type { PiServerHost, RoutedSessionHandle, RoutedSessionWatch } from "../types.ts";
 
 export class Deferred<T> {
 	readonly promise: Promise<T>;
@@ -33,7 +33,7 @@ const emptyLaneSnapshot: LaneSnapshot = {
 	faulted: false,
 };
 
-class TestHarnessWatch implements HostedHarnessWatch {
+class TestHarnessWatch implements RoutedSessionWatch {
 	readonly snapshot: LaneSnapshot;
 	private readonly buffered: Array<{ event: LaneEvent; context: Context }> = [];
 	private listener: ((event: LaneEvent, context: Context) => void | Promise<void>) | undefined;
@@ -97,10 +97,16 @@ export class TestHarness {
 		this.session = session;
 	}
 
-	attachClient(_context: Context): { release(context: Context): void } {
+	attachClient(_context: Context): {
+		prompt: TestHarness["prompt"];
+		watch: TestHarness["watch"];
+		release(context: Context): void;
+	} {
 		this.attachedClients += 1;
 		let released = false;
 		return {
+			prompt: (prompt, context) => this.prompt(prompt, context),
+			watch: (context) => this.watch(context),
 			release: (_context) => {
 				if (released) return;
 				this.attachmentReleaseCount += 1;
@@ -111,7 +117,7 @@ export class TestHarness {
 		};
 	}
 
-	async watch(_context: Context): Promise<HostedHarnessWatch> {
+	async watch(_context: Context): Promise<RoutedSessionWatch> {
 		const watch = new TestHarnessWatch(this.watchSnapshot);
 		this.watches.add(watch);
 		return {
@@ -193,8 +199,8 @@ interface ListDelay {
 export class TestServerHost implements PiServerHost {
 	readonly repo = new MemorySessionRepo({ now: () => 1 });
 	readonly harnesses = new Map<string, TestHarness[]>();
-	createHarnessCount = 0;
-	nextCreateHarnessError?: Error;
+	openSessionCount = 0;
+	nextOpenSessionError?: Error;
 	nextHarnessCloseError?: Error;
 	readonly sessions: PiServerHost["sessions"] = {
 		list: async (context) => {
@@ -214,24 +220,23 @@ export class TestServerHost implements PiServerHost {
 				await session.close(context);
 			}
 		},
-		open: (metadata, context) => this.repo.open(metadata, context),
 	};
 	private nextListDelay?: ListDelay;
-	private nextCreateHarnessGate?: OpenGate;
+	private nextOpenSessionGate?: OpenGate;
 
-	async createHarness(metadata: SessionMetadata, context: Context): Promise<HostedHarnessHandle> {
-		this.createHarnessCount += 1;
-		const gate = this.nextCreateHarnessGate;
+	async openSession(metadata: SessionMetadata, context: Context): Promise<RoutedSessionHandle> {
+		this.openSessionCount += 1;
+		const gate = this.nextOpenSessionGate;
 		if (gate) {
-			this.nextCreateHarnessGate = undefined;
+			this.nextOpenSessionGate = undefined;
 			gate.entered.resolve(undefined);
 			await gate.release.promise;
 		}
 		const session = await this.repo.open(metadata, context);
 		try {
-			if (this.nextCreateHarnessError) {
-				const error = this.nextCreateHarnessError;
-				this.nextCreateHarnessError = undefined;
+			if (this.nextOpenSessionError) {
+				const error = this.nextOpenSessionError;
+				this.nextOpenSessionError = undefined;
 				throw error;
 			}
 			const harness = new TestHarness(session);
@@ -262,9 +267,9 @@ export class TestServerHost implements PiServerHost {
 		return delay;
 	}
 
-	gateNextCreateHarness(): OpenGate {
+	gateNextOpenSession(): OpenGate {
 		const gate = { entered: new Deferred<void>(), release: new Deferred<void>() };
-		this.nextCreateHarnessGate = gate;
+		this.nextOpenSessionGate = gate;
 		return gate;
 	}
 

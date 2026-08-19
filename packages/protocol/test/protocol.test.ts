@@ -7,11 +7,13 @@ import {
 	createRpcClient,
 	createRpcDispatcher,
 	decodeCbor,
+	decodeServiceRpcCall,
 	defineRpc,
 	encodeCbor,
 	encodeClientMessage,
 	encodeFrame,
 	encodeServerMessage,
+	encodeServiceRpcCall,
 	FrameDecoder,
 	isSupportedProtocolVersion,
 	type JsonValue,
@@ -28,8 +30,8 @@ import {
 	type ServerMessage,
 	ServerMessageDecoder,
 	ServiceRpc,
-	type SessionMetadata,
-	SessionMetadataSchema,
+	type SessionSummary,
+	SessionSummarySchema,
 } from "../src/index.ts";
 
 const clientHello: ClientHello = { type: "hello", version: PROTOCOL_VERSION };
@@ -39,13 +41,11 @@ const serverHello: ServerHello = {
 	serverId: "00000000-0000-4000-8000-000000000001",
 };
 
-const metadata = {
-	id: "session-1",
+const summary = {
+	serverId: "00000000-0000-4000-8000-000000000001",
+	sessionId: "session-1",
 	createdAt: 1,
-	storageVersion: 1,
-	cwd: "/workspace",
-	parentSessionId: "parent-1",
-} as const satisfies SessionMetadata;
+} as const satisfies SessionSummary;
 
 const laneSnapshot = {
 	lane: "main",
@@ -69,65 +69,77 @@ describe("RPC manifest", () => {
 			calls.push(call);
 			switch (call.method) {
 				case "list":
-					return [metadata];
+					return [summary];
 				case "create":
-					return metadata;
+					return summary;
 				case "attach":
-					return { sessionId: call.args[0] };
+					return { sessionId: call.args[0], attachmentId: "attachment-1" };
 				case "prompt":
 					return completedRunResult;
 				case "watch":
 					return { watchId: "watch-1", snapshot: laneSnapshot };
 				case "startWatch":
 				case "stopWatch":
-					return { watchId: call.args[1] };
+					return { watchId: call.args[0] };
 			}
 		});
 
-		await expect(client.list()).resolves.toEqual([metadata]);
-		await expect(client.create({ cwd: "/workspace" })).resolves.toEqual(metadata);
-		await expect(client.attach("session-1")).resolves.toEqual({ sessionId: "session-1" });
-		await expect(client.prompt("session-1", ["Hello"])).resolves.toEqual(completedRunResult);
-		await expect(client.watch("session-1")).resolves.toEqual({ watchId: "watch-1", snapshot: laneSnapshot });
-		await expect(client.startWatch("session-1", "watch-1")).resolves.toEqual({ watchId: "watch-1" });
-		await expect(client.stopWatch("session-1", "watch-1")).resolves.toEqual({ watchId: "watch-1" });
+		await expect(client.list()).resolves.toEqual([summary]);
+		await expect(client.create({})).resolves.toEqual(summary);
+		await expect(client.attach("session-1")).resolves.toEqual({
+			sessionId: "session-1",
+			attachmentId: "attachment-1",
+		});
+		await expect(client.prompt(["Hello"])).resolves.toEqual(completedRunResult);
+		await expect(client.watch()).resolves.toEqual({ watchId: "watch-1", snapshot: laneSnapshot });
+		await expect(client.startWatch("watch-1")).resolves.toEqual({ watchId: "watch-1" });
+		await expect(client.stopWatch("watch-1")).resolves.toEqual({ watchId: "watch-1" });
 		expect(calls).toEqual([
 			{ method: "list", args: [] },
-			{ method: "create", args: [{ cwd: "/workspace" }] },
+			{ method: "create", args: [{}] },
 			{ method: "attach", args: ["session-1"] },
-			{ method: "prompt", args: ["session-1", ["Hello"]] },
-			{ method: "watch", args: ["session-1"] },
-			{ method: "startWatch", args: ["session-1", "watch-1"] },
-			{ method: "stopWatch", args: ["session-1", "watch-1"] },
+			{ method: "prompt", args: [["Hello"]] },
+			{ method: "watch", args: [] },
+			{ method: "startWatch", args: ["watch-1"] },
+			{ method: "stopWatch", args: ["watch-1"] },
 		]);
+	});
+
+	test("maps built-in contracts onto generic service/member envelopes", () => {
+		const encoded = encodeServiceRpcCall({ method: "attach", args: ["session-1"] });
+		expect(encoded).toEqual({
+			serviceId: "session-management",
+			member: "attach",
+			args: ["session-1"],
+		});
+		expect(decodeServiceRpcCall(encoded)).toEqual({ method: "attach", args: ["session-1"] });
+		expect(decodeServiceRpcCall({ serviceId: "session-management", member: "attach", args: [] })).toBeUndefined();
+		expect(decodeServiceRpcCall({ serviceId: "unknown", member: "method", args: [] })).toBeUndefined();
 	});
 
 	test("dispatches only methods and values allowed by the manifest", async () => {
 		const dispatch = createRpcDispatcher(ServiceRpc, {
-			list: () => [metadata],
-			create: () => metadata,
-			attach: (_context, sessionId) => ({ sessionId }),
+			list: () => [summary],
+			create: () => summary,
+			attach: (_context, sessionId) => ({ sessionId, attachmentId: "attachment-1" }),
 			prompt: () => completedRunResult,
 			watch: () => ({ watchId: "watch-1", snapshot: laneSnapshot }),
-			startWatch: (_context, _sessionId, watchId) => ({ watchId }),
-			stopWatch: (_context, _sessionId, watchId) => ({ watchId }),
+			startWatch: (_context, watchId) => ({ watchId }),
+			stopWatch: (_context, watchId) => ({ watchId }),
 		});
-		await expect(dispatch({ method: "list", args: [] }, undefined)).resolves.toEqual([metadata]);
-		await expect(dispatch({ method: "create", args: [{ cwd: "/workspace" }] }, undefined)).resolves.toEqual(metadata);
+		await expect(dispatch({ method: "list", args: [] }, undefined)).resolves.toEqual([summary]);
+		await expect(dispatch({ method: "create", args: [{}] }, undefined)).resolves.toEqual(summary);
 		await expect(dispatch({ method: "attach", args: ["session-1"] }, undefined)).resolves.toEqual({
 			sessionId: "session-1",
+			attachmentId: "attachment-1",
 		});
-		await expect(dispatch({ method: "prompt", args: ["session-1", ["Hello"]] }, undefined)).resolves.toEqual(
-			completedRunResult,
-		);
-		await expect(dispatch({ method: "watch", args: ["session-1"] }, undefined)).resolves.toEqual({
+		await expect(dispatch({ method: "prompt", args: [["Hello"]] }, undefined)).resolves.toEqual(completedRunResult);
+		await expect(dispatch({ method: "watch", args: [] }, undefined)).resolves.toEqual({
 			watchId: "watch-1",
 			snapshot: laneSnapshot,
 		});
 		await expect(dispatch({ method: "attach", args: [] } as never, undefined)).rejects.toThrow(/Invalid arguments/);
-		await expect(dispatch({ method: "prompt", args: ["session-1", []] } as never, undefined)).rejects.toThrow(
-			/Invalid arguments/,
-		);
+		await expect(dispatch({ method: "prompt", args: [[]] } as never, undefined)).rejects.toThrow(/Invalid arguments/);
 	});
 
 	test("rejects invalid results on both client and dispatcher boundaries", async () => {
@@ -136,17 +148,17 @@ describe("RPC manifest", () => {
 
 		const dispatch = createRpcDispatcher(ServiceRpc, {
 			list: () => [{ id: "session-1" }],
-			create: () => metadata,
-			attach: (_context: undefined, sessionId: string) => ({ sessionId }),
+			create: () => summary,
+			attach: (_context: undefined, sessionId: string) => ({ sessionId, attachmentId: "attachment-1" }),
 			prompt: () => completedRunResult,
 			watch: () => ({ watchId: "watch-1", snapshot: laneSnapshot }),
-			startWatch: (_context: undefined, _sessionId: string, watchId: string) => ({ watchId }),
-			stopWatch: (_context: undefined, _sessionId: string, watchId: string) => ({ watchId }),
+			startWatch: (_context: undefined, watchId: string) => ({ watchId }),
+			stopWatch: (_context: undefined, watchId: string) => ({ watchId }),
 		} as never);
 		await expect(dispatch({ method: "list", args: [] }, undefined)).rejects.toThrow(/Invalid result.*list/);
 
 		const invalidPromptClient = createRpcClient(ServiceRpc, async () => ({ ok: true, value: {} }));
-		await expect(invalidPromptClient.prompt("session-1", ["Hello"])).rejects.toThrow(/Invalid result.*prompt/);
+		await expect(invalidPromptClient.prompt(["Hello"])).rejects.toThrow(/Invalid result.*prompt/);
 	});
 
 	test("rejects empty manifests instead of creating unusable RPC clients", () => {
@@ -155,10 +167,10 @@ describe("RPC manifest", () => {
 });
 
 describe("protocol validation", () => {
-	test("negotiates protocol version 1", () => {
-		expect(PROTOCOL_VERSION).toBe(1);
-		expect(isSupportedProtocolVersion(1)).toBe(true);
-		expect(isSupportedProtocolVersion(2)).toBe(false);
+	test("negotiates protocol version 2", () => {
+		expect(PROTOCOL_VERSION).toBe(2);
+		expect(isSupportedProtocolVersion(2)).toBe(true);
+		expect(isSupportedProtocolVersion(1)).toBe(false);
 		expect(isSupportedProtocolVersion(2.5)).toBe(false);
 	});
 
@@ -196,42 +208,49 @@ describe("protocol validation", () => {
 		const list: ClientMessage = {
 			type: "request",
 			id: "request-1",
-			serverId: "00000000-0000-4000-8000-000000000001",
-			call: { method: "list", args: [] },
+			target: { serverId: "00000000-0000-4000-8000-000000000001" },
+			call: { serviceId: "session-directory", member: "list", args: [] },
 		};
 		const create: ClientMessage = {
 			type: "request",
 			id: "request-2",
-			serverId: "00000000-0000-4000-8000-000000000001",
-			call: { method: "create", args: [{ cwd: "/workspace" }] },
+			target: { serverId: "00000000-0000-4000-8000-000000000001" },
+			call: { serviceId: "session-management", member: "create", args: [{}] },
 		};
 		const attach: ClientMessage = {
 			type: "request",
 			id: "request-3",
-			serverId: "00000000-0000-4000-8000-000000000001",
-			call: { method: "attach", args: ["session-1"] },
+			target: { serverId: "00000000-0000-4000-8000-000000000001" },
+			call: { serviceId: "session-management", member: "attach", args: ["session-1"] },
 		};
 		const prompt: ClientMessage = {
 			type: "request",
 			id: "request-4",
-			serverId: "00000000-0000-4000-8000-000000000001",
-			call: { method: "prompt", args: ["session-1", ["Hello"]] },
+			target: {
+				serverId: "00000000-0000-4000-8000-000000000001",
+				sessionId: "session-1",
+				attachmentId: "attachment-1",
+			},
+			call: { serviceId: "chat", member: "prompt", args: [["Hello"]] },
 		};
 		expect(parseClientMessage(list)).toEqual(list);
 		expect(parseClientMessage(create)).toEqual(create);
 		expect(parseClientMessage(attach)).toEqual(attach);
 		expect(parseClientMessage(prompt)).toEqual(prompt);
-		expect(parseClientMessage({ ...create, call: { method: "create", args: [{ cwd: "" }] } })).toMatchObject({
-			call: { method: "create" },
+		expect(parseClientMessage({ ...create, call: { ...create.call, args: [{ cwd: "" }] } })).toMatchObject({
+			call: { serviceId: "session-management", member: "create" },
 		});
-		expect(parseClientMessage({ ...attach, call: { method: "attach", args: [] } })).toMatchObject({
-			call: { method: "attach", args: [] },
+		expect(parseClientMessage({ ...attach, call: { ...attach.call, args: [] } })).toMatchObject({
+			call: { serviceId: "session-management", member: "attach", args: [] },
 		});
-		expect(parseClientMessage({ ...attach, call: { method: "unknown", args: { arbitrary: true } } })).toMatchObject({
-			call: { method: "unknown", args: { arbitrary: true } },
-		});
-		expect(parseClientMessage({ ...prompt, call: { method: "prompt", args: ["session-1", []] } })).toMatchObject({
-			call: { method: "prompt" },
+		expect(
+			parseClientMessage({
+				...attach,
+				call: { serviceId: "unknown", member: "method", args: [{ arbitrary: true }] },
+			}),
+		).toMatchObject({ call: { serviceId: "unknown", member: "method" } });
+		expect(parseClientMessage({ ...prompt, call: { ...prompt.call, args: ["session-1", []] } })).toMatchObject({
+			call: { serviceId: "chat", member: "prompt" },
 		});
 	});
 
@@ -239,7 +258,7 @@ describe("protocol validation", () => {
 		const cancel: ClientMessage = {
 			type: "cancel",
 			id: "request-1",
-			serverId: "00000000-0000-4000-8000-000000000001",
+			target: { serverId: "00000000-0000-4000-8000-000000000001" },
 		};
 		expect(parseClientMessage(cancel)).toEqual(cancel);
 		expect(() => parseClientMessage({ ...cancel, id: "" })).toThrow(ProtocolValidationError);
@@ -320,14 +339,14 @@ describe("protocol validation", () => {
 		expect(Check(PromptArgumentsSchema, promptArguments)).toBe(false);
 	});
 
-	test("keeps Session metadata validation at the typed service boundary", () => {
-		expect(Check(SessionMetadataSchema, metadata)).toBe(true);
-		expect(Check(SessionMetadataSchema, { id: "session-1", createdAt: 1 })).toBe(false);
+	test("keeps presentation-safe Session summary validation at the typed service boundary", () => {
+		expect(Check(SessionSummarySchema, summary)).toBe(true);
+		expect(Check(SessionSummarySchema, { ...summary, cwd: "/private" })).toBe(false);
 		const message: ServerMessage = {
 			type: "response",
 			id: "request-1",
 			ok: true,
-			result: [metadata],
+			result: [summary],
 		};
 		expect(parseServerMessage(message)).toEqual(message);
 	});
@@ -482,20 +501,12 @@ describe("protocol validation", () => {
 	test.each([
 		"wrong_server",
 		"session_not_found",
-		"session_in_use",
 		"session_not_attached",
 		"watch_not_found",
 		"watch_in_use",
 		"not_supported",
 		"server_draining",
 		"cancelled",
-		"session_invalid_lane",
-		"session_lane_exists",
-		"session_unknown_target",
-		"session_pending_message",
-		"session_invariant",
-		"mutation_not_found",
-		"mutation_expired",
 		"internal_error",
 	] as const)("accepts the %s error code", (code) => {
 		const message: ServerMessage = {
@@ -535,8 +546,8 @@ describe("validated framed protocol APIs", () => {
 		const request: ClientMessage = {
 			type: "request",
 			id: "request-1",
-			serverId: "00000000-0000-4000-8000-000000000001",
-			call: { method: "list", args: [] },
+			target: { serverId: "00000000-0000-4000-8000-000000000001" },
+			call: { serviceId: "session-directory", member: "list", args: [] },
 		};
 		const first = encodeClientMessage(clientHello);
 		const second = encodeClientMessage(request);

@@ -36,7 +36,7 @@ async function startServer(
 				list: async () => [],
 				create: async () => Promise.reject(new Error("unused")),
 			},
-			createHarness: async () => Promise.reject(new Error("unused")),
+			openSession: async () => Promise.reject(new Error("unused")),
 		},
 		{ listeners: [createUnixListener({ path })], serverId: reportedServerId },
 	);

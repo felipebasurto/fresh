@@ -65,7 +65,7 @@ describe("Session protocol", () => {
 		expect(host.harnesses.size).toBe(0);
 	});
 
-	test("list returns SessionRepo metadata without opening a session", async () => {
+	test("list returns presentation-safe summaries without opening a Session", async () => {
 		const host = new TestServerHost();
 		const metadata = await host.seed("session-1", "parent-1");
 		const client = connect(createServer(host));
@@ -77,7 +77,13 @@ describe("Session protocol", () => {
 			type: "response",
 			id: "request-1",
 			ok: true,
-			result: [metadata],
+			result: [
+				{
+					serverId: "00000000-0000-4000-8000-000000000001",
+					sessionId: metadata.id,
+					createdAt: metadata.createdAt,
+				},
+			],
 		});
 		expect(host.harnesses.size).toBe(0);
 	});
@@ -90,103 +96,20 @@ describe("Session protocol", () => {
 		await expect(
 			client.request("00000000-0000-4000-8000-000000000001", {
 				method: "create",
-				args: [{ id: "session-1", cwd: "/workspace" }],
+				args: [{ id: "session-1" }],
 			}),
 		).resolves.toMatchObject({
 			ok: true,
-			result: { id: "session-1", createdAt: 1, storageVersion: 1 },
+			result: {
+				serverId: "00000000-0000-4000-8000-000000000001",
+				sessionId: "session-1",
+				createdAt: 1,
+			},
 		});
 		await expect(
 			client.request("00000000-0000-4000-8000-000000000001", { method: "list", args: [] }),
-		).resolves.toMatchObject({ result: [{ id: "session-1" }] });
+		).resolves.toMatchObject({ result: [{ sessionId: "session-1" }] });
 		expect(host.harnesses.size).toBe(0);
-	});
-
-	test("routes untyped remote Session calls through a connection-owned handle", async () => {
-		const host = new TestServerHost();
-		await host.seed("session-1");
-		const client = connect(createServer(host));
-		await client.hello();
-
-		const opened = await client.request("00000000-0000-4000-8000-000000000001", {
-			method: "session.open",
-			args: { sessionId: "session-1" },
-		});
-		expect(opened).toMatchObject({ ok: true, result: { metadata: { id: "session-1" } } });
-		if (!opened.ok || typeof opened.result !== "object" || opened.result === null || !("handle" in opened.result)) {
-			throw new Error("Missing remote Session handle");
-		}
-		const handle = opened.result.handle;
-		expect(typeof handle).toBe("string");
-		await expect(
-			client.request("00000000-0000-4000-8000-000000000001", {
-				method: "session.tree.getLeafId",
-				args: { handle, lane: "main" },
-			}),
-		).resolves.toMatchObject({ ok: true, result: null });
-		await expect(
-			client.request("00000000-0000-4000-8000-000000000001", {
-				method: "session.close",
-				args: { handle },
-			}),
-		).resolves.toMatchObject({ ok: true, result: null });
-	});
-
-	test("cancels a queued remote mutation without cancelling its lane owner", async () => {
-		const host = new TestServerHost();
-		await host.seed("session-1");
-		const client = connect(createServer(host));
-		const serverId = "00000000-0000-4000-8000-000000000001";
-		await client.hello();
-		const opened = await client.request(serverId, {
-			method: "session.open",
-			args: { sessionId: "session-1" },
-		});
-		if (!opened.ok || typeof opened.result !== "object" || opened.result === null || !("handle" in opened.result)) {
-			throw new Error("Missing remote Session handle");
-		}
-		const handle = opened.result.handle;
-		if (typeof handle !== "string") throw new Error("Invalid remote Session handle");
-		const first = await client.request(serverId, {
-			method: "session.mutation.begin",
-			args: { handle, lane: "main", mutationLane: "main" },
-		});
-		if (!first.ok || typeof first.result !== "object" || first.result === null || !("mutationId" in first.result)) {
-			throw new Error("Missing remote mutation ID");
-		}
-		const firstMutationId = first.result.mutationId;
-		if (typeof firstMutationId !== "string") throw new Error("Invalid remote mutation ID");
-
-		const queued = client.request(
-			serverId,
-			{
-				method: "session.mutation.begin",
-				args: { handle, lane: "main", mutationLane: "main" },
-			},
-			"queued-mutation",
-		);
-		await Promise.resolve();
-		await client.sendMessage({ type: "cancel", id: "queued-mutation", serverId });
-		await expect(queued).resolves.toMatchObject({ ok: false, error: { code: "cancelled" } });
-
-		await expect(
-			client.request(serverId, {
-				method: "session.mutation.finish",
-				args: { handle, mutationId: firstMutationId },
-			}),
-		).resolves.toMatchObject({ ok: true, result: null });
-		const next = await client.request(serverId, {
-			method: "session.mutation.begin",
-			args: { handle, lane: "main", mutationLane: "main" },
-		});
-		expect(next).toMatchObject({ ok: true, result: { mutationId: expect.any(String) } });
-		if (!next.ok || typeof next.result !== "object" || next.result === null || !("mutationId" in next.result)) {
-			throw new Error("Missing replacement mutation ID");
-		}
-		await client.request(serverId, {
-			method: "session.mutation.finish",
-			args: { handle, mutationId: next.result.mutationId },
-		});
 	});
 
 	test("attach passes concrete repository metadata to the Harness host", async () => {
@@ -202,12 +125,15 @@ describe("Session protocol", () => {
 		let received: BackendMetadata | undefined;
 		const host: PiServerHost<BackendMetadata> = {
 			sessions: { list: async () => [metadata], create: async () => metadata },
-			createHarness: async (candidate) => {
+			openSession: async (candidate) => {
 				received = candidate;
 				return {
-					prompt: async () => ({
-						ok: true,
-						value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+					attachClient: async () => ({
+						prompt: async () => ({
+							ok: true,
+							value: { kind: "completed" as const, runId: "run-1", leafId: "leaf-1" },
+						}),
+						release: () => {},
 					}),
 					close: async () => {},
 				};
@@ -229,10 +155,9 @@ describe("Session protocol", () => {
 			ok: true,
 			result: [
 				{
-					id: "session-1",
+					serverId: "00000000-0000-4000-8000-000000000001",
+					sessionId: "session-1",
 					createdAt: 1,
-					storageVersion: 1,
-					cwd: "/workspace",
 				},
 			],
 		});
@@ -321,39 +246,7 @@ describe("Session protocol", () => {
 		expect(client.messages.slice(stoppedAt).some((message) => message.type === "event")).toBe(false);
 	});
 
-	test("keeps hosted Harness and remote Session ownership mutually exclusive", async () => {
-		const host = new TestServerHost();
-		await host.seed("session-1");
-		const server = createServer(host);
-		const remoteClient = connect(server);
-		const hostedClient = connect(server);
-		const serverId = "00000000-0000-4000-8000-000000000001";
-		await Promise.all([remoteClient.hello(), hostedClient.hello()]);
-
-		const opened = await remoteClient.request(serverId, {
-			method: "session.open",
-			args: { sessionId: "session-1" },
-		});
-		await expect(hostedClient.request(serverId, { method: "attach", args: ["session-1"] })).resolves.toMatchObject({
-			ok: false,
-			error: { code: "session_in_use" },
-		});
-		if (!opened.ok || typeof opened.result !== "object" || opened.result === null || !("handle" in opened.result)) {
-			throw new Error("Missing remote Session handle");
-		}
-		await remoteClient.request(serverId, {
-			method: "session.close",
-			args: { handle: opened.result.handle },
-		});
-		await expect(hostedClient.request(serverId, { method: "attach", args: ["session-1"] })).resolves.toMatchObject({
-			ok: true,
-		});
-		await expect(
-			remoteClient.request(serverId, { method: "session.open", args: { sessionId: "session-1" } }),
-		).resolves.toMatchObject({ ok: false, error: { code: "session_in_use" } });
-	});
-
-	test("permits only one client attachment per Session", async () => {
+	test("permits multiple client attachments per Session", async () => {
 		const host = new TestServerHost();
 		await host.seed("session-1");
 		const server = createServer(host);
@@ -379,12 +272,12 @@ describe("Session protocol", () => {
 				method: "attach",
 				args: ["session-1"],
 			}),
-		).resolves.toMatchObject({ ok: false, error: { code: "session_in_use" } });
+		).resolves.toMatchObject({ ok: true, result: { sessionId: "session-1" } });
 		expect(host.harnesses.get("session-1")).toHaveLength(1);
-		expect(host.latestHarness("session-1").attachedClients).toBe(1);
+		expect(host.latestHarness("session-1").attachedClients).toBe(2);
 
 		await first.close();
-		await expect.poll(() => host.latestHarness("session-1").attachedClients).toBe(0);
+		await expect.poll(() => host.latestHarness("session-1").attachedClients).toBe(1);
 		await expect(
 			second.request("00000000-0000-4000-8000-000000000001", {
 				method: "attach",
@@ -463,6 +356,39 @@ describe("Session protocol", () => {
 			result: { ok: true, value: { kind: "completed", runId: "run-1", leafId: "leaf-1" } },
 		});
 		expect(host.latestHarness("session-1").promptCalls).toEqual([["Hello"]]);
+	});
+
+	test("rejects a stale attachment route after switching Sessions", async () => {
+		const host = new TestServerHost();
+		await Promise.all([host.seed("session-1"), host.seed("session-2")]);
+		const client = connect(createServer(host));
+		const serverId = "00000000-0000-4000-8000-000000000001";
+		await client.hello();
+		const first = await client.request(serverId, { method: "attach", args: ["session-1"] });
+		if (
+			!first.ok ||
+			typeof first.result !== "object" ||
+			first.result === null ||
+			!("attachmentId" in first.result) ||
+			typeof first.result.attachmentId !== "string"
+		) {
+			throw new Error("Missing first attachment ID");
+		}
+		await client.request(serverId, { method: "attach", args: ["session-2"] });
+
+		const response = client.next((message) => message.type === "response" && message.id === "stale-request");
+		await client.sendMessage({
+			type: "request",
+			id: "stale-request",
+			target: { serverId, sessionId: "session-1", attachmentId: first.result.attachmentId },
+			call: { serviceId: "chat", member: "prompt", args: [["stale"]] },
+		});
+		await expect(response).resolves.toMatchObject({
+			type: "response",
+			ok: false,
+			error: { code: "session_not_attached" },
+		});
+		expect(host.latestHarness("session-1").promptCalls).toEqual([]);
 	});
 
 	test("preserves structural Harness failures and bounds adapter defects", async () => {
@@ -593,7 +519,7 @@ describe("Session protocol", () => {
 					throw new Error("must not create a Session in this test");
 				},
 			},
-			createHarness: async () => {
+			openSession: async () => {
 				throw new Error("must not create a Harness for an ambiguous session");
 			},
 		};
@@ -647,7 +573,7 @@ describe("Session protocol", () => {
 	});
 });
 
-describe("hosted Harness acquisition failures", () => {
+describe("routed Session acquisition failures", () => {
 	test("releases a lease acquired concurrently with Harness termination", async () => {
 		const metadata: SessionMetadata = { id: "session-1", createdAt: 1, storageVersion: 1 };
 		const acquiring = new Deferred<void>();
@@ -656,21 +582,21 @@ describe("hosted Harness acquisition failures", () => {
 		let releaseCount = 0;
 		const host: PiServerHost = {
 			sessions: { list: async () => [metadata], create: async () => metadata },
-			createHarness: async () => ({
+			openSession: async () => ({
 				terminated: terminated.promise,
 				attachClient: async () => {
 					acquiring.resolve(undefined);
 					await continueAcquiring.promise;
 					return {
+						prompt: async () => ({
+							ok: true,
+							value: { kind: "completed" as const, runId: "run-1", leafId: "leaf-1" },
+						}),
 						release: () => {
 							releaseCount += 1;
 						},
 					};
 				},
-				prompt: async () => ({
-					ok: true,
-					value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
-				}),
 				close: async () => {},
 			}),
 		};
@@ -696,12 +622,12 @@ describe("hosted Harness acquisition failures", () => {
 	test("shares a Harness creation failure, releases the Session, and allows a later retry", async () => {
 		const host = new TestServerHost();
 		await host.seed("session-1");
-		host.nextCreateHarnessError = new Error("Harness creation failed");
+		host.nextOpenSessionError = new Error("Harness creation failed");
 		const server = createServer(host);
 		const first = connect(server);
 		const second = connect(server);
 		await Promise.all([first.hello(), second.hello()]);
-		const gate = host.gateNextCreateHarness();
+		const gate = host.gateNextOpenSession();
 
 		const firstAttach = first.request("00000000-0000-4000-8000-000000000001", {
 			method: "attach",
@@ -718,12 +644,12 @@ describe("hosted Harness acquisition failures", () => {
 			{ ok: false, error: { code: "internal_error" } },
 			{ ok: false, error: { code: "internal_error" } },
 		]);
-		expect(host.createHarnessCount).toBe(1);
+		expect(host.openSessionCount).toBe(1);
 
 		await expect(
 			first.request("00000000-0000-4000-8000-000000000001", { method: "attach", args: ["session-1"] }),
 		).resolves.toMatchObject({ ok: true, result: { sessionId: "session-1" } });
-		expect(host.createHarnessCount).toBe(2);
+		expect(host.openSessionCount).toBe(2);
 		expect(host.harnesses.get("session-1")).toHaveLength(1);
 	});
 
@@ -733,7 +659,7 @@ describe("hosted Harness acquisition failures", () => {
 		const server = createServer(host);
 		const client = connect(server);
 		await client.hello();
-		const gate = host.gateNextCreateHarness();
+		const gate = host.gateNextOpenSession();
 		const attach = client.request("00000000-0000-4000-8000-000000000001", {
 			method: "attach",
 			args: ["session-1"],
@@ -755,7 +681,7 @@ describe("hosted Harness acquisition failures", () => {
 		const server = createServer(host);
 		const client = connect(server);
 		await client.hello();
-		const gate = host.gateNextCreateHarness();
+		const gate = host.gateNextOpenSession();
 		const attach = client.request("00000000-0000-4000-8000-000000000001", {
 			method: "attach",
 			args: ["session-1"],
@@ -765,8 +691,8 @@ describe("hosted Harness acquisition failures", () => {
 		const closing = server.close();
 		gate.release.resolve(undefined);
 
-		await expect(closing).rejects.toThrow(/Failed to close hosted Harnesses/);
-		await expect(server.closed).rejects.toThrow(/Failed to close hosted Harnesses/);
+		await expect(closing).rejects.toThrow(/Failed to close routed Sessions/);
+		await expect(server.closed).rejects.toThrow(/Failed to close routed Sessions/);
 		await expect(attach).rejects.toThrow(/closed/i);
 		expect(host.latestHarness("session-1").closeCount).toBe(1);
 

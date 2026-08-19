@@ -8,7 +8,7 @@ import {
 	TODO_CONTEXT,
 } from "@earendil-works/pi-agent-core";
 import { createRpcClient, type LaneEvent } from "@earendil-works/pi-protocol";
-import type { HostedHarnessAttachment, HostedHarnessHandle, HostedHarnessWatch } from "@earendil-works/pi-server";
+import type { RoutedSessionAttachment, RoutedSessionHandle, RoutedSessionWatch } from "@earendil-works/pi-server";
 import { Check } from "typebox/value";
 import type { CoordinatorConnection, CoordinatorConnectionEvent } from "./coordinator.ts";
 import { spawnInternalProcess } from "./process.ts";
@@ -38,14 +38,15 @@ interface WorkerRecord {
 	readonly token: string;
 	readonly terminated: Promise<Error | undefined>;
 	resolveTerminated(error: Error | undefined): void;
-	attachmentId?: string;
+	readonly attachmentIds: Set<string>;
 	expectedStop: boolean;
 	stopPromise?: Promise<void>;
 	stopping: boolean;
 }
 
 interface PendingDemand {
-	readonly attachmentId: string | null;
+	readonly attachmentId: string;
+	readonly attached: boolean;
 	readonly requestId: string;
 	readonly timer: NodeJS.Timeout;
 	readonly worker: WorkerRecord;
@@ -120,10 +121,6 @@ export class SessionWorkerManager {
 		return [...this.#workersBySession.values()].map((worker) => worker.metadata);
 	}
 
-	hasSession(path: string): boolean {
-		return this.#workersBySession.has(path) || this.#pending.has(path);
-	}
-
 	async discover(peerIds: ReadonlySet<string>): Promise<void> {
 		if (this.#detached) return;
 		const undiscovered = new Set(
@@ -148,70 +145,74 @@ export class SessionWorkerManager {
 		this.#resolveDiscovery = undefined;
 	}
 
-	async createHarness(metadata: JsonlSessionMetadata, context: Context): Promise<HostedHarnessHandle> {
+	async openSession(metadata: JsonlSessionMetadata, context: Context): Promise<RoutedSessionHandle> {
 		if (this.#detached || this.#shuttingDown) throw new Error("Experimental server is shutting down");
 		const existing = this.#workersBySession.get(metadata.path);
-		if (existing) return this.#hostedHandle(existing);
+		if (existing) return this.#routedHandle(existing);
 		const pending = this.#pending.get(metadata.path);
-		if (pending) return this.#hostedHandle(await pending.promise);
-		return this.#hostedHandle(await this.#launch(metadata, context));
+		if (pending) return this.#routedHandle(await pending.promise);
+		return this.#routedHandle(await this.#launch(metadata, context));
 	}
 
-	#hostedHandle(worker: WorkerRecord): HostedHarnessHandle {
+	#routedHandle(worker: WorkerRecord): RoutedSessionHandle {
 		return {
 			terminated: worker.terminated,
 			attachClient: (context) => this.#attachClient(worker, context),
-			prompt: (prompt, context) => this.#operations(worker, context).prompt(prompt),
-			watch: (context) => this.#createLaneWatch(worker, context),
 			close: (context) => this.#stopWorker(worker, context),
 		};
 	}
 
 	#operations(
 		worker: WorkerRecord,
+		scope: WorkerOperationScope,
 		context: Context,
 	): ReturnType<typeof createRpcClient<typeof SessionWorkerOperations>> {
-		return createRpcClient(SessionWorkerOperations, (call) => this.#invoke(worker, call, context));
+		return createRpcClient(SessionWorkerOperations, (call) => this.#invoke(worker, scope, call, context));
 	}
 
-	async #attachClient(worker: WorkerRecord, context: Context): Promise<HostedHarnessAttachment> {
+	async #attachClient(worker: WorkerRecord, context: Context): Promise<RoutedSessionAttachment> {
 		if (this.#detached || this.#shuttingDown || worker.stopping) {
 			throw new Error("Experimental Session worker is stopping");
 		}
 		if (this.#workersByPeer.get(worker.peerId) !== worker) {
 			throw new Error("Experimental Session worker is no longer available");
 		}
-		if (worker.attachmentId !== undefined) throw new Error("Experimental Session is already attached");
 		const attachmentId = randomUUID();
-		worker.attachmentId = attachmentId;
+		worker.attachmentIds.add(attachmentId);
 		try {
-			await this.#applyDemand(worker, attachmentId, true, context);
+			await this.#applyDemand(worker, attachmentId, true, true, context);
 		} catch (error) {
-			if (worker.attachmentId === attachmentId) worker.attachmentId = undefined;
+			worker.attachmentIds.delete(attachmentId);
 			throw error;
 		}
+		const scope = this.#operationScope(worker, attachmentId);
 		let released = false;
 		return {
+			prompt: (prompt, promptContext) => this.#operations(worker, scope, promptContext).prompt(prompt),
+			watch: (watchContext) => this.#createLaneWatch(worker, scope, watchContext),
 			release: async (releaseContext) => {
 				if (released) return;
 				released = true;
-				if (this.#detached || worker.attachmentId !== attachmentId) return;
+				if (this.#detached || !worker.attachmentIds.has(attachmentId)) return;
 				try {
-					await this.#applyDemand(worker, null, true, releaseContext);
+					await this.#applyDemand(worker, attachmentId, false, true, releaseContext);
 				} catch (error) {
 					if (!this.#detached && !this.#coordinator.wasReplaced) throw error;
 				} finally {
-					if (worker.attachmentId === attachmentId) worker.attachmentId = undefined;
+					worker.attachmentIds.delete(attachmentId);
 				}
 			},
 		};
 	}
 
-	async #createLaneWatch(worker: WorkerRecord, context: Context): Promise<HostedHarnessWatch> {
-		const scope = this.#operationScope(worker);
-		const { watchId, snapshot } = await this.#operations(worker, context).watch();
+	async #createLaneWatch(
+		worker: WorkerRecord,
+		scope: WorkerOperationScope,
+		context: Context,
+	): Promise<RoutedSessionWatch> {
+		const { watchId, snapshot } = await this.#operations(worker, scope, context).watch();
 		if (this.#laneWatches.has(watchId)) {
-			await this.#operations(worker, context)
+			await this.#operations(worker, scope, context)
 				.stopWatch(watchId)
 				.catch(() => {});
 			throw new Error("Session worker reused an active lane watch ID");
@@ -228,12 +229,12 @@ export class SessionWorkerManager {
 				state = "started";
 				watch.listener = listener;
 				try {
-					await this.#operations(worker, startContext).startWatch(watchId);
+					await this.#operations(worker, scope, startContext).startWatch(watchId);
 				} catch (error) {
 					this.#laneWatches.delete(watchId);
 					delete watch.listener;
 					state = "unsubscribed";
-					await this.#operations(worker, startContext)
+					await this.#operations(worker, scope, startContext)
 						.stopWatch(watchId)
 						.catch(() => {});
 					throw error;
@@ -244,14 +245,15 @@ export class SessionWorkerManager {
 				state = "unsubscribed";
 				if (this.#laneWatches.get(watchId) === watch) this.#laneWatches.delete(watchId);
 				delete watch.listener;
-				await this.#operations(worker, unsubscribeContext).stopWatch(watchId);
+				await this.#operations(worker, scope, unsubscribeContext).stopWatch(watchId);
 			},
 		};
 	}
 
 	async #applyDemand(
 		worker: WorkerRecord,
-		attachmentId: string | null,
+		attachmentId: string,
+		attached: boolean,
 		compensateOnTimeout: boolean,
 		_context: Context,
 	): Promise<void> {
@@ -270,7 +272,7 @@ export class SessionWorkerManager {
 			else this.#rejectDemand(requestId, new Error("Session worker demand update timed out"));
 		}, WORKER_DEMAND_TIMEOUT_MS);
 		timer.unref();
-		const pending = { attachmentId, requestId, timer, worker, resolve, reject };
+		const pending = { attachmentId, attached, requestId, timer, worker, resolve, reject };
 		this.#pendingDemand.set(requestId, pending);
 		try {
 			await this.#coordinator.send(worker.peerId, {
@@ -278,6 +280,7 @@ export class SessionWorkerManager {
 				serverConnectionId: this.#coordinator.serverConnectionId,
 				requestId,
 				attachmentId,
+				attached,
 			});
 		} catch (error) {
 			this.#rejectDemand(requestId, error instanceof Error ? error : new Error(String(error)));
@@ -286,10 +289,14 @@ export class SessionWorkerManager {
 	}
 
 	/** Worker operations have no wall-clock timeout: completion, disconnect, replacement, or shutdown settles them. */
-	#invoke(worker: WorkerRecord, call: SessionWorkerOperationCall, _context: Context): Promise<unknown> {
-		let scope: WorkerOperationScope;
+	#invoke(
+		worker: WorkerRecord,
+		scope: WorkerOperationScope,
+		call: SessionWorkerOperationCall,
+		_context: Context,
+	): Promise<unknown> {
 		try {
-			scope = this.#operationScope(worker);
+			this.#operationScope(worker, scope.attachmentId);
 		} catch (error) {
 			return Promise.reject(error);
 		}
@@ -309,16 +316,16 @@ export class SessionWorkerManager {
 		return result;
 	}
 
-	#operationScope(worker: WorkerRecord): WorkerOperationScope {
+	#operationScope(worker: WorkerRecord, attachmentId: string): WorkerOperationScope {
 		if (this.#detached || this.#shuttingDown || worker.stopping) {
 			throw new Error("Experimental Session worker is stopping");
 		}
-		if (this.#workersByPeer.get(worker.peerId) !== worker || worker.attachmentId === undefined) {
+		if (this.#workersByPeer.get(worker.peerId) !== worker || !worker.attachmentIds.has(attachmentId)) {
 			throw new Error("Experimental Session worker has no active attachment");
 		}
 		return {
 			serverConnectionId: this.#coordinator.serverConnectionId,
-			attachmentId: worker.attachmentId,
+			attachmentId,
 		};
 	}
 
@@ -486,7 +493,8 @@ export class SessionWorkerManager {
 				pending.worker.peerId !== event.from ||
 				pending.worker.token !== message.token ||
 				pending.worker.metadata.path !== message.sessionKey ||
-				(message.type === "demand_applied" && pending.attachmentId !== message.attachmentId)
+				(message.type === "demand_applied" &&
+					(pending.attachmentId !== message.attachmentId || pending.attached !== message.attached))
 			) {
 				return;
 			}
@@ -601,6 +609,7 @@ export class SessionWorkerManager {
 			token: message.token,
 			terminated,
 			resolveTerminated,
+			attachmentIds: new Set(),
 			expectedStop: false,
 			stopping: false,
 		};
@@ -672,9 +681,9 @@ export class SessionWorkerManager {
 		clearTimeout(pending.timer);
 		const timeoutError = new Error("Session worker demand update timed out");
 		try {
-			await this.#applyDemand(pending.worker, null, false, BACKGROUND_CONTEXT);
-			if (pending.attachmentId === null) pending.resolve();
-			else pending.reject(timeoutError);
+			await this.#applyDemand(pending.worker, pending.attachmentId, false, false, BACKGROUND_CONTEXT);
+			if (pending.attached) pending.reject(timeoutError);
+			else pending.resolve();
 		} catch (cleanupError) {
 			try {
 				await this.#stopWorker(pending.worker, BACKGROUND_CONTEXT);

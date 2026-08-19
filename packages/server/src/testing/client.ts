@@ -3,13 +3,20 @@ import { createConnection, type Socket } from "node:net";
 import {
 	type ClientMessage,
 	encodeClientMessage,
+	isJsonValue,
 	PROTOCOL_VERSION,
 	type ProtocolRpcCall,
 	type ResponseEnvelope,
+	type RpcTarget,
 	type ServerMessage,
 	ServerMessageDecoder,
 } from "@earendil-works/pi-protocol";
 import { Deferred } from "./host.ts";
+
+interface TestRpcCall {
+	readonly method: string;
+	readonly args: unknown;
+}
 
 interface MessageWaiter {
 	predicate: (message: ServerMessage) => boolean;
@@ -30,6 +37,7 @@ export class ProtocolTestClient {
 	private readonly waiters = new Set<MessageWaiter>();
 	private readonly closedDeferred = new Deferred<void>();
 	private requestSequence = 0;
+	private attachment: { sessionId: string; attachmentId: string } | undefined;
 	private closedValue = false;
 
 	constructor(channel: WireChannel) {
@@ -48,18 +56,56 @@ export class ProtocolTestClient {
 
 	async request(
 		serverId: string,
-		call: ProtocolRpcCall,
+		call: TestRpcCall,
 		id = `request-${++this.requestSequence}`,
 	): Promise<ResponseEnvelope> {
 		const response = this.next(
 			(message): message is ResponseEnvelope => message.type === "response" && message.id === id,
 		);
-		await this.sendMessage({ type: "request", id, serverId, call });
-		return (await response) as ResponseEnvelope;
+		const routed = this.routeLegacyCall(serverId, call);
+		await this.sendMessage({ type: "request", id, ...routed });
+		const received = (await response) as ResponseEnvelope;
+		if (
+			call.method === "attach" &&
+			received.ok &&
+			typeof received.result === "object" &&
+			received.result !== null &&
+			"sessionId" in received.result &&
+			"attachmentId" in received.result &&
+			typeof received.result.sessionId === "string" &&
+			typeof received.result.attachmentId === "string"
+		) {
+			this.attachment = {
+				sessionId: received.result.sessionId,
+				attachmentId: received.result.attachmentId,
+			};
+		}
+		return received;
 	}
 
 	sendMessage(message: ClientMessage): Promise<void> {
 		return this.channel.send(encodeClientMessage(message));
+	}
+
+	private routeLegacyCall(serverId: string, call: TestRpcCall): { target: RpcTarget; call: ProtocolRpcCall } {
+		if (!Array.isArray(call.args) || !call.args.every(isJsonValue)) {
+			throw new Error(`Test call ${call.method} requires JSON array arguments`);
+		}
+		const sessionOperation = ["prompt", "watch", "startWatch", "stopWatch"].includes(call.method);
+		let target: RpcTarget = { serverId };
+		let args = call.args;
+		if (sessionOperation) {
+			if (typeof call.args[0] !== "string") throw new Error(`Test call ${call.method} requires a Session ID`);
+			const sessionId = call.args[0];
+			const attachment = this.attachment;
+			target =
+				attachment === undefined || attachment.sessionId !== sessionId
+					? { serverId, sessionId, attachmentId: "missing-attachment" }
+					: { serverId, ...attachment };
+			args = call.args.slice(1);
+		}
+		const address = serviceAddress(call.method);
+		return { target, call: { ...address, args } };
 	}
 
 	sendBytes(chunk: Uint8Array): Promise<void> {
@@ -114,6 +160,24 @@ export class ProtocolTestClient {
 	fail(error: Error): void {
 		for (const waiter of this.waiters) waiter.reject(error);
 		this.waiters.clear();
+	}
+}
+
+function serviceAddress(method: string): { serviceId: string; member: string } {
+	switch (method) {
+		case "list":
+			return { serviceId: "session-directory", member: "list" };
+		case "create":
+		case "attach":
+			return { serviceId: "session-management", member: method };
+		case "prompt":
+			return { serviceId: "chat", member: "prompt" };
+		case "watch":
+		case "startWatch":
+		case "stopWatch":
+			return { serviceId: "transcript", member: method };
+		default:
+			return { serviceId: "unknown", member: method };
 	}
 }
 

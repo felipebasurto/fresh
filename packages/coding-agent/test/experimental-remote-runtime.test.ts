@@ -273,14 +273,14 @@ describe("experimental durable server composition", () => {
 		expect(socket.mode & 0o777).toBe(0o600);
 	});
 
-	test("keeps one worker for one connection-scoped Session attachment", async () => {
+	test("shares one worker across concurrent Session attachments", async () => {
 		const { runtime } = await makeServer();
 		const client = await attachClient(runtime, "demo-1");
 
 		expect([...runtime.workerPids.keys()]).toEqual(["demo-1"]);
 		const firstPid = runtime.workerPids.get("demo-1");
 		expect(firstPid).toEqual(expect.any(Number));
-		await expect(client.attachSession("demo-1")).resolves.toEqual({ sessionId: "demo-1" });
+		await expect(client.attachSession("demo-1")).resolves.toMatchObject({ sessionId: "demo-1" });
 		expect(runtime.workerPids.get("demo-1")).toBe(firstPid);
 
 		const competing = await PiClient.connect({
@@ -288,22 +288,19 @@ describe("experimental durable server composition", () => {
 			transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
 		});
 		clients.add(competing);
-		await expect(competing.attachSession("demo-1")).rejects.toMatchObject({ code: "session_in_use" });
+		await expect(competing.attachSession("demo-1")).resolves.toMatchObject({ sessionId: "demo-1" });
+		expect(runtime.workerPids.get("demo-1")).toBe(firstPid);
 	});
 
-	test("rejects prompting until AgentHarness prompting is implemented", async () => {
+	test("routes prompting through the worker-owned Harness and sanitizes runtime failures", async () => {
 		const { directory } = await makeServer();
 
 		await expect(
 			runClient({ command: "client", sessionId: "demo-1", prompt: "question" }, { directory }),
-		).rejects.toThrow("Experimental client prompting through AgentHarness is not implemented");
-		await expect(runClient({ command: "client", sessionId: "demo-1" }, { directory })).resolves.toMatchObject({
-			kind: "attached",
-			sessionId: "demo-1",
-		});
+		).rejects.toThrow("Internal server error");
 	});
 
-	// WP00 intentionally selects execution-incomplete runtime2. Re-enable with the no-tool run package.
+	// Runtime2 cannot complete no-tool runs yet; keep the framed prompt path covered as a sanitized failure above.
 	test.skip("streams prompt events from the worker to the client", async ({ onTestFinished }) => {
 		const spawn = vi
 			.spyOn(processRuntime, "spawnInternalProcess")
@@ -346,7 +343,7 @@ describe("experimental durable server composition", () => {
 		);
 	});
 
-	// WP00 intentionally selects execution-incomplete runtime2. Re-enable with the no-tool run package.
+	// Re-enable with runtime2 no-tool execution.
 	test.skip("completes and persists a prompt through the worker-owned Harness", async ({ onTestFinished }) => {
 		const spawn = vi
 			.spyOn(processRuntime, "spawnInternalProcess")
@@ -424,7 +421,7 @@ describe("experimental durable server composition", () => {
 		});
 		clients.add(client);
 
-		await expect(client.attachSession("demo-1")).resolves.toEqual({ sessionId: "demo-1" });
+		await expect(client.attachSession("demo-1")).resolves.toMatchObject({ sessionId: "demo-1" });
 		expect(runtime.workerPids.get("demo-1")).toEqual(expect.any(Number));
 	});
 

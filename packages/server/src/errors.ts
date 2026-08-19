@@ -5,14 +5,11 @@ type PiServerOperationErrorCode = Extract<
 	| "wrong_server"
 	| "session_not_found"
 	| "session_ambiguous"
-	| "session_in_use"
 	| "session_not_attached"
 	| "watch_not_found"
 	| "watch_in_use"
 	| "not_supported"
 	| "server_draining"
-	| "mutation_not_found"
-	| "mutation_expired"
 >;
 
 export const INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error";
@@ -46,13 +43,6 @@ export class SessionAmbiguousError extends PiServerError {
 	constructor() {
 		super("session_ambiguous", "Session ID matches more than one session");
 		this.name = "SessionAmbiguousError";
-	}
-}
-
-export class SessionInUseError extends PiServerError {
-	constructor() {
-		super("session_in_use", "Session is attached to another client");
-		this.name = "SessionInUseError";
 	}
 }
 

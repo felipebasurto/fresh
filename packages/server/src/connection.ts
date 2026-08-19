@@ -1,4 +1,4 @@
-import type { ClientMessageDecoder } from "@earendil-works/pi-protocol";
+import type { ClientMessageDecoder, RpcTarget } from "@earendil-works/pi-protocol";
 
 import type { MaybePromise } from "./types.ts";
 
@@ -26,7 +26,7 @@ export interface ConnectionState {
 	disconnected: boolean;
 	handshake?: Promise<void>;
 	handshakeTimeout: NodeJS.Timeout;
-	activeRequests: Map<string, AbortController>;
+	activeRequests: Map<string, { controller: AbortController; target: RpcTarget }>;
 }
 
 export function isTerminalConnection(state: ConnectionState): boolean {

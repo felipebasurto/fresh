@@ -1,4 +1,4 @@
-import type { Context, Session, SessionMetadata } from "@earendil-works/pi-agent-core";
+import type { Context, SessionMetadata } from "@earendil-works/pi-agent-core";
 import type {
 	LaneEvent,
 	LaneSnapshot,
@@ -16,44 +16,39 @@ export interface PiServerOptions {
 	handshakeTimeoutMs?: number;
 	onConnectionCountChanged?: (count: number) => void;
 	onError?: (error: Error) => void;
-	/** Maximum time an acquired remote Session mutation may hold its lane. */
-	remoteMutationLeaseMs?: number;
 }
 
 export type MaybePromise<T> = T | Promise<T>;
 
-/** One client connection's exclusive attachment to a hosted Session. */
-export interface HostedHarnessAttachment {
+/** One presentation connection's live capability for a hosted Session. */
+export interface RoutedSessionAttachment {
+	/** Execute one serializable prompt through this attachment. */
+	prompt(prompt: PromptArguments, context: Context): Promise<RunResult>;
+	/** Observe the attached main lane when supported by this host. */
+	watch?(context: Context): Promise<RoutedSessionWatch>;
 	release(context: Context): MaybePromise<void>;
 }
 
-/** Snapshot-first observation handle supplied by a hosted Harness adapter. */
-export interface HostedHarnessWatch {
+/** Snapshot-first observation handle supplied by a routed Session attachment. */
+export interface RoutedSessionWatch {
 	readonly snapshot: LaneSnapshot;
 	start(listener: (event: LaneEvent, context: Context) => MaybePromise<void>, context: Context): MaybePromise<void>;
 	unsubscribe(context: Context): MaybePromise<void>;
 }
 
-/** A process-safe handle for the hosted Harness operations exposed by this server. */
-export interface HostedHarnessHandle {
-	/** Acquire the Session for one client connection. Sessions permit only one attachment at a time. */
-	attachClient?(context: Context): MaybePromise<HostedHarnessAttachment>;
-	/** Execute one serializable prompt against the hosted Harness. */
-	prompt(prompt: PromptArguments, context: Context): Promise<RunResult>;
-	/** Observe the attached main lane when supported by this host. */
-	watch?(context: Context): Promise<HostedHarnessWatch>;
+/** A process-safe handle that acquires presentation-scoped Session capabilities. */
+export interface RoutedSessionHandle {
+	attachClient(context: Context): MaybePromise<RoutedSessionAttachment>;
 	/** Resolves with an error for unexpected termination, or undefined after an expected close. */
 	readonly terminated?: Promise<Error | undefined>;
 	close(context: Context): Promise<void>;
 }
 
-/** Host capabilities used directly by Session RPC operations. */
+/** Application capabilities used by server-wide management and Session routing. */
 export interface PiServerHost<TMetadata extends SessionMetadata = SessionMetadata> {
 	readonly sessions: {
 		list(context: Context): Promise<TMetadata[]>;
 		create(options: SessionCreateOptions, context: Context): Promise<TMetadata>;
-		/** Open one exclusive Session capability for a remote harness client. */
-		open?(metadata: TMetadata, context: Context): Promise<Session<TMetadata>>;
 	};
-	createHarness(metadata: TMetadata, context: Context): Promise<HostedHarnessHandle>;
+	openSession(metadata: TMetadata, context: Context): Promise<RoutedSessionHandle>;
 }

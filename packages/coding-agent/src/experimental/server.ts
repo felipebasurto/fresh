@@ -8,7 +8,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { PiClient, PiDisconnectedError, PiServerError } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, type UnixServerRoute } from "@earendil-works/pi-client/unix";
 import { isServerId, type ServerId } from "@earendil-works/pi-protocol";
-import { type PiServer, type PiServerHost, SessionInUseError } from "@earendil-works/pi-server";
+import type { PiServer, PiServerHost } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.ts";
@@ -339,21 +339,15 @@ async function startServerBackend(
 				return [...sessions.values()];
 			},
 			create: async (createOptions, context) => {
-				const session = await repo.create(createOptions, context);
+				const session = await repo.create({ ...createOptions, cwd: process.cwd() }, context);
 				try {
 					return session.metadata;
 				} finally {
 					await session.close(context);
 				}
 			},
-			open: (metadata, context) => {
-				if (workers.hasSession(metadata.path)) {
-					throw new SessionInUseError();
-				}
-				return repo.open(metadata, context);
-			},
 		},
-		createHarness: (metadata, context) => workers.createHarness(metadata, context),
+		openSession: (metadata, context) => workers.openSession(metadata, context),
 	};
 	const socketPath = options.path;
 	const closeCatalog = async (): Promise<void> => {

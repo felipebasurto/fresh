@@ -19,8 +19,8 @@ const client = await PiClient.connect({
   serverId: "01234567-89ab-4def-8123-456789abcdef",
   transportFactory,
 });
-const session = await client.createSession({ cwd: "/workspace" });
-const attachment = await client.attachSession(session.id);
+const session = await client.createSession({});
+const attachment = await client.attachSession(session.sessionId);
 const watch = await client.watchSession(attachment.sessionId);
 await watch.start((event) => {
   if (event.type === "message_update" && event.frame.type === "text_delta") {
@@ -31,13 +31,13 @@ const result = await client.promptSession(attachment.sessionId, "Summarize this 
 await watch.dispose();
 ```
 
-The client verifies that the physical endpoint reports the expected logical `serverId`. Every Session request carries that ID again so the final server can reject misdelivery.
+The client verifies that the physical endpoint reports the expected logical `serverId`. Server-wide requests carry that ID, and every Session request carries the full live target `{ serverId, sessionId, attachmentId }`. The combined durable address prevents cross-server or cross-session misrouting; the server-generated attachment ID rejects delayed frames after switching or reattaching.
 
-`createSession()` creates durable Session metadata without attaching or opening a Harness; pass `id` to request an exact ID or omit it to generate one. `attachSession()` returns only `{ sessionId }`; the attachment is exclusive to that client connection. `promptSession()` accepts the protocol's serializable Harness prompt overloads and returns a structural `RunResult`.
+`createSession()` creates a presentation-safe Session summary without attaching or opening a worker; pass `id` to request an exact ID or omit it to generate one. The server derives private fields such as the working directory from its authenticated workspace context. `attachSession()` returns `{ sessionId, attachmentId }` and updates the target used by subsequent Session operations. Multiple clients may attach to one Session. `promptSession()` accepts the protocol's serializable Harness prompt overloads and returns a structural `RunResult`.
 
 `watchSession()` creates a main-lane watch and returns its authoritative snapshot without starting event delivery. Install the listener with `await watch.start(listener)`; this then flushes events buffered after the snapshot and continues with live events while `promptSession()` is pending. `watch.dispose()` stops server delivery and waits for already-received listener work. A disconnected watch is stale and cannot be reused after reconnection.
 
-On disconnect or disposal, pending prompts reject locally, but accepted work may still complete remotely before the attachment is released. The client never reconnects or replays requests automatically. After disconnection, call `reconnect()` and explicitly repeat only operations known to be safe.
+On disconnect or disposal, pending prompts reject locally, but accepted work may still complete remotely before the attachment is released. The client clears its live attachment route. It never reconnects or replays requests automatically. After disconnection, call `reconnect()`, attach again, and explicitly repeat only operations known to be safe.
 
 The experimental local coordinator only provides a stable endpoint and relays traffic. Replaceable server processes own session and worker lifecycle outside the public client protocol.
 

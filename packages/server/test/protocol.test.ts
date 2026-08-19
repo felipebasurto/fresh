@@ -1,4 +1,4 @@
-import { encodeCbor, encodeClientMessage, encodeFrame } from "@earendil-works/pi-protocol";
+import { encodeCbor, encodeClientMessage, encodeFrame, PROTOCOL_VERSION } from "@earendil-works/pi-protocol";
 import { afterEach, expect, test } from "vitest";
 import type { ByteConnection, ByteConnectionHandler } from "../src/connection.ts";
 import { PiServer } from "../src/server.ts";
@@ -53,8 +53,8 @@ test("requires hello as the first message", async () => {
 	await client.sendMessage({
 		type: "request",
 		id: "request-1",
-		serverId: "00000000-0000-4000-8000-000000000001",
-		call: { method: "list", args: [] },
+		target: { serverId: "00000000-0000-4000-8000-000000000001" },
+		call: { serviceId: "session-directory", member: "list", args: [] },
 	});
 	await expect(client.next((message) => message.type === "hello_error")).resolves.toMatchObject({
 		type: "hello_error",
@@ -65,15 +65,18 @@ test("requires hello as the first message", async () => {
 
 test("rejects unsupported protocol versions", async () => {
 	const client = connect();
-	await expect(client.hello(2)).resolves.toMatchObject({ type: "hello_error", error: { code: "version" } });
+	await expect(client.hello(PROTOCOL_VERSION + 1)).resolves.toMatchObject({
+		type: "hello_error",
+		error: { code: "version" },
+	});
 	await client.waitForClose();
 });
 
 test("accepts fragmented hello and request frames", async () => {
 	const client = connect();
-	const hello = encodeClientMessage({ type: "hello", version: 1 });
+	const hello = encodeClientMessage({ type: "hello", version: PROTOCOL_VERSION });
 	const helloResponse = client.next((message) => message.type === "hello");
-	await client.sendFragmentedMessage({ type: "hello", version: 1 }, Math.floor(hello.byteLength / 2));
+	await client.sendFragmentedMessage({ type: "hello", version: PROTOCOL_VERSION }, Math.floor(hello.byteLength / 2));
 	await expect(helloResponse).resolves.toMatchObject({
 		type: "hello",
 		serverId: "00000000-0000-4000-8000-000000000001",
@@ -83,8 +86,8 @@ test("accepts fragmented hello and request frames", async () => {
 	const request = {
 		type: "request" as const,
 		id: "request-1",
-		serverId: "00000000-0000-4000-8000-000000000001",
-		call: { method: "list" as const, args: [] as [] },
+		target: { serverId: "00000000-0000-4000-8000-000000000001" },
+		call: { serviceId: "session-directory" as const, member: "list" as const, args: [] as [] },
 	};
 	const frame = encodeClientMessage(request);
 	await client.sendFragmentedMessage(request, Math.floor(frame.byteLength / 2));
@@ -108,7 +111,7 @@ test.each([
 test("rejects a second hello after completing the handshake", async () => {
 	const client = connect();
 	await client.hello();
-	await client.sendMessage({ type: "hello", version: 1 });
+	await client.sendMessage({ type: "hello", version: PROTOCOL_VERSION });
 	await expect(client.next((message) => message.type === "hello_error")).resolves.toMatchObject({
 		type: "hello_error",
 		error: { code: "invalid_request", message: expect.stringMatching(/first message/) },
@@ -118,12 +121,12 @@ test("rejects a second hello after completing the handshake", async () => {
 
 test("processes a hello and request coalesced in one byte chunk", async () => {
 	const client = connect();
-	const hello = encodeClientMessage({ type: "hello", version: 1 });
+	const hello = encodeClientMessage({ type: "hello", version: PROTOCOL_VERSION });
 	const request = encodeClientMessage({
 		type: "request",
 		id: "request-1",
-		serverId: "00000000-0000-4000-8000-000000000001",
-		call: { method: "list", args: [] },
+		target: { serverId: "00000000-0000-4000-8000-000000000001" },
+		call: { serviceId: "session-directory", member: "list", args: [] },
 	});
 	const wire = new Uint8Array(hello.byteLength + request.byteLength);
 	wire.set(hello);

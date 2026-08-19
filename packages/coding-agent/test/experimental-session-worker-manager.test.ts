@@ -59,13 +59,14 @@ afterEach(() => {
 async function createAttachedWorker(): Promise<{
 	coordinator: FakeCoordinator;
 	workers: SessionWorkerManager;
-	handle: Awaited<ReturnType<SessionWorkerManager["createHarness"]>>;
+	handle: Awaited<ReturnType<SessionWorkerManager["openSession"]>>;
+	attachment: Awaited<ReturnType<Awaited<ReturnType<SessionWorkerManager["openSession"]>>["attachClient"]>>;
 	release(): Promise<void>;
 }> {
 	const coordinator = new FakeCoordinator();
 	const workers = new SessionWorkerManager(coordinator, "/tmp");
 	await workers.discover(new Set(["worker-1"]));
-	const handle = await workers.createHarness(metadata, BACKGROUND_CONTEXT);
+	const handle = await workers.openSession(metadata, BACKGROUND_CONTEXT);
 	coordinator.onSend = (peerId, payload) => {
 		if (payload.type !== "session_demand") return;
 		queueMicrotask(() =>
@@ -78,6 +79,7 @@ async function createAttachedWorker(): Promise<{
 					sessionKey: metadata.path,
 					requestId: payload.requestId,
 					attachmentId: payload.attachmentId,
+					attached: payload.attached,
 				},
 			}),
 		);
@@ -87,6 +89,7 @@ async function createAttachedWorker(): Promise<{
 		coordinator,
 		workers,
 		handle,
+		attachment,
 		release: () => Promise.resolve(attachment.release(BACKGROUND_CONTEXT)),
 	};
 }
@@ -97,12 +100,18 @@ describe("Session worker lifecycle failures", () => {
 		const coordinator = new FakeCoordinator();
 		const workers = new SessionWorkerManager(coordinator, "/tmp");
 		await workers.discover(new Set(["worker-1"]));
-		const handle = await workers.createHarness(metadata, BACKGROUND_CONTEXT);
-		const demands: (string | null)[] = [];
+		const handle = await workers.openSession(metadata, BACKGROUND_CONTEXT);
+		const demands: { attachmentId: string; attached: boolean }[] = [];
 		coordinator.onSend = (peerId, payload) => {
-			if (payload.type !== "session_demand") return;
-			demands.push(typeof payload.attachmentId === "string" ? payload.attachmentId : null);
-			if (payload.attachmentId !== null) return;
+			if (
+				payload.type !== "session_demand" ||
+				typeof payload.attachmentId !== "string" ||
+				typeof payload.attached !== "boolean"
+			) {
+				return;
+			}
+			demands.push({ attachmentId: payload.attachmentId, attached: payload.attached });
+			if (payload.attached) return;
 			queueMicrotask(() =>
 				coordinator.emit({
 					type: "message",
@@ -112,7 +121,8 @@ describe("Session worker lifecycle failures", () => {
 						token: "worker-token",
 						sessionKey: metadata.path,
 						requestId: payload.requestId,
-						attachmentId: null,
+						attachmentId: payload.attachmentId,
+						attached: false,
 					},
 				}),
 			);
@@ -122,8 +132,8 @@ describe("Session worker lifecycle failures", () => {
 		await vi.advanceTimersByTimeAsync(5_000);
 		await attaching;
 		expect(demands).toHaveLength(2);
-		expect(demands[0]).toEqual(expect.any(String));
-		expect(demands[1]).toBeNull();
+		expect(demands[0]).toMatchObject({ attachmentId: expect.any(String), attached: true });
+		expect(demands[1]).toEqual({ attachmentId: demands[0]!.attachmentId, attached: false });
 		workers.detach();
 	});
 
@@ -133,7 +143,7 @@ describe("Session worker lifecycle failures", () => {
 		const coordinator = new FakeCoordinator();
 		const workers = new SessionWorkerManager(coordinator, "/tmp");
 		await workers.discover(new Set(["worker-1"]));
-		const handle = await workers.createHarness(metadata, BACKGROUND_CONTEXT);
+		const handle = await workers.openSession(metadata, BACKGROUND_CONTEXT);
 		coordinator.onSend = () => {};
 
 		const attaching = expect(handle.attachClient!(BACKGROUND_CONTEXT)).rejects.toThrow("worker was terminated");
@@ -164,7 +174,7 @@ describe("Session worker lifecycle failures", () => {
 
 describe("Session worker operations", () => {
 	test("correlates prompt results to the worker generation and attachment", async () => {
-		const { coordinator, workers, handle, release } = await createAttachedWorker();
+		const { coordinator, workers, attachment, release } = await createAttachedWorker();
 		coordinator.onSend = (peerId, payload) => {
 			if (payload.type !== "operation") return;
 			const scope = asObject(payload.scope);
@@ -190,7 +200,7 @@ describe("Session worker operations", () => {
 			});
 		};
 
-		await expect(handle.prompt(["Hello"], BACKGROUND_CONTEXT)).resolves.toEqual({
+		await expect(attachment.prompt(["Hello"], BACKGROUND_CONTEXT)).resolves.toEqual({
 			ok: true,
 			value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
 		});
@@ -206,7 +216,7 @@ describe("Session worker operations", () => {
 	});
 
 	test("rejects a correlated response with mismatched worker identity", async () => {
-		const { coordinator, workers, handle, release } = await createAttachedWorker();
+		const { coordinator, workers, attachment, release } = await createAttachedWorker();
 		coordinator.onSend = (peerId, payload) => {
 			if (payload.type !== "operation") return;
 			queueMicrotask(() =>
@@ -231,13 +241,13 @@ describe("Session worker operations", () => {
 			);
 		};
 
-		await expect(handle.prompt(["Hello"], BACKGROUND_CONTEXT)).rejects.toThrow(/mismatched operation response/);
+		await expect(attachment.prompt(["Hello"], BACKGROUND_CONTEXT)).rejects.toThrow(/mismatched operation response/);
 		workers.detach();
 		await release();
 	});
 
 	test("rejects a null request scope", async () => {
-		const { coordinator, workers, handle, release } = await createAttachedWorker();
+		const { coordinator, workers, attachment, release } = await createAttachedWorker();
 		coordinator.onSend = (peerId, payload) => {
 			if (payload.type !== "operation") return;
 			queueMicrotask(() =>
@@ -262,15 +272,15 @@ describe("Session worker operations", () => {
 			);
 		};
 
-		await expect(handle.prompt(["Hello"], BACKGROUND_CONTEXT)).rejects.toThrow(/invalid operation response/);
+		await expect(attachment.prompt(["Hello"], BACKGROUND_CONTEXT)).rejects.toThrow(/invalid operation response/);
 		workers.detach();
 		await release();
 	});
 
 	test("rejects pending prompts on replacement without stopping the worker", async () => {
-		const { coordinator, workers, handle } = await createAttachedWorker();
+		const { coordinator, workers, attachment } = await createAttachedWorker();
 		coordinator.onSend = () => {};
-		const prompting = handle.prompt(["Hello"], BACKGROUND_CONTEXT);
+		const prompting = attachment.prompt(["Hello"], BACKGROUND_CONTEXT);
 		workers.detach();
 
 		await expect(prompting).rejects.toThrow(/replaced during a worker operation/);

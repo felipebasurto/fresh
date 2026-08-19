@@ -1,23 +1,13 @@
-import {
-	BACKGROUND_CONTEXT,
-	SessionInvalidLaneError,
-	SessionInvariantError,
-	SessionLaneExistsError,
-	type SessionMetadata,
-	SessionPendingAssistantMessageError,
-	SessionUnknownTargetError,
-	TODO_CONTEXT,
-	withAbortSignal,
-} from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, type SessionMetadata, TODO_CONTEXT, withAbortSignal } from "@earendil-works/pi-agent-core";
 import {
 	type CancelEnvelope,
 	type ClientHello,
 	type ClientMessage,
 	ClientMessageDecoder,
 	DEFAULT_MAX_FRAME_LENGTH,
+	decodeServiceRpcCall,
 	encodeServerMessage,
 	isServerId,
-	isServiceRpcCall,
 	isSupportedProtocolVersion,
 	PROTOCOL_VERSION,
 	type ProtocolError,
@@ -25,6 +15,7 @@ import {
 	ProtocolValidationError,
 	type RequestEnvelope,
 	type ResponseEnvelope,
+	type RpcTarget,
 	type ServerHello,
 	type ServerHelloError,
 	type ServerMessage,
@@ -36,9 +27,8 @@ import {
 	isTerminalConnection,
 } from "./connection.ts";
 import { INTERNAL_SERVER_ERROR_MESSAGE, PiServerError, WrongServerError } from "./errors.ts";
-import { HostedHarnessManager } from "./hosted-harness-manager.ts";
 import type { PiServerListener } from "./listener.ts";
-import { DEFAULT_REMOTE_MUTATION_LEASE_MS, RemoteSessionManager } from "./remote-session-manager.ts";
+import { SessionRouter } from "./session-router.ts";
 import type { PiServerHost, PiServerOptions } from "./types.ts";
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -47,7 +37,7 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 	readonly serverId: string;
-	/** Resolves after shutdown, or rejects when listener or hosted-Harness cleanup fails. */
+	/** Resolves after shutdown, or rejects when listener or routed-Session cleanup fails. */
 	readonly closed: Promise<void>;
 
 	private readonly listeners: readonly PiServerListener[];
@@ -56,8 +46,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 	private readonly onConnectionCountChanged: ((count: number) => void) | undefined;
 	private readonly onError: ((error: Error) => void) | undefined;
 	private readonly connections = new Set<ConnectionState>();
-	private readonly sessions: HostedHarnessManager<TMetadata>;
-	private readonly remoteSessions: RemoteSessionManager<TMetadata>;
+	private readonly sessions: SessionRouter<TMetadata>;
 	private closing = false;
 	private closePromise?: Promise<void>;
 	private closedSettled = false;
@@ -74,15 +63,9 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 		this.handshakeTimeoutMs = resolved.handshakeTimeoutMs;
 		this.onConnectionCountChanged = options.onConnectionCountChanged;
 		this.onError = options.onError;
-		this.remoteSessions = new RemoteSessionManager({
-			host,
-			mutationLeaseMs: resolved.remoteMutationLeaseMs,
-			isSessionUnavailable: (sessionId) => this.sessions.hasSession(sessionId),
-		});
-		this.sessions = new HostedHarnessManager({
+		this.sessions = new SessionRouter({
 			host,
 			isClosing: () => this.closing,
-			isSessionUnavailable: (sessionId) => this.remoteSessions.hasSession(sessionId),
 			reportError: (error) => this.reportError(error),
 		});
 		this.closed = new Promise((resolve, reject) => {
@@ -280,8 +263,11 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 	}
 
 	private handleCancel(state: ConnectionState, envelope: CancelEnvelope): void {
-		if (envelope.serverId !== this.serverId) return;
-		state.activeRequests.get(envelope.id)?.abort(new DOMException("RPC request cancelled", "AbortError"));
+		if (envelope.target.serverId !== this.serverId) return;
+		const active = state.activeRequests.get(envelope.id);
+		if (active !== undefined && sameTarget(active.target, envelope.target)) {
+			active.controller.abort(new DOMException("RPC request cancelled", "AbortError"));
+		}
 	}
 
 	private async handleRequest(state: ConnectionState, envelope: RequestEnvelope): Promise<void> {
@@ -295,24 +281,27 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 			return;
 		}
 		const controller = new AbortController();
-		state.activeRequests.set(envelope.id, controller);
+		const active = { controller, target: envelope.target };
+		state.activeRequests.set(envelope.id, active);
 		const context = withAbortSignal(controller.signal, TODO_CONTEXT);
 		try {
-			if (envelope.serverId !== this.serverId) throw new WrongServerError();
+			if (envelope.target.serverId !== this.serverId) throw new WrongServerError();
 			let result: ProtocolRpcResult;
-			if (isServiceRpcCall(envelope.call)) {
+			const call = decodeServiceRpcCall(envelope.call);
+			if (call !== undefined) {
 				result = await this.sessions.executeCall(
-					envelope.call,
+					call,
+					envelope.target,
 					state,
 					async (message, _context) => {
 						await this.sendMessage(state, message);
 					},
 					context,
 				);
-			} else if (envelope.call.method.startsWith("session.")) {
-				result = await this.remoteSessions.invoke(envelope.call.method, envelope.call.args, state, context);
 			} else {
-				throw new ProtocolValidationError(`Unknown RPC method ${envelope.call.method}`);
+				throw new ProtocolValidationError(
+					`Unknown service member ${envelope.call.serviceId}.${envelope.call.member}`,
+				);
 			}
 			await this.sendMessage(state, {
 				type: "response",
@@ -330,7 +319,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 					: this.toProtocolError(error),
 			} satisfies ResponseEnvelope);
 		} finally {
-			if (state.activeRequests.get(envelope.id) === controller) state.activeRequests.delete(envelope.id);
+			if (state.activeRequests.get(envelope.id) === active) state.activeRequests.delete(envelope.id);
 		}
 	}
 
@@ -350,15 +339,12 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 		connection.disconnected = true;
 		connection.stage = "closed";
 		clearTimeout(connection.handshakeTimeout);
-		for (const controller of connection.activeRequests.values()) {
+		for (const { controller } of connection.activeRequests.values()) {
 			controller.abort(new Error("Client disconnected"));
 		}
 		connection.activeRequests.clear();
 		if (this.connections.delete(connection)) this.notifyConnectionCountChanged();
-		void Promise.allSettled([
-			this.sessions.disconnect(connection, TODO_CONTEXT),
-			this.remoteSessions.disconnect(connection, TODO_CONTEXT),
-		]).then((results) => {
+		void Promise.allSettled([this.sessions.disconnect(connection, TODO_CONTEXT)]).then((results) => {
 			for (const result of results) if (result.status === "rejected") this.reportError(result.reason);
 		});
 	}
@@ -408,10 +394,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 		}
 		await Promise.all(connections.map((connection) => this.closeConnection(connection.connection)));
 		for (const connection of connections) this.disconnect(connection);
-		const cleanup = await Promise.allSettled([
-			this.sessions.close(BACKGROUND_CONTEXT),
-			this.remoteSessions.close(BACKGROUND_CONTEXT),
-		]);
+		const cleanup = await Promise.allSettled([this.sessions.close(BACKGROUND_CONTEXT)]);
 		this.connections.clear();
 		const errors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
 		if (errors.length === 1) throw errors[0];
@@ -433,13 +416,6 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 		if (error instanceof ProtocolValidationError) {
 			return { code: "invalid_request", message: error.message };
 		}
-		if (error instanceof SessionInvalidLaneError) return { code: "session_invalid_lane", message: error.message };
-		if (error instanceof SessionLaneExistsError) return { code: "session_lane_exists", message: error.message };
-		if (error instanceof SessionUnknownTargetError) return { code: "session_unknown_target", message: error.message };
-		if (error instanceof SessionPendingAssistantMessageError) {
-			return { code: "session_pending_message", message: error.message };
-		}
-		if (error instanceof SessionInvariantError) return { code: "session_invariant", message: error.message };
 		this.reportError(error);
 		return { code: "internal_error", message: INTERNAL_SERVER_ERROR_MESSAGE };
 	}
@@ -468,10 +444,17 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 	}
 }
 
+function sameTarget(left: RpcTarget, right: RpcTarget): boolean {
+	if (left.serverId !== right.serverId) return false;
+	if (!("sessionId" in left) || !("sessionId" in right)) {
+		return !("sessionId" in left) && !("sessionId" in right);
+	}
+	return left.sessionId === right.sessionId && left.attachmentId === right.attachmentId;
+}
+
 function resolveOptions(options: PiServerOptions): {
 	maxFrameLength: number;
 	handshakeTimeoutMs: number;
-	remoteMutationLeaseMs: number;
 } {
 	if (!Array.isArray(options.listeners)) throw new TypeError("PiServer listeners must be an array");
 	if (!isServerId(options.serverId)) {
@@ -489,13 +472,5 @@ function resolveOptions(options: PiServerOptions): {
 	) {
 		throw new TypeError(`PiServer handshakeTimeoutMs must be an integer between 1 and ${MAX_TIMER_DELAY_MS}`);
 	}
-	const remoteMutationLeaseMs = options.remoteMutationLeaseMs ?? DEFAULT_REMOTE_MUTATION_LEASE_MS;
-	if (
-		!Number.isSafeInteger(remoteMutationLeaseMs) ||
-		remoteMutationLeaseMs <= 0 ||
-		remoteMutationLeaseMs > MAX_TIMER_DELAY_MS
-	) {
-		throw new TypeError(`PiServer remoteMutationLeaseMs must be an integer between 1 and ${MAX_TIMER_DELAY_MS}`);
-	}
-	return { maxFrameLength, handshakeTimeoutMs, remoteMutationLeaseMs };
+	return { maxFrameLength, handshakeTimeoutMs };
 }

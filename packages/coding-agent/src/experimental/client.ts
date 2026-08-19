@@ -1,15 +1,14 @@
 import { basename } from "node:path";
-import { BACKGROUND_CONTEXT, RemoteSession, type RemoteSessionRpc } from "@earendil-works/pi-agent-core";
 import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
-import { isServerId, type LaneEvent } from "@earendil-works/pi-protocol";
+import { isServerId, type LaneEvent, type SessionAddress } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
 
 export type ClientResult =
 	| {
 			readonly kind: "list";
-			readonly sessions: readonly { serverId: string; sessionId: string }[];
+			readonly sessions: readonly SessionAddress[];
 	  }
 	| { readonly kind: "attached"; readonly serverId: string; readonly sessionId: string }
 	| { readonly kind: "prompted"; readonly serverId: string; readonly sessionId: string; readonly text: string };
@@ -68,7 +67,7 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 			activatedClient = undefined;
 			openedClients.add(client);
 			const sessions = await client.listSessions();
-			discovered.push({ route, sessionIds: sessions.map(({ id }) => id), client });
+			discovered.push({ route, sessionIds: sessions.map(({ sessionId }) => sessionId), client });
 		}
 
 		let sessionId = command.sessionId;
@@ -92,7 +91,7 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 				throw new Error("Client prompt requires exactly one discovered server to create a Session");
 			}
 			match = discovered[0]!;
-			sessionId = (await match.client.createSession({ cwd: process.cwd() })).id;
+			sessionId = (await match.client.createSession({})).sessionId;
 		} else {
 			const selectedSessionId = sessionId;
 			const matches = discovered.filter((candidate) => candidate.sessionIds.includes(selectedSessionId));
@@ -107,21 +106,31 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 					throw new Error(`No discovered server contains session ${selectedSessionId}`);
 				}
 				match = discovered[0]!;
-				await match.client.createSession({ id: selectedSessionId, cwd: process.cwd() });
+				await match.client.createSession({ id: selectedSessionId });
 			}
 		}
-		const rpc: RemoteSessionRpc = {
-			invoke: (method, args, context) => match.client.invoke(method, args, context.abortSignal),
-		};
-		const session = await RemoteSession.open(rpc, sessionId, BACKGROUND_CONTEXT);
+		await match.client.attachSession({ serverId: match.route.serverId, sessionId });
 		if (command.prompt === undefined) {
-			await session.close(BACKGROUND_CONTEXT);
-			return { kind: "attached", serverId: match.route.serverId, sessionId: session.metadata.id };
+			return { kind: "attached", serverId: match.route.serverId, sessionId };
 		}
+
+		const watch = options.onEvent === undefined ? undefined : await match.client.watchSession(sessionId);
+		if (watch && options.onEvent) await watch.start(options.onEvent);
 		try {
-			throw new Error("Experimental client prompting through AgentHarness is not implemented");
+			const result = await match.client.promptSession(sessionId, command.prompt);
+			if (!result.ok) throw new Error(result.error.message);
+			const value = result.value;
+			if (value.kind === "failed") throw new Error(value.error.message);
+			const text =
+				"finalMessage" in value
+					? value.finalMessage.content
+							.filter((content) => content.type === "text")
+							.map((content) => content.text)
+							.join("")
+					: "";
+			return { kind: "prompted", serverId: match.route.serverId, sessionId, text };
 		} finally {
-			await session.close(BACKGROUND_CONTEXT);
+			await watch?.dispose();
 		}
 	} finally {
 		await Promise.all([...openedClients].map((client) => client.dispose()));

@@ -32,6 +32,7 @@ import { Check } from "typebox/value";
 import { findInitialModel, resolveCliModel } from "../core/model-resolver.ts";
 import { ModelRuntime } from "../core/model-runtime.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
+import { COORDINATOR_PROTOCOL_VERSION } from "./coordinator.ts";
 import {
 	toHarnessPromptArguments,
 	toWireLaneEvent,
@@ -132,7 +133,8 @@ export const SessionWorkerCommandSchema = Type.Union([
 		type: Type.Literal("session_demand"),
 		serverConnectionId: Type.String(),
 		requestId: Type.String(),
-		attachmentId: Type.Union([Type.String(), Type.Null()]),
+		attachmentId: Type.String(),
+		attached: Type.Boolean(),
 	}),
 	WorkerOperationRequestSchema,
 ]);
@@ -158,7 +160,8 @@ export const SessionWorkerEventSchema = Type.Union([
 		token: Type.String(),
 		sessionKey: Type.String(),
 		requestId: Type.String(),
-		attachmentId: Type.Union([Type.String(), Type.Null()]),
+		attachmentId: Type.String(),
+		attached: Type.Boolean(),
 	}),
 	Type.Object({
 		type: Type.Literal("demand_rejected"),
@@ -189,7 +192,7 @@ export class WorkerLifecycle {
 	readonly #initialDemandGraceMs: number;
 	readonly #orphanDemandGraceMs: number;
 	readonly #onRetire: () => void;
-	readonly #demands = new Map<string, { attachmentId: string; timer?: NodeJS.Timeout }>();
+	readonly #demands = new Map<string, { serverConnectionId: string; attachmentId: string; timer?: NodeJS.Timeout }>();
 	readonly #activeOperations = new Set<string>();
 	#currentServerConnectionId: string | undefined;
 	#initialTimer: NodeJS.Timeout | undefined;
@@ -218,8 +221,8 @@ export class WorkerLifecycle {
 
 	serverConnected(serverConnectionId: string): void {
 		this.#currentServerConnectionId = serverConnectionId;
-		const demand = this.#demands.get(serverConnectionId);
-		if (demand?.timer) {
+		for (const demand of this.#demands.values()) {
+			if (demand.serverConnectionId !== serverConnectionId || !demand.timer) continue;
 			clearTimeout(demand.timer);
 			delete demand.timer;
 		}
@@ -227,14 +230,15 @@ export class WorkerLifecycle {
 
 	serverDisconnected(serverConnectionId: string): void {
 		if (this.#currentServerConnectionId === serverConnectionId) this.#currentServerConnectionId = undefined;
-		const demand = this.#demands.get(serverConnectionId);
-		if (!demand || demand.timer) return;
-		demand.timer = setTimeout(() => {
-			if (this.#demands.get(serverConnectionId) !== demand) return;
-			this.#demands.delete(serverConnectionId);
-			this.#reconcile();
-		}, this.#orphanDemandGraceMs);
-		demand.timer.unref();
+		for (const [key, demand] of this.#demands) {
+			if (demand.serverConnectionId !== serverConnectionId || demand.timer) continue;
+			demand.timer = setTimeout(() => {
+				if (this.#demands.get(key) !== demand) return;
+				this.#demands.delete(key);
+				this.#reconcile();
+			}, this.#orphanDemandGraceMs);
+			demand.timer.unref();
+		}
 	}
 
 	beginRequest(serverConnectionId: string, attachmentId: string): () => void {
@@ -242,8 +246,8 @@ export class WorkerLifecycle {
 		if (serverConnectionId !== this.#currentServerConnectionId) {
 			throw new Error("Session worker received a request from a stale server generation");
 		}
-		const demand = this.#demands.get(serverConnectionId);
-		if (!demand || demand.timer || demand.attachmentId !== attachmentId) {
+		const demand = this.#demands.get(demandKey(serverConnectionId, attachmentId));
+		if (!demand || demand.timer) {
 			throw new Error("Session worker request does not match the active attachment");
 		}
 		return this.holdRetirement();
@@ -260,7 +264,7 @@ export class WorkerLifecycle {
 		};
 	}
 
-	setDemand(serverConnectionId: string, attachmentId: string | null): void {
+	setDemand(serverConnectionId: string, attachmentId: string, attached: boolean): void {
 		if (this.#retiring) throw new Error("Session worker is retiring");
 		if (serverConnectionId !== this.#currentServerConnectionId) {
 			throw new Error("Session worker received demand from a stale server generation");
@@ -270,10 +274,11 @@ export class WorkerLifecycle {
 			clearTimeout(this.#initialTimer);
 			this.#initialTimer = undefined;
 		}
-		const previous = this.#demands.get(serverConnectionId);
+		const key = demandKey(serverConnectionId, attachmentId);
+		const previous = this.#demands.get(key);
 		if (previous?.timer) clearTimeout(previous.timer);
-		if (attachmentId === null) this.#demands.delete(serverConnectionId);
-		else this.#demands.set(serverConnectionId, { attachmentId });
+		if (attached) this.#demands.set(key, { serverConnectionId, attachmentId });
+		else this.#demands.delete(key);
 		this.#reconcile();
 	}
 
@@ -348,7 +353,7 @@ async function connectControl(): Promise<WorkerControl> {
 		socket.once("error", reject);
 	});
 	const messages = createJsonLineMessages(socket);
-	await writeJsonLine(socket, { type: "register_peer", protocol: 1, peerId });
+	await writeJsonLine(socket, { type: "register_peer", protocol: COORDINATOR_PROTOCOL_VERSION, peerId });
 	const registered = await messages[Symbol.asyncIterator]().next();
 	if (
 		registered.done ||
@@ -447,6 +452,10 @@ function writeJsonLine(socket: Socket, message: unknown): Promise<void> {
 			else resolve();
 		});
 	});
+}
+
+function demandKey(serverConnectionId: string, attachmentId: string): string {
+	return `${serverConnectionId}\0${attachmentId}`;
 }
 
 function sameScope(left: WorkerOperationScope, right: WorkerOperationScope): boolean {
@@ -670,12 +679,14 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 			const releaseRetirement = lifecycle?.holdRetirement() ?? (() => {});
 			try {
 				try {
-					removeLaneWatches(
-						(scope) =>
-							scope.serverConnectionId === command.serverConnectionId &&
-							scope.attachmentId !== command.attachmentId,
-					);
-					lifecycle?.setDemand(command.serverConnectionId, command.attachmentId);
+					if (!command.attached) {
+						removeLaneWatches(
+							(scope) =>
+								scope.serverConnectionId === command.serverConnectionId &&
+								scope.attachmentId === command.attachmentId,
+						);
+					}
+					lifecycle?.setDemand(command.serverConnectionId, command.attachmentId, command.attached);
 				} catch (error) {
 					await control.send({
 						type: "demand_rejected",
@@ -692,6 +703,7 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 					sessionKey,
 					requestId: command.requestId,
 					attachmentId: command.attachmentId,
+					attached: command.attached,
 				});
 			} finally {
 				releaseRetirement();

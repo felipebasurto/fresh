@@ -53,7 +53,7 @@ test("rejects invalid Unix transport options", () => {
 describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () => {
 	test("carries a complete PiClient handshake and request over a real Unix socket", async () => {
 		const path = await makeSocketPath();
-		const receivedMethods: string[] = [];
+		const receivedMembers: string[] = [];
 		const server = createServer((socket) => {
 			const decoder = new ClientMessageDecoder();
 			socket.on("data", (chunk) => {
@@ -68,7 +68,7 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 						continue;
 					}
 					if (message.type === "cancel") continue;
-					receivedMethods.push(message.call.method);
+					receivedMembers.push(`${message.call.serviceId}.${message.call.member}`);
 					const frame = encodeServerMessage({
 						type: "response",
 						id: message.id,
@@ -87,7 +87,7 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 		try {
 			await expect(client.connect()).resolves.toMatchObject({ serverId });
 			await expect(client.listSessions()).resolves.toEqual([]);
-			expect(receivedMethods).toEqual(["list"]);
+			expect(receivedMembers).toEqual(["session-directory.list"]);
 		} finally {
 			await client.dispose();
 		}

@@ -2,6 +2,7 @@ import {
 	createRpcClient,
 	type EventEnvelope,
 	encodeClientMessage,
+	encodeServiceRpcCall,
 	isServerId,
 	type LaneEvent,
 	type PromptArguments,
@@ -10,12 +11,15 @@ import {
 	type ProtocolRpcCall,
 	ProtocolValidationError,
 	type ResponseEnvelope,
+	type RpcTarget,
 	type ServerHello,
 	ServiceRpc,
 	type ServiceRpcCall,
 	type ServiceRpcResult,
+	type SessionAddress,
 	type SessionCreateOptions,
-	type SessionMetadata,
+	type SessionSummary,
+	type SessionTarget,
 } from "@earendil-works/pi-protocol";
 import { Connection } from "./connection.ts";
 import { PiClientDisposedError, PiDisconnectedError, PiServerError, toError } from "./errors.ts";
@@ -42,6 +46,7 @@ export class PiClient {
 	readonly #rpc: ReturnType<typeof createRpcClient<typeof ServiceRpc>>;
 	#requestSequence = 0;
 	#hello: ServerHello | undefined;
+	#attachment: SessionTarget | undefined;
 	#disposed = false;
 	#disposePromise: Promise<void> | undefined;
 
@@ -62,7 +67,7 @@ export class PiClient {
 		});
 		this.#rpc = createRpcClient(
 			ServiceRpc,
-			(call) => this.#request(call),
+			(call) => this.#request(this.#targetForCall(call), encodeServiceRpcCall(call)),
 			(message) => new ProtocolValidationError(message),
 		);
 	}
@@ -81,6 +86,10 @@ export class PiClient {
 
 	get hello(): ServerHello | undefined {
 		return this.#hello;
+	}
+
+	get attachment(): SessionTarget | undefined {
+		return this.#attachment;
 	}
 
 	static async connect(options: PiClientOptions): Promise<PiClient> {
@@ -114,13 +123,12 @@ export class PiClient {
 		return () => this.#connectionStateListeners.delete(listener);
 	}
 
-	/** Invoke an untyped RPC method. Domain-specific facades own argument and result typing. */
-	invoke(method: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
-		if (method.length === 0) return Promise.reject(new TypeError("RPC method must not be empty"));
-		return this.#request({ method, args }, signal);
+	/** Invoke one low-level protocol call against an explicit routed target. */
+	request(target: RpcTarget, call: ProtocolRpcCall, signal?: AbortSignal): Promise<unknown> {
+		return this.#request(target, call, signal);
 	}
 
-	listSessions(): Promise<readonly SessionMetadata[]> {
+	listSessions(): Promise<readonly SessionSummary[]> {
 		return this.#rpc.list();
 	}
 
@@ -128,8 +136,14 @@ export class PiClient {
 		return this.#rpc.create(options);
 	}
 
-	attachSession(sessionId: string): Promise<ServiceRpcResult<"attach">> {
-		return this.#rpc.attach(sessionId);
+	async attachSession(session: string | SessionAddress): Promise<ServiceRpcResult<"attach">> {
+		const sessionId = typeof session === "string" ? session : session.sessionId;
+		if (typeof session !== "string" && session.serverId !== this.#options.serverId) {
+			throw new PiServerError({ code: "wrong_server", message: "Session belongs to another server" });
+		}
+		const attached = await this.#rpc.attach(sessionId);
+		this.#attachment = { serverId: this.#options.serverId, ...attached };
+		return attached;
 	}
 
 	promptSession(sessionId: string, text: string, images?: PromptImage[]): Promise<ServiceRpcResult<"prompt">>;
@@ -139,16 +153,18 @@ export class PiClient {
 		message: string | PromptMessage | PromptMessage[],
 		images?: PromptImage[],
 	): Promise<ServiceRpcResult<"prompt">> {
+		this.#requireSessionTarget(sessionId);
 		if (typeof message === "string") {
 			const prompt: PromptArguments = images === undefined ? [message] : [message, images];
-			return this.#rpc.prompt(sessionId, prompt);
+			return this.#rpc.prompt(prompt);
 		}
-		if (Array.isArray(message)) return this.#rpc.prompt(sessionId, [message]);
-		return this.#rpc.prompt(sessionId, [message]);
+		if (Array.isArray(message)) return this.#rpc.prompt([message]);
+		return this.#rpc.prompt([message]);
 	}
 
 	async watchSession(sessionId: string): Promise<PiLaneWatch> {
-		const { watchId, snapshot } = await this.#rpc.watch(sessionId);
+		this.#requireSessionTarget(sessionId);
+		const { watchId, snapshot } = await this.#rpc.watch();
 		const connection = this.#hello;
 		let state: "ready" | "starting" | "started" | "disposed" = "ready";
 		return {
@@ -164,7 +180,8 @@ export class PiClient {
 				state = "starting";
 				this.#watchListeners.set(watchId, { listener, deliveryTail: Promise.resolve() });
 				try {
-					await this.#rpc.startWatch(sessionId, watchId);
+					this.#requireSessionTarget(sessionId);
+					await this.#rpc.startWatch(watchId);
 					if (state === "starting") state = "started";
 				} catch (error) {
 					this.#watchListeners.delete(watchId);
@@ -177,7 +194,9 @@ export class PiClient {
 				state = "disposed";
 				const active = this.#watchListeners.get(watchId);
 				try {
-					if (this.connected && this.#hello === connection) await this.#rpc.stopWatch(sessionId, watchId);
+					if (this.connected && this.#hello === connection && this.#attachment?.sessionId === sessionId) {
+						await this.#rpc.stopWatch(watchId);
+					}
 					await active?.deliveryTail;
 				} finally {
 					this.#watchListeners.delete(watchId);
@@ -186,7 +205,7 @@ export class PiClient {
 		};
 	}
 
-	#request(call: ProtocolRpcCall | ServiceRpcCall, signal?: AbortSignal): Promise<unknown> {
+	#request(target: RpcTarget, call: ProtocolRpcCall, signal?: AbortSignal): Promise<unknown> {
 		if (this.#disposed) return Promise.reject(new PiClientDisposedError());
 		if (!this.connected) return Promise.reject(new PiDisconnectedError());
 		if (signal?.aborted) return Promise.reject(abortError(signal));
@@ -199,10 +218,7 @@ export class PiClient {
 			if (!sent || !this.connected) return;
 			try {
 				this.#connection.send(
-					encodeClientMessage(
-						{ type: "cancel", id, serverId: this.#options.serverId },
-						{ maxFrameLength: this.#connection.maxFrameLength },
-					),
+					encodeClientMessage({ type: "cancel", id, target }, { maxFrameLength: this.#connection.maxFrameLength }),
 				);
 			} catch (error) {
 				this.#connection.fail(toError(error));
@@ -227,7 +243,7 @@ export class PiClient {
 		let frame: Uint8Array;
 		try {
 			frame = encodeClientMessage(
-				{ type: "request", id, serverId: this.#options.serverId, call },
+				{ type: "request", id, target, call },
 				{ maxFrameLength: this.#connection.maxFrameLength },
 			);
 		} catch (error) {
@@ -264,6 +280,7 @@ export class PiClient {
 	#handleConnectionStateChange(change: ConnectionStateChange): void {
 		if (change.state === "disconnected") {
 			this.#hello = undefined;
+			this.#attachment = undefined;
 			this.#rejectPendingRequests(change.error ?? new PiDisconnectedError());
 			this.#watchListeners.clear();
 		}
@@ -302,6 +319,7 @@ export class PiClient {
 		this.#rejectPendingRequests(error);
 		this.#connection.disconnect(error);
 		this.#hello = undefined;
+		this.#attachment = undefined;
 		this.#connectionStateListeners.clear();
 		this.#watchListeners.clear();
 		return this.#disposePromise;
@@ -309,6 +327,28 @@ export class PiClient {
 
 	[Symbol.asyncDispose](): Promise<void> {
 		return this.dispose();
+	}
+
+	#targetForCall(call: ServiceRpcCall): RpcTarget {
+		switch (call.method) {
+			case "list":
+			case "create":
+			case "attach":
+				return { serverId: this.#options.serverId };
+			case "prompt":
+			case "watch":
+			case "startWatch":
+			case "stopWatch":
+				return this.#requireSessionTarget();
+		}
+	}
+
+	#requireSessionTarget(sessionId?: string): SessionTarget {
+		const attachment = this.#attachment;
+		if (attachment === undefined || (sessionId !== undefined && attachment.sessionId !== sessionId)) {
+			throw new PiServerError({ code: "session_not_attached", message: "Session is not attached" });
+		}
+		return attachment;
 	}
 
 	#assertNotDisposed(): void {

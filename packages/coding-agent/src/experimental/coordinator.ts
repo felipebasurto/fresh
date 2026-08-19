@@ -12,7 +12,7 @@ import {
 	spawnInternalProcess,
 } from "./process.ts";
 
-const COORDINATOR_PROTOCOL_VERSION = 1;
+export const COORDINATOR_PROTOCOL_VERSION = 2;
 const COORDINATOR_START_TIMEOUT_MS = 10_000;
 const COORDINATOR_RETRY_MS = 10;
 
