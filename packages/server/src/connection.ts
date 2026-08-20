@@ -1,6 +1,6 @@
 import type { ClientMessageDecoder, RpcTarget } from "@earendil-works/pi-protocol";
 
-import type { MaybePromise } from "./types.ts";
+import type { MaybePromise, RoutedServerServiceAttachment } from "./types.ts";
 
 /** An established, authorized ordered byte connection. */
 export interface ByteConnection {
@@ -26,6 +26,7 @@ export interface ConnectionState {
 	disconnected: boolean;
 	handshake?: Promise<void>;
 	handshakeTimeout: NodeJS.Timeout;
+	serverServices?: RoutedServerServiceAttachment;
 	activeRequests: Map<string, { controller: AbortController; target: RpcTarget }>;
 }
 

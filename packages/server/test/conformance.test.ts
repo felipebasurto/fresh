@@ -7,7 +7,7 @@ import type { PiServerHost } from "../src/types.ts";
 
 const servers = new Set<PiServer>();
 
-function createServer(host: TestServerHost, serverId = "00000000-0000-4000-8000-000000000001"): PiServer {
+function createServer(host: PiServerHost, serverId = "00000000-0000-4000-8000-000000000001"): PiServer {
 	const server = new PiServer(host, { listeners: [], serverId });
 	servers.add(server);
 	return server;
@@ -168,6 +168,76 @@ describe("Session protocol", () => {
 		await expect(
 			client.request("00000000-0000-4000-8000-000000000001", { method: "watch", args: ["session-1"] }),
 		).resolves.toMatchObject({ ok: false, error: { code: "not_supported" } });
+	});
+
+	test("routes opaque server services and publishes attachment changes out of band", async () => {
+		const backing = new TestServerHost();
+		await backing.seed("session-1");
+		let releaseCount = 0;
+		const host: PiServerHost = {
+			sessions: backing.sessions,
+			openSession: (metadata, context) => backing.openSession(metadata, context),
+			serverServices: {
+				attachClient(presentation) {
+					return {
+						async invokeService(call, _publish, context) {
+							if (call.serviceId !== "session-management") throw new Error("Unexpected service");
+							if (call.member === "attach" && typeof call.args[0] === "string") {
+								await presentation.attachSession(call.args[0], context);
+								return undefined;
+							}
+							if (call.member === "detach") {
+								await presentation.detachSession(context);
+								return undefined;
+							}
+							throw new Error("Unexpected service member");
+						},
+						release() {
+							releaseCount += 1;
+						},
+					};
+				},
+			},
+		};
+		const server = createServer(host);
+		const client = connect(server);
+		await client.hello();
+		const attached = client.next((message) => message.type === "attachment" && message.attachment !== null);
+		const attachResponse = client.next((message) => message.type === "response" && message.id === "service-attach");
+		await client.sendMessage({
+			type: "request",
+			id: "service-attach",
+			target: { serverId: "00000000-0000-4000-8000-000000000001" },
+			call: { serviceId: "session-management", member: "attach", args: ["session-1"] },
+		});
+		await expect(attached).resolves.toMatchObject({
+			type: "attachment",
+			attachment: { sessionId: "session-1", attachmentId: expect.any(String) },
+		});
+		await expect(attachResponse).resolves.toEqual({
+			type: "response",
+			id: "service-attach",
+			ok: true,
+		});
+		expect(backing.latestHarness("session-1").attachedClients).toBe(1);
+
+		const detached = client.next((message) => message.type === "attachment" && message.attachment === null);
+		const detachResponse = client.next((message) => message.type === "response" && message.id === "service-detach");
+		await client.sendMessage({
+			type: "request",
+			id: "service-detach",
+			target: { serverId: "00000000-0000-4000-8000-000000000001" },
+			call: { serviceId: "session-management", member: "detach", args: [] },
+		});
+		await expect(detached).resolves.toMatchObject({ type: "attachment", attachment: null });
+		await expect(detachResponse).resolves.toEqual({
+			type: "response",
+			id: "service-detach",
+			ok: true,
+		});
+		expect(backing.latestHarness("session-1").attachedClients).toBe(0);
+		await client.close();
+		await expect.poll(() => releaseCount).toBe(1);
 	});
 
 	test("delivers a lane snapshot before buffered and live watch events", async () => {

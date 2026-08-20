@@ -2,17 +2,19 @@
 
 Experimental local server for the new durable Session and Agent Harness interfaces.
 
-The current slice supports Session discovery, creation, multi-presentation attachment, plugin-service routing, prompting, and optional main-lane observation. `RoutedSessionHandle.attachClient()` returns a presentation-scoped capability. Its optional `invokeService()` forwards an opaque service/member envelope to the selected Session endpoint; the server validates the attachment route but does not load the plugin contract. Its optional `watch()` supplies an authoritative snapshot plus buffered events.
+The current slice supports server- and Session-scoped plugin-service routing, multi-presentation attachment, prompting, and optional main-lane observation. `RoutedServerServiceHost.attachClient()` creates one connection-scoped server service endpoint with narrow attachment-management capabilities. `RoutedSessionHandle.attachClient()` returns a presentation-scoped Session capability. Its optional `invokeService()` forwards an opaque service/member envelope to the selected Session endpoint; the server validates the attachment route but does not load the plugin contract. Its optional `watch()` supplies an authoritative snapshot plus buffered events.
 
-- `list` calls the host's private Session catalog without opening Sessions and projects presentation-safe summaries.
-- `create` asks the host to persist an optional Session ID; private workspace and working-directory data are server-derived.
-- `attach` finds the requested metadata, passes it to the host, and retains the returned routed Session handle in the server.
+- server service calls and subscriptions route opaquely through the connection's `RoutedServerServiceAttachment`;
+- the application-owned `SessionDirectory` projects the private catalog into replicated presentation-safe state;
+- the application-owned `SessionManagement` creates, removes, attaches, and detaches Sessions without exposing route IDs in business results;
+- attachment changes are published out of band after the router installs or clears the live route;
+- the compatibility `list`, `create`, and `attach` operations remain available to low-level clients during migration;
 - `prompt` executes one serializable prompt through the requesting presentation's attachment capability.
 - unknown Session service calls route through `invokeService` without server-side business-payload decoding;
 - service subscription updates remain scoped to the requesting attachment;
 - `watch`, `startWatch`, and `stopWatch` provide snapshot-first lane observation when supported by the host.
 
-A Session may have multiple presentation attachments. Repeating `attach` from one connection is idempotent; every successful attachment has a server-generated `attachmentId`. Session requests carry `{ serverId, sessionId, attachmentId }`, and the server rejects stale or mismatched routes. Losing a connection rejects its local responses but releases its attachment only after admitted prompts settle. The host decides when zero presentation demand and worker-local Harness activity permit worker retirement. Server shutdown closes every routed Session handle, releasing its worker and Session writer ownership.
+A Session may have multiple presentation attachments. Repeating `attach` from one connection is idempotent; every successful attachment has a server-generated `attachmentId` delivered only as routing control data. Session requests carry `{ serverId, sessionId, attachmentId }`, and the server rejects stale or mismatched routes. Losing a connection rejects its local responses but releases its attachment only after admitted prompts settle. The host decides when zero presentation demand and worker-local Harness activity permit worker retirement. Server shutdown closes every routed Session handle, releasing its worker and Session writer ownership.
 
 ```ts
 import { randomUUID } from "node:crypto";

@@ -3,18 +3,29 @@ import { chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type JsonlSessionMetadata, JsonlSessionRepo, TODO_CONTEXT } from "@earendil-works/pi-agent-core";
+import {
+	BACKGROUND_CONTEXT,
+	type JsonlSessionMetadata,
+	JsonlSessionRepo,
+	TODO_CONTEXT,
+} from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { PiClient, PiDisconnectedError, PiServerError } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, type UnixServerRoute } from "@earendil-works/pi-client/unix";
-import { isServerId, type ServerId } from "@earendil-works/pi-protocol";
-import type { PiServer, PiServerHost } from "@earendil-works/pi-server";
+import { isServerId, type ServerId, type SessionSummary } from "@earendil-works/pi-protocol";
+import {
+	type PiServer,
+	type PiServerHost,
+	SessionAmbiguousError,
+	SessionNotFoundError,
+} from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { CoordinatorConnection, type CoordinatorStartupLease, ensureCoordinator } from "./coordinator.ts";
 import { consumeInternalProcessRole, spawnInternalProcess, terminateInternalProcess } from "./process.ts";
+import { createExperimentalServerServices } from "./services/server.ts";
 import { SessionWorkerManager } from "./session-worker-manager.ts";
 
 export const ENV_SERVER_DIR = "PI_SERVER_DIR";
@@ -320,38 +331,72 @@ interface StartServerBackendOptions {
 	readonly sessionDir?: string;
 }
 
+interface RunningServerBackend extends RunningServer {
+	refreshSessions(): Promise<void>;
+}
+
 async function startServerBackend(
 	options: StartServerBackendOptions,
 	workers: SessionWorkerManager,
 	onConnectionCountChanged?: (count: number) => void,
-): Promise<RunningServer> {
+): Promise<RunningServerBackend> {
 	const serverId = options.serverId;
 	const sessionDir = resolveSessionDirectory(options.sessionDir);
 	const executionEnv = new NodeExecutionEnv({ cwd: process.cwd() });
 	const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot: sessionDir });
-	const host: PiServerHost<JsonlSessionMetadata> = {
-		sessions: {
-			list: async (context) => {
-				const sessions = new Map(
-					(await repo.list(undefined, context)).map((metadata) => [metadata.path, metadata]),
-				);
-				for (const metadata of workers.trackedSessions) sessions.set(metadata.path, metadata);
-				return [...sessions.values()];
-			},
-			create: async (createOptions, context) => {
-				const session = await repo.create({ ...createOptions, cwd: process.cwd() }, context);
-				try {
-					return session.metadata;
-				} finally {
-					await session.close(context);
-				}
-			},
+	const listSessions: PiServerHost<JsonlSessionMetadata>["sessions"]["list"] = async (context) => {
+		const sessions = new Map((await repo.list(undefined, context)).map((metadata) => [metadata.path, metadata]));
+		for (const metadata of workers.trackedSessions) sessions.set(metadata.path, metadata);
+		return [...sessions.values()];
+	};
+	const createSession: PiServerHost<JsonlSessionMetadata>["sessions"]["create"] = async (createOptions, context) => {
+		const session = await repo.create({ ...createOptions, cwd: process.cwd() }, context);
+		try {
+			return session.metadata;
+		} finally {
+			await session.close(context);
+		}
+	};
+	const summarize = (metadata: JsonlSessionMetadata): SessionSummary => ({
+		serverId,
+		sessionId: metadata.id,
+		createdAt: metadata.createdAt,
+	});
+	const closeStorage = async (): Promise<void> => {
+		const cleanup = await Promise.allSettled([repo.close(TODO_CONTEXT), executionEnv.cleanup(TODO_CONTEXT)]);
+		const errors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+		if (errors.length === 1) throw errors[0];
+		if (errors.length > 1) throw new AggregateError(errors, "Experimental session storage cleanup failed");
+	};
+	const serverServices = await createExperimentalServerServices({
+		list: async (context) =>
+			(await listSessions(context))
+				.map(summarize)
+				.sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.createdAt - right.createdAt),
+		create: async (createOptions, context) => summarize(await createSession(createOptions, context)),
+		remove: async (sessionId, context) => {
+			const matches = (await listSessions(context)).filter((metadata) => metadata.id === sessionId);
+			if (matches.length === 0) throw new SessionNotFoundError(`Unknown session: ${sessionId}`);
+			if (matches.length > 1) throw new SessionAmbiguousError();
+			await workers.closeSession(matches[0]!, context);
+			await repo.delete(matches[0]!, context);
 		},
+	}).catch(async (error: unknown) => {
+		try {
+			await closeStorage();
+		} catch (cleanupError) {
+			throw new AggregateError([error, cleanupError], "Server service startup and cleanup failed");
+		}
+		throw error;
+	});
+	const host: PiServerHost<JsonlSessionMetadata> = {
+		serverServices: serverServices.host,
+		sessions: { list: listSessions, create: createSession },
 		openSession: (metadata, context) => workers.openSession(metadata, context),
 	};
 	const socketPath = options.path;
 	const closeCatalog = async (): Promise<void> => {
-		const cleanup = await Promise.allSettled([repo.close(TODO_CONTEXT), executionEnv.cleanup(TODO_CONTEXT)]);
+		const cleanup = await Promise.allSettled([serverServices.dispose(), closeStorage()]);
 		const errors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
 		if (errors.length === 1) throw errors[0];
 		if (errors.length > 1) throw new AggregateError(errors, "Experimental session catalog cleanup failed");
@@ -392,6 +437,7 @@ async function startServerBackend(
 		server,
 		workerPids: workers.workerPids,
 		closed,
+		refreshSessions: () => serverServices.refresh(BACKGROUND_CONTEXT),
 		close() {
 			closePromise ??= server.close().then(
 				() => closed,
@@ -414,7 +460,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 	const directory = resolveServerDirectory(options.directory);
 	const { serverId, release } = await acquireServerProfile(directory, options.serverId ?? process.env[ENV_SERVER_ID]);
 	const lifetime = new ServerLifetime(options.keepAlive ?? true);
-	let backend: RunningServer | undefined;
+	let backend: RunningServerBackend | undefined;
 	let coordinator: CoordinatorConnection | undefined;
 	let startupLease: CoordinatorStartupLease | undefined;
 	let workers: SessionWorkerManager | undefined;
@@ -440,6 +486,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 		startupLease.close();
 		startupLease = undefined;
 		await workers.discover(coordinator.peerIds);
+		await backend.refreshSessions();
 
 		const activeBackend = backend;
 		const activeCoordinator = coordinator;

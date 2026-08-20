@@ -429,14 +429,21 @@ describe("protocol validation", () => {
 		).toThrow(ProtocolValidationError);
 	});
 
-	test("validates attach results", () => {
-		const message: ServerMessage = {
-			type: "response",
-			id: "request-1",
-			ok: true,
-			result: { sessionId: "session-1" },
+	test("validates attachment route updates", () => {
+		const attached: ServerMessage = {
+			type: "attachment",
+			attachment: {
+				serverId: "00000000-0000-4000-8000-000000000001",
+				sessionId: "session-1",
+				attachmentId: "attachment-1",
+			},
 		};
-		expect(parseServerMessage(message)).toEqual(message);
+		const detached: ServerMessage = { type: "attachment", attachment: null };
+		expect(parseServerMessage(attached)).toEqual(attached);
+		expect(parseServerMessage(detached)).toEqual(detached);
+		expect(() => parseServerMessage({ ...attached, attachment: { sessionId: "session-1" } })).toThrow(
+			ProtocolValidationError,
+		);
 	});
 
 	test.each([

@@ -345,17 +345,24 @@ export const ServiceEventEnvelopeSchema = StrictObject({
 	subscriptionId: IdSchema,
 	update: ServiceProviderUpdateSchema,
 });
+/** Out-of-band update to this presentation's selected Session route. */
+export const AttachmentEnvelopeSchema = StrictObject({
+	type: Type.Literal("attachment"),
+	attachment: Type.Union([SessionTargetSchema, Type.Null()]),
+});
 export const ServerMessageSchema = Type.Union([
 	ServerHelloSchema,
 	ServerHelloErrorSchema,
 	ResponseEnvelopeSchema,
 	EventEnvelopeSchema,
 	ServiceEventEnvelopeSchema,
+	AttachmentEnvelopeSchema,
 ]);
 export type ServerHello = Static<typeof ServerHelloSchema>;
 export type ServerHelloError = Static<typeof ServerHelloErrorSchema>;
 export type ResponseEnvelope = Static<typeof ResponseEnvelopeSchema>;
 export type EventEnvelope = Static<typeof EventEnvelopeSchema>;
 export type ServiceEventEnvelope = Static<typeof ServiceEventEnvelopeSchema>;
+export type AttachmentEnvelope = Static<typeof AttachmentEnvelopeSchema>;
 export type ServerEventEnvelope = EventEnvelope | ServiceEventEnvelope;
 export type ServerMessage = Static<typeof ServerMessageSchema>;

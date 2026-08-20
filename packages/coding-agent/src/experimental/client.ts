@@ -1,9 +1,12 @@
 import { basename } from "node:path";
+import { BACKGROUND_CONTEXT, type RemoteServiceNamespace, type RemoteState } from "@earendil-works/pi-agent-core";
 import { PiClient } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
 import { isServerId, type LaneEvent, type SessionAddress } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
+import { createPiServerServiceNamespace } from "./services/connection.ts";
+import { SessionDirectory, SessionManagement, type SessionManagementService } from "./services/sessions.ts";
 
 export type ClientResult =
 	| {
@@ -53,8 +56,14 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 		}
 	}
 	const openedClients = new Set<PiClient>();
+	const serviceNamespaces = new Set<RemoteServiceNamespace>();
 	if (activatedClient) openedClients.add(activatedClient);
-	const discovered: { route: UnixServerRoute; sessionIds: string[]; client: PiClient }[] = [];
+	const discovered: {
+		route: UnixServerRoute;
+		sessionIds: string[];
+		client: PiClient;
+		management: SessionManagementService;
+	}[] = [];
 
 	try {
 		for (const route of routes) {
@@ -66,8 +75,14 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 				}));
 			activatedClient = undefined;
 			openedClients.add(client);
-			const sessions = await client.listSessions();
-			discovered.push({ route, sessionIds: sessions.map(({ sessionId }) => sessionId), client });
+			const services = createPiServerServiceNamespace(client, {
+				services: [SessionDirectory, SessionManagement],
+			});
+			serviceNamespaces.add(services);
+			const directory = services.use(SessionDirectory);
+			const management = services.use(SessionManagement);
+			const state = await waitForState(directory.state);
+			discovered.push({ route, sessionIds: state.sessions.map(({ sessionId }) => sessionId), client, management });
 		}
 
 		let sessionId = command.sessionId;
@@ -91,7 +106,7 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 				throw new Error("Client prompt requires exactly one discovered server to create a Session");
 			}
 			match = discovered[0]!;
-			sessionId = (await match.client.createSession({})).sessionId;
+			sessionId = (await match.management.create({}, BACKGROUND_CONTEXT)).sessionId;
 		} else {
 			const selectedSessionId = sessionId;
 			const matches = discovered.filter((candidate) => candidate.sessionIds.includes(selectedSessionId));
@@ -106,10 +121,10 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 					throw new Error(`No discovered server contains session ${selectedSessionId}`);
 				}
 				match = discovered[0]!;
-				await match.client.createSession({ id: selectedSessionId });
+				await match.management.create({ id: selectedSessionId }, BACKGROUND_CONTEXT);
 			}
 		}
-		await match.client.attachSession({ serverId: match.route.serverId, sessionId });
+		await match.management.attach(sessionId, BACKGROUND_CONTEXT);
 		if (command.prompt === undefined) {
 			return { kind: "attached", serverId: match.route.serverId, sessionId };
 		}
@@ -133,8 +148,20 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 			await watch?.dispose();
 		}
 	} finally {
+		await Promise.all([...serviceNamespaces].map((services) => services.dispose(BACKGROUND_CONTEXT)));
 		await Promise.all([...openedClients].map((client) => client.dispose()));
 	}
+}
+
+function waitForState<T>(state: RemoteState<T>): Promise<T> {
+	if (state.value !== undefined) return Promise.resolve(state.value);
+	return new Promise((resolve) => {
+		let unsubscribe: (() => void) | undefined;
+		unsubscribe = state.subscribe((value) => {
+			queueMicrotask(() => unsubscribe?.());
+			resolve(value);
+		});
+	});
 }
 
 function routeFromExplicitPath(path: string): UnixServerRoute {

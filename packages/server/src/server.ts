@@ -1,4 +1,10 @@
-import { BACKGROUND_CONTEXT, type SessionMetadata, TODO_CONTEXT, withAbortSignal } from "@earendil-works/pi-agent-core";
+import {
+	BACKGROUND_CONTEXT,
+	RemoteServiceError,
+	type SessionMetadata,
+	TODO_CONTEXT,
+	withAbortSignal,
+} from "@earendil-works/pi-agent-core";
 import {
 	type CancelEnvelope,
 	type ClientHello,
@@ -40,6 +46,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 	/** Resolves after shutdown, or rejects when listener or routed-Session cleanup fails. */
 	readonly closed: Promise<void>;
 
+	private readonly host: PiServerHost<TMetadata>;
 	private readonly listeners: readonly PiServerListener[];
 	private readonly maxFrameLength: number;
 	private readonly handshakeTimeoutMs: number;
@@ -57,6 +64,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 
 	constructor(host: PiServerHost<TMetadata>, options: PiServerOptions) {
 		const resolved = resolveOptions(options);
+		this.host = host;
 		this.listeners = options.listeners;
 		this.serverId = options.serverId;
 		this.maxFrameLength = resolved.maxFrameLength;
@@ -65,7 +73,14 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 		this.onError = options.onError;
 		this.sessions = new SessionRouter({
 			host,
+			serverId: this.serverId,
 			isClosing: () => this.closing,
+			publishAttachment: async (client, attachment) => {
+				await this.sendMessage(client as ConnectionState, {
+					type: "attachment",
+					attachment: attachment ?? null,
+				});
+			},
 			reportError: (error) => this.reportError(error),
 		});
 		this.closed = new Promise((resolve, reject) => {
@@ -251,6 +266,24 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 		}
 
 		if (this.closing || state.disconnected || state.stage !== "handshaking" || state.connection.closed) return;
+		const serviceHost = this.host.serverServices;
+		if (serviceHost !== undefined) {
+			const services = await serviceHost.attachClient(
+				{
+					attachSession: async (sessionId, context) => {
+						await this.sessions.attachClient(state, sessionId, context);
+					},
+					detachSession: (context) => this.sessions.detachClient(state, context),
+					prepareSessionRemoval: (sessionId, context) => this.sessions.removeSession(sessionId, context),
+				},
+				TODO_CONTEXT,
+			);
+			if (this.closing || state.disconnected || state.stage !== "handshaking" || state.connection.closed) {
+				await services.release(TODO_CONTEXT);
+				return;
+			}
+			state.serverServices = services;
+		}
 		const sent = await this.sendMessage(state, {
 			type: "hello",
 			version: PROTOCOL_VERSION,
@@ -288,7 +321,15 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 			if (envelope.target.serverId !== this.serverId) throw new WrongServerError();
 			let result: ProtocolRpcResult;
 			const call = decodeServiceRpcCall(envelope.call);
-			if (call !== undefined) {
+			if (!("sessionId" in envelope.target) && state.serverServices !== undefined && call?.method !== "list") {
+				result = await state.serverServices.invokeService(
+					envelope.call,
+					async (subscriptionId, update) => {
+						await this.sendMessage(state, { type: "service_event", subscriptionId, update });
+					},
+					context,
+				);
+			} else if (call !== undefined) {
 				result = await this.sessions.executeCall(
 					call,
 					envelope.target,
@@ -354,7 +395,12 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 		}
 		connection.activeRequests.clear();
 		if (this.connections.delete(connection)) this.notifyConnectionCountChanged();
-		void Promise.allSettled([this.sessions.disconnect(connection, TODO_CONTEXT)]).then((results) => {
+		const serverServices = connection.serverServices;
+		delete connection.serverServices;
+		void Promise.allSettled([
+			this.sessions.disconnect(connection, TODO_CONTEXT),
+			serverServices?.release(TODO_CONTEXT),
+		]).then((results) => {
 			for (const result of results) if (result.status === "rejected") this.reportError(result.reason);
 		});
 	}
@@ -420,7 +466,7 @@ export class PiServer<TMetadata extends SessionMetadata = SessionMetadata> {
 	}
 
 	private toProtocolError(error: unknown): ProtocolError {
-		if (error instanceof PiServerError) {
+		if (error instanceof PiServerError || error instanceof RemoteServiceError) {
 			return { code: error.code, message: error.message };
 		}
 		if (error instanceof ProtocolValidationError) {

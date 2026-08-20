@@ -46,6 +46,32 @@ describe("PiClient service operations", () => {
 		await client.dispose();
 	});
 
+	test("updates attachment state from out-of-band server routing", async () => {
+		const server = new MemoryByteServer();
+		const client = await connectClient(server);
+		const changes: Array<string | undefined> = [];
+		client.onAttachmentChange((attachment) => changes.push(attachment?.sessionId));
+
+		const attaching = client.attachSession("session-1");
+		await server.waitForMessages(2);
+		server.send({
+			type: "attachment",
+			attachment: {
+				serverId: "00000000-0000-4000-8000-000000000001",
+				sessionId: "session-1",
+				attachmentId: "attachment-1",
+			},
+		});
+		server.send({ type: "response", id: "request-1", ok: true });
+		await expect(attaching).resolves.toEqual({ sessionId: "session-1", attachmentId: "attachment-1" });
+		expect(client.attachment).toMatchObject({ sessionId: "session-1", attachmentId: "attachment-1" });
+
+		server.send({ type: "attachment", attachment: null });
+		expect(client.attachment).toBeUndefined();
+		expect(changes).toEqual(["session-1", undefined]);
+		await client.dispose();
+	});
+
 	test("addresses Session operations to the configured server", async () => {
 		const server = new MemoryByteServer();
 		const client = await connectClient(server);

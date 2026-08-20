@@ -1,4 +1,5 @@
 import {
+	type AttachmentEnvelope,
 	createRpcClient,
 	createServiceSubscribeCall,
 	createServiceUnsubscribeCall,
@@ -109,6 +110,10 @@ export class PiClient {
 		return this.#connection.state === "connected";
 	}
 
+	get serverId(): string {
+		return this.#options.serverId;
+	}
+
 	get hello(): ServerHello | undefined {
 		return this.#hello;
 	}
@@ -172,9 +177,31 @@ export class PiClient {
 		if (typeof session !== "string" && session.serverId !== this.#options.serverId) {
 			throw new PiServerError({ code: "wrong_server", message: "Session belongs to another server" });
 		}
-		const attached = await this.#rpc.attach(sessionId);
-		this.#setAttachment({ serverId: this.#options.serverId, ...attached });
-		return attached;
+		const result = await this.#request(
+			{ serverId: this.#options.serverId },
+			{ serviceId: "session-management", member: "attach", args: [sessionId] },
+		);
+		if (
+			typeof result === "object" &&
+			result !== null &&
+			"sessionId" in result &&
+			"attachmentId" in result &&
+			typeof result.sessionId === "string" &&
+			typeof result.attachmentId === "string"
+		) {
+			this.#setAttachment({
+				serverId: this.#options.serverId,
+				sessionId: result.sessionId,
+				attachmentId: result.attachmentId,
+			});
+		}
+		const attachment = this.#attachment;
+		if (attachment?.sessionId !== sessionId) {
+			const error = new ProtocolValidationError("Session attach completed without a matching attachment route");
+			this.#connection.fail(error);
+			throw error;
+		}
+		return { sessionId, attachmentId: attachment.attachmentId };
 	}
 
 	promptSession(sessionId: string, text: string, images?: PromptImage[]): Promise<ServiceRpcResult<"prompt">>;
@@ -350,7 +377,15 @@ export class PiClient {
 		return promise;
 	}
 
-	#handleMessage(message: ResponseEnvelope | ServerEventEnvelope): void {
+	#handleMessage(message: ResponseEnvelope | ServerEventEnvelope | AttachmentEnvelope): void {
+		if (message.type === "attachment") {
+			if (message.attachment !== null && message.attachment.serverId !== this.#options.serverId) {
+				this.#connection.fail(new ProtocolValidationError("Attachment update belongs to another server"));
+				return;
+			}
+			this.#setAttachment(message.attachment ?? undefined);
+			return;
+		}
 		if (message.type === "event") {
 			const active = this.#watchListeners.get(message.watchId);
 			if (active === undefined) return;

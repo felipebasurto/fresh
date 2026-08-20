@@ -1,6 +1,6 @@
 # Coding-Agent Application Hosts and Plugin Facets
 
-> **Status:** Tentative design input, not a normative contract or implementation handoff. The transport-neutral service token, provider, singleton `use()`, keyed `observe()`, and `RemoteState` substrate now have an experimental implementation; the application host contexts, plugin kernel, events, references, telemetry propagation, and most example facets remain illustrative. Reconcile this design with `rpc.md`, `telemetry.md`, and the final harness contract before adding it to `harness.md` or creating a work package.
+> **Status:** Tentative design input, not a normative contract or implementation handoff. The transport-neutral service token, provider, singleton `use()`, keyed `observe()`, and `RemoteState` substrate now have an experimental implementation, including `Models`, `SessionDirectory`, and `SessionManagement` vertical slices. The application host contexts, plugin kernel, events, references, telemetry propagation, and most other example facets remain illustrative. Reconcile this design with `rpc.md`, `telemetry.md`, and the final harness contract before adding it to `harness.md` or creating a work package.
 
 This document assumes you already understand `AgentHarness`, `AgentLane`, `Session`, `SessionTree`, `SessionRepo`, invocation `Context`, and telemetry. Read `rpc.md` for wire frames, remote references, subscriptions, and trace carriers, and `telemetry.md` for context propagation and cancellation semantics.
 

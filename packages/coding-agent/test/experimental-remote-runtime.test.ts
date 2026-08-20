@@ -7,8 +7,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { runClient } from "../src/experimental/client.ts";
 import * as processRuntime from "../src/experimental/process.ts";
 import { activateServer, type RunningServer, startServer } from "../src/experimental/server.ts";
-import { createPiSessionServiceNamespace } from "../src/experimental/services/connection.ts";
+import {
+	createPiServerServiceNamespace,
+	createPiSessionServiceNamespace,
+} from "../src/experimental/services/connection.ts";
 import { Models } from "../src/experimental/services/models.ts";
+import { SessionDirectory, SessionManagement } from "../src/experimental/services/sessions.ts";
 import {
 	configureExperimentalWorkerModel,
 	createExperimentalSessions,
@@ -275,6 +279,61 @@ describe("experimental durable server composition", () => {
 		expect(runtime.workerPids.size).toBe(0);
 		const socket = await lstat(runtime.socketPath);
 		expect(socket.mode & 0o777).toBe(0o600);
+	});
+
+	test("hydrates and mutates server Session services across framed clients", async () => {
+		const { runtime } = await makeServer();
+		const firstClient = await PiClient.connect({
+			serverId: runtime.serverId,
+			transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
+		});
+		const secondClient = await PiClient.connect({
+			serverId: runtime.serverId,
+			transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
+		});
+		clients.add(firstClient);
+		clients.add(secondClient);
+		const errors: Error[] = [];
+		const firstServices = createPiServerServiceNamespace(firstClient, {
+			services: [SessionDirectory, SessionManagement],
+			onError: (error) => errors.push(error),
+		});
+		const secondServices = createPiServerServiceNamespace(secondClient, {
+			services: [SessionDirectory, SessionManagement],
+			onError: (error) => errors.push(error),
+		});
+		const firstDirectory = firstServices.use(SessionDirectory);
+		const secondDirectory = secondServices.use(SessionDirectory);
+		const firstManagement = firstServices.use(SessionManagement);
+		const secondManagement = secondServices.use(SessionManagement);
+
+		await vi.waitFor(() => {
+			expect(firstDirectory.state.value?.sessions.map(({ sessionId }) => sessionId)).toEqual(["demo-1", "demo-2"]);
+			expect(secondDirectory.state.value).toEqual(firstDirectory.state.value);
+		});
+		await firstManagement.create({ id: "demo-3" }, BACKGROUND_CONTEXT);
+		await vi.waitFor(() => {
+			expect(firstDirectory.state.value?.sessions.map(({ sessionId }) => sessionId)).toContain("demo-3");
+			expect(secondDirectory.state.value).toEqual(firstDirectory.state.value);
+		});
+
+		await Promise.all([
+			firstManagement.attach("demo-1", BACKGROUND_CONTEXT),
+			secondManagement.attach("demo-1", BACKGROUND_CONTEXT),
+		]);
+		expect(firstClient.attachment?.sessionId).toBe("demo-1");
+		expect(secondClient.attachment?.sessionId).toBe("demo-1");
+		await firstManagement.remove("demo-1", BACKGROUND_CONTEXT);
+		await vi.waitFor(() => {
+			expect(firstClient.attachment).toBeUndefined();
+			expect(secondClient.attachment).toBeUndefined();
+			expect(firstDirectory.state.value?.sessions.map(({ sessionId }) => sessionId)).not.toContain("demo-1");
+			expect(secondDirectory.state.value).toEqual(firstDirectory.state.value);
+		});
+		await secondManagement.detach(BACKGROUND_CONTEXT);
+		expect(errors).toEqual([]);
+
+		await Promise.all([firstServices.dispose(BACKGROUND_CONTEXT), secondServices.dispose(BACKGROUND_CONTEXT)]);
 	});
 
 	test("shares one worker across concurrent Session attachments", async () => {

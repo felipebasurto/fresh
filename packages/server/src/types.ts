@@ -38,6 +38,28 @@ export interface RoutedSessionAttachment {
 	release(context: Context): MaybePromise<void>;
 }
 
+/** Presentation-scoped routing capabilities available to server service implementations. */
+export interface RoutedServerPresentation {
+	attachSession(sessionId: string, context: Context): Promise<void>;
+	detachSession(context: Context): Promise<void>;
+	/** Release routed attachments and handles before the application deletes durable metadata. */
+	prepareSessionRemoval(sessionId: string, context: Context): Promise<void>;
+}
+
+/** One connection's server-scoped service endpoint. */
+export interface RoutedServerServiceAttachment {
+	invokeService(
+		call: ProtocolRpcCall,
+		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => MaybePromise<void>,
+		context: Context,
+	): Promise<ProtocolRpcResult>;
+	release(context: Context): MaybePromise<void>;
+}
+
+export interface RoutedServerServiceHost {
+	attachClient(presentation: RoutedServerPresentation, context: Context): MaybePromise<RoutedServerServiceAttachment>;
+}
+
 /** Snapshot-first observation handle supplied by a routed Session attachment. */
 export interface RoutedSessionWatch {
 	readonly snapshot: LaneSnapshot;
@@ -55,6 +77,7 @@ export interface RoutedSessionHandle {
 
 /** Application capabilities used by server-wide management and Session routing. */
 export interface PiServerHost<TMetadata extends SessionMetadata = SessionMetadata> {
+	readonly serverServices?: RoutedServerServiceHost;
 	readonly sessions: {
 		list(context: Context): Promise<TMetadata[]>;
 		create(options: SessionCreateOptions, context: Context): Promise<TMetadata>;

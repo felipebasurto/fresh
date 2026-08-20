@@ -177,6 +177,11 @@ export class SessionWorkerManager {
 		return this.#routedHandle(await this.#launch(metadata, context));
 	}
 
+	async closeSession(metadata: JsonlSessionMetadata, context: Context): Promise<void> {
+		const worker = this.#workersBySession.get(metadata.path) ?? (await this.#pending.get(metadata.path)?.promise);
+		if (worker !== undefined) await this.#stopWorker(worker, context);
+	}
+
 	#routedHandle(worker: WorkerRecord): RoutedSessionHandle {
 		return {
 			terminated: worker.terminated,

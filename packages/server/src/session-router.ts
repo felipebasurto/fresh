@@ -14,6 +14,7 @@ import {
 	type ServiceRpcCall,
 	type ServiceRpcResultUnion,
 	type SessionSummary,
+	type SessionTarget,
 } from "@earendil-works/pi-protocol";
 import {
 	NotSupportedError,
@@ -64,7 +65,9 @@ interface HostedSession {
 
 interface SessionRouterOptions<TMetadata extends SessionMetadata> {
 	host: PiServerHost<TMetadata>;
+	serverId: string;
 	isClosing: () => boolean;
+	publishAttachment(client: object, attachment: SessionTarget | undefined, context: Context): Promise<void>;
 	reportError: (error: unknown) => void;
 }
 
@@ -102,7 +105,7 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 				attach: async ({ client, context, target }, sessionId) => {
 					this.requireServerTarget(target);
 					if (this.options.isClosing()) throw new ServerDrainingError();
-					return this.runForClient(client, () => this.attachClient(client, sessionId, context));
+					return this.attachClient(client, sessionId, context);
 				},
 				prompt: async ({ client, context, target }, prompt) => {
 					const admitted = await this.runForClient(client, () =>
@@ -144,12 +147,47 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		return admitted.result;
 	}
 
+	attachClient(
+		client: object,
+		sessionId: string,
+		context: Context,
+	): Promise<{ sessionId: string; attachmentId: string }> {
+		if (this.options.isClosing()) return Promise.reject(new ServerDrainingError());
+		return this.runForClient(client, () => this.attachClientNow(client, sessionId, context));
+	}
+
+	detachClient(client: object, context: Context): Promise<void> {
+		return this.runForClient(client, async () => {
+			const attachment = this.attachmentsByClient.get(client);
+			if (attachment) await this.releaseAttachment(attachment, context);
+		});
+	}
+
+	async removeSession(sessionId: string, context: Context): Promise<void> {
+		if (this.options.isClosing()) throw new ServerDrainingError();
+		const hosted = this.hostedSessions.get(sessionId);
+		if (hosted === undefined) return;
+		const errors: unknown[] = [];
+		const releases = await Promise.allSettled(
+			[...hosted.attachments].map((attachment) => this.releaseAttachment(attachment, context)),
+		);
+		for (const result of releases) if (result.status === "rejected") errors.push(result.reason);
+		try {
+			await hosted.handle.close(context);
+		} catch (error) {
+			errors.push(error);
+		}
+		if (this.hostedSessions.get(sessionId) === hosted) this.hostedSessions.delete(sessionId);
+		if (errors.length === 1) throw errors[0];
+		if (errors.length > 1) throw new AggregateError(errors, `Failed to close Session ${sessionId}`);
+	}
+
 	async disconnect(client: object, context: Context): Promise<void> {
 		this.disconnectedClients.add(client);
 		try {
 			await this.runForClient(client, async () => {
 				const attachment = this.attachmentsByClient.get(client);
-				if (attachment) await this.releaseAttachment(attachment, context);
+				if (attachment) await this.releaseAttachment(attachment, context, false);
 			});
 		} finally {
 			this.disconnectedClients.delete(client);
@@ -213,7 +251,7 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		return result;
 	}
 
-	private async attachClient(
+	private async attachClientNow(
 		client: object,
 		sessionId: string,
 		context: Context,
@@ -223,7 +261,7 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		if (current?.session.id === sessionId) return { sessionId, attachmentId: current.id };
 		const hosted = await this.acquire(sessionId, context);
 		if (this.options.isClosing() || this.disconnectedClients.has(client)) throw new ServerDrainingError();
-		if (current) await this.releaseAttachment(current, context);
+		if (current) await this.releaseAttachment(current, context, false);
 		const attachment: ClientAttachment = {
 			id: randomUUID(),
 			client,
@@ -249,6 +287,11 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 			throw new ServerDrainingError();
 		}
 		this.attachmentsByClient.set(client, attachment);
+		await this.options.publishAttachment(
+			client,
+			{ serverId: this.options.serverId, sessionId, attachmentId: attachment.id },
+			context,
+		);
 		return { sessionId, attachmentId: attachment.id };
 	}
 
@@ -368,7 +411,7 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		if ("sessionId" in target) throw new ProtocolValidationError("Server operation cannot target a Session");
 	}
 
-	private releaseAttachment(attachment: ClientAttachment, context: Context): Promise<void> {
+	private releaseAttachment(attachment: ClientAttachment, context: Context, publish = true): Promise<void> {
 		attachment.releasing ??= (async () => {
 			const errors: unknown[] = [];
 			try {
@@ -389,16 +432,17 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 				if (errors.length === 1) throw errors[0];
 				if (errors.length > 1) throw new AggregateError(errors, "Failed to release Session attachment");
 			} finally {
-				this.clearAttachment(attachment);
+				await this.clearAttachment(attachment, context, publish);
 			}
 		})();
 		return attachment.releasing;
 	}
 
-	private clearAttachment(attachment: ClientAttachment): void {
+	private async clearAttachment(attachment: ClientAttachment, context: Context, publish: boolean): Promise<void> {
 		attachment.session.attachments.delete(attachment);
 		if (this.attachmentsByClient.get(attachment.client) === attachment) {
 			this.attachmentsByClient.delete(attachment.client);
+			if (publish) await this.options.publishAttachment(attachment.client, undefined, context);
 		}
 	}
 
