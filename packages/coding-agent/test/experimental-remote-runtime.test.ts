@@ -444,12 +444,17 @@ describe("experimental durable server composition", () => {
 		await expect(services.dispose(BACKGROUND_CONTEXT)).resolves.toBeUndefined();
 	});
 
-	test("routes prompting through the worker-owned Harness and sanitizes runtime failures", async () => {
+	test("routes Chat through the worker-owned service provider and sanitizes runtime failures", async ({
+		onTestFinished,
+	}) => {
+		const legacyPrompt = vi.spyOn(Client.prototype, "promptSession");
+		onTestFinished(() => legacyPrompt.mockRestore());
 		const { directory } = await makeServer();
 
 		await expect(
 			runClient({ command: "client", sessionId: "demo-1", prompt: "question" }, { directory }),
 		).rejects.toThrow("Internal server error");
+		expect(legacyPrompt).not.toHaveBeenCalled();
 	});
 
 	// Runtime2 cannot complete no-tool runs yet; keep the framed prompt path covered as a sanitized failure above.

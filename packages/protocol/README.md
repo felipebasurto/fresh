@@ -14,7 +14,7 @@ The transport carries `{ serviceId, instance?, member, args }` calls. A server t
 
 `PromptArguments` contains one serializable `AgentLane.prompt()` overload. `PromptMessage` is the protocol's closed set of built-in message DTOs; application-defined `AgentMessage` extensions are not accepted implicitly. `RunResult` is the wire-safe structural equivalent of the Harness result and contains no JavaScript `Error` instances.
 
-The temporary `ServiceRpc` manifest still backs client compatibility methods and transcript operations while those features migrate to plugin services. Experimental presentations consume server-owned `SessionDirectory` and `SessionManagement` services; Session plugin calls route opaquely to the attached worker, where the provider validates and invokes them.
+The temporary `ServiceRpc` manifest still backs low-level client compatibility methods and transcript operations while those features migrate to plugin services. Experimental presentations consume server-owned `SessionDirectory` and `SessionManagement` services plus the worker-owned `Chat` service; Session plugin calls route opaquely to the attached worker, where the provider validates and invokes them.
 
 A lane watch uses three RPCs so snapshot ordering does not depend on response/event scheduling: `watch()` creates a buffering watch and returns its authoritative snapshot, `startWatch()` flushes buffered events and begins live delivery, and `stopWatch()` releases it. Events carry their watch ID. Streaming message updates carry compact assistant-message frames rather than cumulative partial messages. Reconnection creates a new watch and snapshot rather than replaying old events.
 

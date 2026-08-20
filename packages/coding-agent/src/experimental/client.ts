@@ -2,10 +2,11 @@ import { basename } from "node:path";
 import { BACKGROUND_CONTEXT, type RemoteServiceNamespace, type RemoteState } from "@earendil-works/pi-agent-core";
 import { Client } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
-import { isServerId, type LaneEvent, type SessionAddress } from "@earendil-works/pi-protocol";
+import { isServerId, type LaneEvent, type PromptMessage, type SessionAddress } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
-import { createServerServiceNamespace } from "./services/connection.ts";
+import { Chat, type ChatPromptResponse } from "./services/chat.ts";
+import { createServerServiceNamespace, createSessionServiceNamespace } from "./services/connection.ts";
 import { SessionDirectory, SessionManagement, type SessionManagementService } from "./services/sessions.ts";
 
 export type ClientResult =
@@ -19,7 +20,7 @@ export type ClientResult =
 export interface RunClientOptions {
 	/** Directory searched when --connect is omitted. Defaults to PI_SERVER_DIR or ~/.pi/server. */
 	readonly directory?: string;
-	/** Reserved for snapshot-ordered main-lane events once remote harness prompting is implemented. */
+	/** Receives snapshot-ordered main-lane events while a prompt is active. */
 	readonly onEvent?: (event: LaneEvent) => void | Promise<void>;
 }
 
@@ -129,28 +130,45 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 			return { kind: "attached", serverId: match.route.serverId, sessionId };
 		}
 
-		const watch = options.onEvent === undefined ? undefined : await match.client.watchSession(sessionId);
-		if (watch && options.onEvent) await watch.start(options.onEvent);
+		const sessionServices = createSessionServiceNamespace(match.client, { services: [Chat] });
+		serviceNamespaces.add(sessionServices);
+		const chat = sessionServices.use(Chat);
+		const completedText = new Map<string, string>();
+		// Chat deliberately returns no transcript content. Keep the compatibility watch until Transcript uses RemoteEvents.
+		const watch = await match.client.watchSession(sessionId);
+		await watch.start(async (event) => {
+			if (event.type === "message_end" && event.runId !== undefined && event.message.role === "assistant") {
+				completedText.set(event.runId, messageText(event.message));
+			} else if (event.type === "run_end" && "finalMessage" in event) {
+				completedText.set(event.runId, messageText(event.finalMessage));
+			}
+			await options.onEvent?.(event);
+		});
+		let response: ChatPromptResponse;
 		try {
-			const result = await match.client.promptSession(sessionId, command.prompt);
-			if (!result.ok) throw new Error(result.error.message);
-			const value = result.value;
-			if (value.kind === "failed") throw new Error(value.error.message);
-			const text =
-				"finalMessage" in value
-					? value.finalMessage.content
-							.filter((content) => content.type === "text")
-							.map((content) => content.text)
-							.join("")
-					: "";
-			return { kind: "prompted", serverId: match.route.serverId, sessionId, text };
+			response = await chat.prompt({ message: command.prompt, images: null }, BACKGROUND_CONTEXT);
 		} finally {
-			await watch?.dispose();
+			await watch.dispose();
 		}
+		if (!response.accepted) throw new Error(response.error.message);
+		if (response.error !== null) throw new Error(response.error.message);
+		return {
+			kind: "prompted",
+			serverId: match.route.serverId,
+			sessionId,
+			text: completedText.get(response.operationId) ?? "",
+		};
 	} finally {
 		await Promise.all([...serviceNamespaces].map((services) => services.dispose(BACKGROUND_CONTEXT)));
 		await Promise.all([...openedClients].map((client) => client.dispose()));
 	}
+}
+
+function messageText(message: Extract<PromptMessage, { role: "assistant" }>): string {
+	return message.content
+		.filter((content) => content.type === "text")
+		.map((content) => content.text)
+		.join("");
 }
 
 function waitForState<T>(state: RemoteState<T>): Promise<T> {
