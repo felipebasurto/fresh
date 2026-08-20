@@ -4,13 +4,15 @@
 
 | Scope | Service | Current slice | Continuation point |
 |---|---|---|---|
-| server | `SessionDirectory` | replicated state implemented; `events` declared | implement `RemoteEvents` delivery, then publish semantic directory changes |
+| server | `SessionDirectory` | replicated state and semantic directory events implemented | add authenticated per-client projection when identity lands |
 | server | `SessionManagement` | create, remove, attach, detach implemented | add authenticated workspace authorization |
 | session | `Models` | state, selection, thinking, refresh implemented | move provider/auth composition behind plugin facets |
 | session | `Chat` | prompt and durable `requestAbort` implemented; queue, resume, compaction, and navigation contracts declared | replace each explicit throwing provider member with its Harness adapter slice |
 | session | `Accounts` | state declared; mutations throw | connect the local credential service to the presentation-safe facade |
-| session | `Transcript` | revisioned snapshot/events contract declared; both operations throw | implement snapshot/event gap handling and remove the compatibility lane watch |
+| session | `Transcript` | revisioned events surface declared; snapshot throws and no Harness event producer is attached | implement snapshot/event gap handling and remove the compatibility lane watch |
 
-`RemoteEvents` currently has contract types and provider member classification only. `remoteEvents()`, local listeners, remote listeners, and emission deliberately throw `ServiceSliceNotImplemented`; there are no event delivery frames yet. `ServerServices.connection` and `SessionServices.attachment` are implemented local control states.
+`RemoteEvents` has local and remote ordered delivery, hydration-race buffering, keyed-instance routing, and no replay for late subscribers. `ServerServices.connection` and `SessionServices.attachment` are implemented local control states.
+
+With `PI_EXPERIMENTAL=1`, an interactive `pi client` opens the service-only TUI. It lists the repository-backed `SessionDirectory`, creates or switches Sessions through `SessionManagement`, and selects from the attached worker's `Models` state without invoking Harness drive.
 
 The question dialog, diff review, Git, indexing-job, and canvas examples in `packages/agent/docs/plugins.md` are extension patterns, not built-in coding-agent services. Private references, trace carriers, flow control, the plugin kernel, and host facet contexts remain protocol/host infrastructure slices rather than presentation service tokens.

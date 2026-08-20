@@ -231,6 +231,17 @@ describe("protocol validation", () => {
 			mode: "singleton",
 			instances: [{ members: [{ name: "events", kind: "events" }], states: {} }],
 		});
+		expect(
+			parseServerMessage({
+				type: "service_event",
+				subscriptionId: "subscription-1",
+				update: {
+					type: "event",
+					member: "events",
+					event: { type: "changed", revision: 1 },
+				},
+			}),
+		).toMatchObject({ update: { type: "event", member: "events" } });
 		const keyed: ClientMessage = {
 			type: "request",
 			id: "request-1",

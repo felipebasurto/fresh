@@ -145,6 +145,12 @@ export const ServiceProviderUpdateSchema = Type.Union([
 		value: JsonValueSchema,
 	}),
 	StrictObject({
+		type: Type.Literal("event"),
+		instance: Type.Optional(ServiceInstanceAddressSchema),
+		member: IdSchema,
+		event: JsonValueSchema,
+	}),
+	StrictObject({
 		type: Type.Literal("spawned"),
 		instance: ServiceInstanceSnapshotSchema,
 	}),

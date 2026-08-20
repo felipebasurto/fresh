@@ -89,13 +89,25 @@ class SessionServiceNamespace extends RemoteServiceNamespace implements SessionS
 		const attachmentState = remoteState<SessionAttachmentState>(toSessionAttachmentState(client));
 		this.attachment = attachmentState;
 		this.#removeAttachmentListener = client.onAttachmentChange((attachment) => {
-			attachmentState.set(
-				attachment === undefined ? { status: "detached" } : { status: "attached", sessionId: attachment.sessionId },
-				BACKGROUND_CONTEXT,
-			);
+			if (attachment !== undefined) {
+				attachmentState.set({ status: "attaching", sessionId: attachment.sessionId }, BACKGROUND_CONTEXT);
+			}
 			this.#transition = this.#transition
-				.then(() => this.rebind(attachment !== undefined, BACKGROUND_CONTEXT))
-				.catch((error: unknown) => this.#onError?.(toError(error)));
+				.then(async () => {
+					await this.rebind(attachment !== undefined, BACKGROUND_CONTEXT);
+					attachmentState.set(
+						attachment === undefined
+							? { status: "detached" }
+							: { status: "attached", sessionId: attachment.sessionId },
+						BACKGROUND_CONTEXT,
+					);
+				})
+				.catch((error: unknown) => {
+					if (attachment !== undefined) {
+						attachmentState.set({ status: "degraded", sessionId: attachment.sessionId }, BACKGROUND_CONTEXT);
+					}
+					this.#onError?.(toError(error));
+				});
 		});
 	}
 

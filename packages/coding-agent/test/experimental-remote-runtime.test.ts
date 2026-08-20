@@ -12,7 +12,11 @@ import {
 	createSessionServiceNamespace,
 } from "../src/experimental/services/connection.ts";
 import { Models } from "../src/experimental/services/models.ts";
-import { SessionDirectory, SessionManagement } from "../src/experimental/services/sessions.ts";
+import {
+	SessionDirectory,
+	type SessionDirectoryEvent,
+	SessionManagement,
+} from "../src/experimental/services/sessions.ts";
 import { Transcript } from "../src/experimental/services/transcript.ts";
 import {
 	configureExperimentalWorkerModel,
@@ -309,6 +313,10 @@ describe("experimental durable server composition", () => {
 		const secondDirectory = secondServices.use(SessionDirectory);
 		const firstManagement = firstServices.use(SessionManagement);
 		const secondManagement = secondServices.use(SessionManagement);
+		const firstEvents: SessionDirectoryEvent[] = [];
+		const secondEvents: SessionDirectoryEvent[] = [];
+		const removeFirstEvents = firstDirectory.events.subscribe((event) => firstEvents.push(event));
+		const removeSecondEvents = secondDirectory.events.subscribe((event) => secondEvents.push(event));
 
 		await vi.waitFor(() => {
 			expect(firstDirectory.state.value?.sessions.map(({ sessionId }) => sessionId)).toEqual(["demo-1", "demo-2"]);
@@ -318,6 +326,11 @@ describe("experimental durable server composition", () => {
 		await vi.waitFor(() => {
 			expect(firstDirectory.state.value?.sessions.map(({ sessionId }) => sessionId)).toContain("demo-3");
 			expect(secondDirectory.state.value).toEqual(firstDirectory.state.value);
+			expect(firstEvents).toContainEqual({
+				type: "created",
+				session: expect.objectContaining({ sessionId: "demo-3" }),
+			});
+			expect(secondEvents).toEqual(firstEvents);
 		});
 
 		await Promise.all([
@@ -334,8 +347,14 @@ describe("experimental durable server composition", () => {
 			expect(secondDirectory.state.value).toEqual(firstDirectory.state.value);
 		});
 		await secondManagement.detach(BACKGROUND_CONTEXT);
+		await vi.waitFor(() => {
+			expect(firstEvents).toContainEqual({ type: "deleted", sessionId: "demo-1" });
+			expect(secondEvents).toEqual(firstEvents);
+		});
 		expect(errors).toEqual([]);
 
+		removeFirstEvents();
+		removeSecondEvents();
 		await Promise.all([firstServices.dispose(BACKGROUND_CONTEXT), secondServices.dispose(BACKGROUND_CONTEXT)]);
 	});
 
@@ -381,6 +400,9 @@ describe("experimental durable server composition", () => {
 				provider: "anthropic",
 				modelId: "claude-sonnet-4-5",
 			});
+			expect(firstModels.state.value?.catalog.availableModels).toContainEqual(
+				expect.objectContaining({ provider: "anthropic", modelId: "claude-sonnet-4-5" }),
+			);
 			expect(secondModels.state.value).toEqual(firstModels.state.value);
 		});
 		const previousThinking = firstModels.state.value!.configuration.thinkingLevel;

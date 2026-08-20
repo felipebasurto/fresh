@@ -65,6 +65,7 @@ import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { runClient } from "./experimental/client.ts";
+import { runClientTui } from "./experimental/client-tui.ts";
 import { startForegroundServer } from "./experimental/server.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
@@ -598,6 +599,15 @@ async function runExperimentalServerCommand(command: ServerCommand): Promise<voi
 }
 
 async function runClientCommand(command: ClientCommand): Promise<void> {
+	if (
+		command.sessionId === undefined &&
+		command.prompt === undefined &&
+		process.stdin.isTTY === true &&
+		process.stdout.isTTY === true
+	) {
+		await runClientTui(command);
+		return;
+	}
 	let streamedText = false;
 	const result = await runClient(command, {
 		onEvent(event) {
