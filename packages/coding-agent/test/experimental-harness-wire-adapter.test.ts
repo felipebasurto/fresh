@@ -182,15 +182,6 @@ describe("Harness wire adapter", () => {
 				deferred: { provider: "test", modelId: "model", api: "test", id: "deferred-1", data: { row: 1 } },
 			},
 		},
-		{
-			ok: true,
-			value: {
-				operation: "run",
-				kind: "action_required",
-				runId: "run-1",
-				action: { kind: "confirm", description: "Confirm", details: { safe: true } },
-			},
-		},
 	] satisfies HarnessRunResult[])("projects every Run outcome %#", (result) => {
 		const wire = toWireRunResult(result);
 		expect(Check(RunResultSchema, wire)).toBe(true);

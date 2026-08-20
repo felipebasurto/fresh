@@ -168,11 +168,6 @@ const OperationErrorSchema = StrictObject({
 	message: Type.String(),
 	details: Type.Optional(JsonValueSchema),
 });
-const ActionInfoSchema = StrictObject({
-	kind: Type.String(),
-	description: Type.String(),
-	details: Type.Optional(JsonValueSchema),
-});
 const RunValueSchema = Type.Union([
 	StrictObject({ kind: Type.Literal("completed"), runId: IdSchema, leafId: IdSchema }),
 	StrictObject({
@@ -211,11 +206,6 @@ const RunValueSchema = Type.Union([
 		leafId: IdSchema,
 		finalEntryId: IdSchema,
 		deferred: DeferredHandleSchema,
-	}),
-	StrictObject({
-		kind: Type.Literal("action_required"),
-		runId: IdSchema,
-		action: ActionInfoSchema,
 	}),
 ]);
 const RunErrorSchema = Type.Union([
@@ -367,7 +357,6 @@ const LaneOperationSchema = StrictObject({
 	kind: Type.Union([Type.Literal("run"), Type.Literal("compaction"), Type.Literal("navigation")]),
 	status: Type.Union([Type.Literal("running"), Type.Literal("open"), Type.Literal("aborting")]),
 	startedAt: TimestampSchema,
-	action: Type.Optional(ActionInfoSchema),
 	deferred: Type.Optional(StrictObject({ handle: DeferredHandleSchema, poll: Type.Integer({ minimum: 0 }) })),
 	drained: Type.Optional(
 		StrictObject({ steer: Type.Array(QueuedItemSchema), followUp: Type.Array(QueuedItemSchema) }),

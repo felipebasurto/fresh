@@ -15,6 +15,10 @@
 - Added assistant request recovery, durable retry waits, deferred suspension, and missing-identity suspension to `AgentHarness`.
 - Added durable tool planning, context-bound sequential and parallel execution, ordered result settlement, and safe tool replay recovery to `AgentHarness`.
 
+### Removed
+
+- Removed the withdrawn manual-drive configuration, action inspection methods, action outcomes, and snapshot action field from `AgentHarness`.
+
 ## [0.84.2] - 2026-08-14
 
 ### Fixed

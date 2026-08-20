@@ -297,18 +297,6 @@ function toWireRunValue(value: Extract<HarnessRunResult, { ok: true }>["value"])
 				finalEntryId: value.finalEntryId,
 				deferred: toWireDeferred(value.deferred),
 			};
-		case "action_required":
-			return {
-				kind: "action_required",
-				runId: value.runId,
-				action: {
-					kind: value.action.kind,
-					description: value.action.description,
-					...(value.action.details === undefined
-						? {}
-						: { details: toWireJsonValue(value.action.details, "action details") }),
-				},
-			};
 		default:
 			return assertNever(value);
 	}
@@ -652,22 +640,6 @@ export function toWireLaneSnapshot(snapshot: HarnessLaneSnapshot): LaneSnapshot 
 						kind: snapshot.operation.kind,
 						status: snapshot.operation.status,
 						startedAt: snapshot.operation.startedAt,
-						...(snapshot.operation.action === undefined
-							? {}
-							: {
-									action: {
-										kind: snapshot.operation.action.kind,
-										description: snapshot.operation.action.description,
-										...(snapshot.operation.action.details === undefined
-											? {}
-											: {
-													details: toWireJsonValue(
-														snapshot.operation.action.details,
-														"snapshot action details",
-													),
-												}),
-									},
-								}),
 						...(snapshot.operation.deferred === undefined
 							? {}
 							: {

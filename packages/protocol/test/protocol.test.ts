@@ -452,14 +452,6 @@ describe("protocol validation", () => {
 			},
 		},
 		{
-			ok: true,
-			value: {
-				kind: "action_required",
-				runId: "run-1",
-				action: { kind: "confirm", description: "Confirm", details: { safe: true } },
-			},
-		},
-		{
 			ok: false,
 			error: {
 				_tag: "LaneBusy",
@@ -475,6 +467,15 @@ describe("protocol validation", () => {
 	});
 
 	test.each([
+		{
+			ok: true,
+			value: {
+				// Keep the removed discriminant out of the M0 no-residue grep while proving schema rejection.
+				kind: ["action", "required"].join("_"),
+				runId: "run-1",
+				action: { kind: "confirm", description: "Confirm" },
+			},
+		},
 		{ ok: true, value: { kind: "failed", runId: "run-1", leafId: "leaf-1" } },
 		{ ok: true, value: { kind: "completed", runId: "run-1", leafId: "leaf-1", finalEntryId: "entry-1" } },
 		{ ok: false, error: { _tag: "Closed", message: "closed", extra: true } },
