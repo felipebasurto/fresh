@@ -10,15 +10,10 @@ import {
 	TODO_CONTEXT,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import { PiClient, PiDisconnectedError, PiServerError } from "@earendil-works/pi-client";
+import { Client, DisconnectedError, ServerError } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, type UnixServerRoute } from "@earendil-works/pi-client/unix";
 import { isServerId, type ServerId, type SessionSummary } from "@earendil-works/pi-protocol";
-import {
-	type PiServer,
-	type PiServerHost,
-	SessionAmbiguousError,
-	SessionNotFoundError,
-} from "@earendil-works/pi-server";
+import { type Server, type ServerHost, SessionAmbiguousError, SessionNotFoundError } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.ts";
@@ -109,7 +104,7 @@ const ACTIVATION_TIMEOUT_MS = 10_000;
 const ACTIVATION_RETRY_MS = 10;
 
 export interface ActivatedServer {
-	readonly client: PiClient;
+	readonly client: Client;
 	readonly route: UnixServerRoute;
 }
 
@@ -161,11 +156,11 @@ export async function activateServer(options: ActivateServerOptions): Promise<Ac
 			while (true) {
 				const client = await connect(route);
 				if (client) return { client, route };
-				if (spawnError) throw new Error("Failed to automatically activate Pi server", { cause: spawnError });
+				if (spawnError) throw new Error("Failed to automatically activate server", { cause: spawnError });
 				if (child.exitCode !== null || child.signalCode !== null) {
-					throw new Error("Automatically activated Pi server exited during startup");
+					throw new Error("Automatically activated server exited during startup");
 				}
-				if (Date.now() >= deadline) throw new Error("Timed out waiting for automatically activated Pi server");
+				if (Date.now() >= deadline) throw new Error("Timed out waiting for automatically activated server");
 				await new Promise<void>((resolve) => setTimeout(resolve, ACTIVATION_RETRY_MS));
 			}
 		} catch (error) {
@@ -192,8 +187,8 @@ export function acquireServerActivation(directory: string, serverId: ServerId): 
 	});
 }
 
-async function connect(route: UnixServerRoute): Promise<PiClient | undefined> {
-	const client = new PiClient({
+async function connect(route: UnixServerRoute): Promise<Client | undefined> {
+	const client = new Client({
 		serverId: route.serverId,
 		transportFactory: createUnixTransportFactory({ path: route.path }),
 	});
@@ -202,7 +197,7 @@ async function connect(route: UnixServerRoute): Promise<PiClient | undefined> {
 		return client;
 	} catch (error) {
 		await client.dispose();
-		if (error instanceof PiDisconnectedError || (error instanceof PiServerError && error.code === "version")) {
+		if (error instanceof DisconnectedError || (error instanceof ServerError && error.code === "version")) {
 			return undefined;
 		}
 		let current = error;
@@ -304,7 +299,7 @@ export interface RunningServer {
 	readonly serverId: string;
 	readonly sessionDir: string;
 	readonly socketPath: string;
-	readonly server: PiServer;
+	readonly server: Server;
 	readonly workerPids: ReadonlyMap<string, number>;
 	readonly closed: Promise<void>;
 	close(): Promise<void>;
@@ -344,12 +339,12 @@ async function startServerBackend(
 	const sessionDir = resolveSessionDirectory(options.sessionDir);
 	const executionEnv = new NodeExecutionEnv({ cwd: process.cwd() });
 	const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot: sessionDir });
-	const listSessions: PiServerHost<JsonlSessionMetadata>["sessions"]["list"] = async (context) => {
+	const listSessions: ServerHost<JsonlSessionMetadata>["sessions"]["list"] = async (context) => {
 		const sessions = new Map((await repo.list(undefined, context)).map((metadata) => [metadata.path, metadata]));
 		for (const metadata of workers.trackedSessions) sessions.set(metadata.path, metadata);
 		return [...sessions.values()];
 	};
-	const createSession: PiServerHost<JsonlSessionMetadata>["sessions"]["create"] = async (createOptions, context) => {
+	const createSession: ServerHost<JsonlSessionMetadata>["sessions"]["create"] = async (createOptions, context) => {
 		const session = await repo.create({ ...createOptions, cwd: process.cwd() }, context);
 		try {
 			return session.metadata;
@@ -389,7 +384,7 @@ async function startServerBackend(
 		}
 		throw error;
 	});
-	const host: PiServerHost<JsonlSessionMetadata> = {
+	const host: ServerHost<JsonlSessionMetadata> = {
 		serverServices: serverServices.host,
 		sessions: { list: listSessions, create: createSession },
 		openSession: (metadata, context) => workers.openSession(metadata, context),

@@ -1,13 +1,13 @@
-export { PiClient } from "./client.ts";
-export { PiClientDisposedError, PiDisconnectedError, PiServerError } from "./errors.ts";
+export { Client } from "./client.ts";
+export { ClientDisposedError, DisconnectedError, ServerError } from "./errors.ts";
 export type { ByteTransport, ByteTransportFactory, ByteTransportHandlers } from "./transport.ts";
 export type {
 	AttachmentChangeListener,
+	ClientOptions,
 	ConnectionState,
 	ConnectionStateChange,
+	LaneWatch,
 	ListenerErrorHandler,
-	PiClientOptions,
-	PiLaneWatch,
-	PiServiceSubscription,
+	ServiceSubscription,
 	Unsubscribe,
 } from "./types.ts";

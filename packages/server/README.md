@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 import { MemorySessionRepo, type Session } from "@earendil-works/pi-agent-core";
 import {
   type RoutedSessionHandle,
-  type PiServerHost,
+  type ServerHost,
 } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 
@@ -29,7 +29,7 @@ async function startServer(
   openRoutedSession: (session: Session) => Promise<RoutedSessionHandle>,
 ) {
   const sessions = new MemorySessionRepo();
-  const host: PiServerHost = {
+  const host: ServerHost = {
     sessions: {
       list: () => sessions.list(),
       async create({ id }) {
@@ -73,6 +73,6 @@ Applications supply a private Session catalog and a routed Session factory. The 
 
 `serverId` is a logical identity supplied by the launcher, not a socket address. The Unix preset requires an explicit physical `path`; `getUnixSocketPath()` derives one from a caller-selected directory. Choose a short, private runtime directory rather than deriving the route from an unbounded home-directory path. A long-lived launcher can reuse the same ID and path when replacing a server process.
 
-`PiServer` composes authenticated transports through `PiServerListener`. The Unix submodule provides `createUnixListener()` and `createUnixServer()`. Low-level CBOR framing and validation come from `@earendil-works/pi-protocol`.
+`Server` composes authenticated transports through `ServerListener`. The Unix submodule provides `createUnixListener()` and `createUnixServer()`. Low-level CBOR framing and validation come from `@earendil-works/pi-protocol`.
 
 Server and worker lifecycle is managed outside the public Pi protocol. The replaceable application server converts connection attachments into private demand updates; the worker combines generation-tagged demand with authoritative Harness activity. The experimental coordinator only supplies stable routing and reports generic server-generation connection changes.

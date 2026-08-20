@@ -7,8 +7,8 @@ import {
 	ProtocolValidationError,
 	type ServerId,
 } from "@earendil-works/pi-protocol";
-import { PiClient } from "./client.ts";
-import { PiDisconnectedError, PiServerError } from "./errors.ts";
+import { Client } from "./client.ts";
+import { DisconnectedError, ServerError } from "./errors.ts";
 import type { ByteTransport, ByteTransportFactory, ByteTransportHandlers } from "./transport.ts";
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 1_000;
@@ -33,7 +33,7 @@ export interface DiscoverUnixServersOptions {
 	timeoutMs?: number;
 }
 
-/** Discover reachable local Pi servers by probing server-addressed Unix sockets. */
+/** Discover reachable local servers by probing server-addressed Unix sockets. */
 export async function discoverUnixServers(options: DiscoverUnixServersOptions): Promise<UnixServerRoute[]> {
 	if (process.platform === "win32") throw new Error("Unix transport is not supported on Windows");
 	const directory = options.directory;
@@ -84,7 +84,7 @@ export async function discoverUnixServers(options: DiscoverUnixServersOptions): 
 	return routes.sort((left, right) => left.serverId.localeCompare(right.serverId));
 }
 
-/** Creates fresh Unix-domain socket transports for PiClient connection attempts in Node-compatible runtimes. */
+/** Creates fresh Unix-domain socket transports for Client connection attempts in Node-compatible runtimes. */
 export function createUnixTransportFactory(options: UnixTransportOptions): ByteTransportFactory {
 	const maxPendingBytes = validateUnixTransportOptions(options);
 	return (handlers) => connectUnixSocket(options.path, maxPendingBytes, handlers);
@@ -237,7 +237,7 @@ class UnixByteTransport implements ByteTransport {
 async function probeUnixServer(route: UnixServerRoute, timeoutMs: number): Promise<UnixServerRoute | undefined> {
 	const maxPendingBytes = validateUnixTransportOptions({ path: route.path });
 	let socket: Socket | undefined;
-	const client = new PiClient({
+	const client = new Client({
 		serverId: route.serverId,
 		transportFactory: (handlers) =>
 			connectUnixSocket(route.path, maxPendingBytes, handlers, (created) => {
@@ -259,12 +259,12 @@ async function probeUnixServer(route: UnixServerRoute, timeoutMs: number): Promi
 		return route;
 	} catch (error) {
 		// Missing/refused sockets are stale or shutting down. Protocol failures mean
-		// the endpoint is not the advertised Pi server. Both are safe to omit.
+		// the endpoint is not the advertised server. Both are safe to omit.
 		if (
 			error instanceof UnixDiscoveryTimeoutError ||
 			error instanceof ProtocolValidationError ||
-			(error instanceof PiDisconnectedError && error.cause === undefined) ||
-			(error instanceof PiServerError && error.code === "version") ||
+			(error instanceof DisconnectedError && error.cause === undefined) ||
+			(error instanceof ServerError && error.code === "version") ||
 			isErrorCode(error, "ENOENT") ||
 			isErrorCode(error, "ECONNREFUSED") ||
 			isErrorCode(error, "ECONNRESET") ||

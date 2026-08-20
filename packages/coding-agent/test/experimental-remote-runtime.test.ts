@@ -1,15 +1,15 @@
 import { lstat, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT, type Context, withCancel } from "@earendil-works/pi-agent-core";
-import { PiClient } from "@earendil-works/pi-client";
+import { Client } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { runClient } from "../src/experimental/client.ts";
 import * as processRuntime from "../src/experimental/process.ts";
 import { activateServer, type RunningServer, startServer } from "../src/experimental/server.ts";
 import {
-	createPiServerServiceNamespace,
-	createPiSessionServiceNamespace,
+	createServerServiceNamespace,
+	createSessionServiceNamespace,
 } from "../src/experimental/services/connection.ts";
 import { Models } from "../src/experimental/services/models.ts";
 import { SessionDirectory, SessionManagement } from "../src/experimental/services/sessions.ts";
@@ -21,7 +21,7 @@ import {
 import { KeyedProbe, type KeyedProbeService } from "./fixtures/keyed-service.ts";
 
 const servers = new Set<RunningServer>();
-const clients = new Set<PiClient>();
+const clients = new Set<Client>();
 const directories = new Set<string>();
 const fauxWorkerEntryUrl = new URL("fixtures/faux-session-worker.ts", import.meta.url);
 const realSpawnInternalProcess = processRuntime.spawnInternalProcess;
@@ -44,8 +44,8 @@ async function makeServer(): Promise<{ directory: string; runtime: RunningServer
 	return { directory, runtime };
 }
 
-async function attachClient(runtime: RunningServer, sessionId: string): Promise<PiClient> {
-	const client = await PiClient.connect({
+async function attachClient(runtime: RunningServer, sessionId: string): Promise<Client> {
+	const client = await Client.connect({
 		serverId: runtime.serverId,
 		transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
 	});
@@ -283,22 +283,22 @@ describe("experimental durable server composition", () => {
 
 	test("hydrates and mutates server Session services across framed clients", async () => {
 		const { runtime } = await makeServer();
-		const firstClient = await PiClient.connect({
+		const firstClient = await Client.connect({
 			serverId: runtime.serverId,
 			transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
 		});
-		const secondClient = await PiClient.connect({
+		const secondClient = await Client.connect({
 			serverId: runtime.serverId,
 			transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
 		});
 		clients.add(firstClient);
 		clients.add(secondClient);
 		const errors: Error[] = [];
-		const firstServices = createPiServerServiceNamespace(firstClient, {
+		const firstServices = createServerServiceNamespace(firstClient, {
 			services: [SessionDirectory, SessionManagement],
 			onError: (error) => errors.push(error),
 		});
-		const secondServices = createPiServerServiceNamespace(secondClient, {
+		const secondServices = createServerServiceNamespace(secondClient, {
 			services: [SessionDirectory, SessionManagement],
 			onError: (error) => errors.push(error),
 		});
@@ -346,7 +346,7 @@ describe("experimental durable server composition", () => {
 		await expect(client.attachSession("demo-1")).resolves.toMatchObject({ sessionId: "demo-1" });
 		expect(runtime.workerPids.get("demo-1")).toBe(firstPid);
 
-		const competing = await PiClient.connect({
+		const competing = await Client.connect({
 			serverId: runtime.serverId,
 			transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
 		});
@@ -360,11 +360,11 @@ describe("experimental durable server composition", () => {
 		const firstClient = await attachClient(runtime, "demo-1");
 		const secondClient = await attachClient(runtime, "demo-1");
 		const errors: Error[] = [];
-		const firstServices = createPiSessionServiceNamespace(firstClient, {
+		const firstServices = createSessionServiceNamespace(firstClient, {
 			services: [Models],
 			onError: (error) => errors.push(error),
 		});
-		const secondServices = createPiSessionServiceNamespace(secondClient, {
+		const secondServices = createSessionServiceNamespace(secondClient, {
 			services: [Models],
 			onError: (error) => errors.push(error),
 		});
@@ -405,7 +405,7 @@ describe("experimental durable server composition", () => {
 		const { runtime } = await makeServer();
 		const client = await attachClient(runtime, "demo-1");
 		const errors: Error[] = [];
-		const services = createPiSessionServiceNamespace(client, {
+		const services = createSessionServiceNamespace(client, {
 			services: [KeyedProbe],
 			onError: (error) => errors.push(error),
 		});
@@ -567,7 +567,7 @@ describe("experimental durable server composition", () => {
 		directories.add(directory);
 		const runtime = await startServer({ directory, provider: "anthropic", model: "missing-model" });
 		servers.add(runtime);
-		const client = await PiClient.connect({
+		const client = await Client.connect({
 			serverId: runtime.serverId,
 			transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
 		});
@@ -669,7 +669,7 @@ describe("experimental durable server composition", () => {
 		directories.add(directory);
 		const first = await startServer({ ...sessionWorkerModel, directory });
 		servers.add(first);
-		const client = await PiClient.connect({
+		const client = await Client.connect({
 			serverId: first.serverId,
 			transportFactory: createUnixTransportFactory({ path: first.socketPath }),
 		});

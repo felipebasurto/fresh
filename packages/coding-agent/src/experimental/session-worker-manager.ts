@@ -17,10 +17,10 @@ import {
 	type ServiceProviderUpdate,
 } from "@earendil-works/pi-protocol";
 import {
-	PiServerError,
 	type RoutedSessionAttachment,
 	type RoutedSessionHandle,
 	type RoutedSessionWatch,
+	ServerError,
 } from "@earendil-works/pi-server";
 import { Check } from "typebox/value";
 import type { CoordinatorConnection, CoordinatorConnectionEvent } from "./coordinator.ts";
@@ -101,7 +101,7 @@ interface PendingLaunch {
 	reject(error: Error): void;
 }
 
-/** Session and process bookkeeping owned by one replaceable Pi server process. */
+/** Session and process bookkeeping owned by one replaceable server process. */
 export class SessionWorkerManager {
 	readonly workerPids = new Map<string, number>();
 	readonly #coordinator: Pick<
@@ -643,7 +643,7 @@ export class SessionWorkerManager {
 			pending.reject(
 				response.code === undefined
 					? new Error(`Session worker operation failed: ${response.message}`)
-					: new PiServerError(response.code, response.message),
+					: new ServerError(response.code, response.message),
 			);
 		} else {
 			pending.resolve(response.result);

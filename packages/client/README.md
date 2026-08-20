@@ -3,7 +3,7 @@
 Transport-neutral client for Pi Session discovery, creation, attachment, and prompting.
 
 ```ts
-import { PiClient, type ByteTransportFactory } from "@earendil-works/pi-client";
+import { Client, type ByteTransportFactory } from "@earendil-works/pi-client";
 
 const transportFactory: ByteTransportFactory = async (handlers) => {
   // Connect using WebSocket, Unix socket, or another ordered byte transport.
@@ -15,7 +15,7 @@ const transportFactory: ByteTransportFactory = async (handlers) => {
   };
 };
 
-const client = await PiClient.connect({
+const client = await Client.connect({
   serverId: "01234567-89ab-4def-8123-456789abcdef",
   transportFactory,
 });
@@ -37,7 +37,7 @@ The client verifies that the physical endpoint reports the expected logical `ser
 
 `watchSession()` creates a main-lane watch and returns its authoritative snapshot without starting event delivery. Install the listener with `await watch.start(listener)`; this then flushes events buffered after the snapshot and continues with live events while `promptSession()` is pending. `watch.dispose()` stops server delivery and waits for already-received listener work. A disconnected watch is stale and cannot be reused after reconnection.
 
-Plugin presentation hosts use `request()` and `subscribeService()` as low-level transport adapters for both the connected server and selected Session namespaces. A service subscription returns a complete provider snapshot; the host installs it and then calls `start()` to release updates buffered during hydration. `PiClient` applies out-of-band attachment changes but deliberately does not construct typed service proxies or interpret plugin contracts.
+Plugin presentation hosts use `request()` and `subscribeService()` as low-level transport adapters for both the connected server and selected Session namespaces. A service subscription returns a complete provider snapshot; the host installs it and then calls `start()` to release updates buffered during hydration. `Client` applies out-of-band attachment changes but deliberately does not construct typed service proxies or interpret plugin contracts.
 
 On disconnect or disposal, pending prompts reject locally, but accepted work may still complete remotely before the attachment is released. The client clears its live attachment route. It never reconnects or replays requests automatically. After disconnection, call `reconnect()`, attach again, and explicitly repeat only operations known to be safe.
 
@@ -49,17 +49,17 @@ Call transport handlers as follows:
 - `handlers.onClose()` for an orderly terminal close;
 - `handlers.onError(error)` for transport failures.
 
-A transport factory creates a fresh authenticated connection for each attempt. Requests are correlated by ID, and server failures are exposed as `PiServerError`.
+A transport factory creates a fresh authenticated connection for each attempt. Requests are correlated by ID, and server failures are exposed as `ServerError`.
 
 ## Unix-domain sockets
 
 Node.js and Bun consumers can use the separate Unix transport:
 
 ```ts
-import { PiClient } from "@earendil-works/pi-client";
+import { Client } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 
-const client = new PiClient({
+const client = new Client({
   serverId: "01234567-89ab-4def-8123-456789abcdef",
   transportFactory: createUnixTransportFactory({ path: "/tmp/pi.sock" }),
 });
@@ -78,4 +78,4 @@ const routes = await discoverUnixServers({ directory: "/run/user/1000/pi" });
 Malformed entries, non-sockets, stale or unresponsive endpoints, and server-ID mismatches are ignored. Discovery is read-only and probes at most 16 sockets concurrently. Unexpected filesystem and socket errors reject discovery.
 Pass `timeoutMs` to override the default probe timeout.
 
-`PiClientOptions.maxFrameLength` bounds protocol payloads. `maxPendingBytes` bounds queued Unix transport output. Configure matching limits on both peers.
+`ClientOptions.maxFrameLength` bounds protocol payloads. `maxPendingBytes` bounds queued Unix transport output. Configure matching limits on both peers.

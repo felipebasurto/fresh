@@ -3,11 +3,11 @@ import { once } from "node:events";
 import { lstat, mkdtemp, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import type { PiServer } from "../src/index.ts";
+import type { Server } from "../src/index.ts";
 import { connectUnixTestClient, type ProtocolTestClient, TestServerHost } from "../src/testing/index.ts";
 import { createUnixServer, getUnixSocketPath } from "../src/transports/unix/index.ts";
 
-const servers = new Set<PiServer>();
+const servers = new Set<Server>();
 const clients = new Set<ProtocolTestClient>();
 const children = new Set<ChildProcess>();
 const tempDirectories = new Set<string>();
@@ -18,7 +18,7 @@ async function makeSocketPath(nested = false): Promise<string> {
 	return nested ? join(directory, "p", "n", "server.sock") : join(directory, "server.sock");
 }
 
-function makeServer(path: string): PiServer {
+function makeServer(path: string): Server {
 	const server = createUnixServer(new TestServerHost(), { path, serverId: "00000000-0000-4000-8000-000000000001" });
 	servers.add(server);
 	return server;

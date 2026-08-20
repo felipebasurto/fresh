@@ -6,23 +6,23 @@ import {
 	ProtocolValidationError,
 } from "@earendil-works/pi-protocol";
 import { describe, expect, test, vi } from "vitest";
-import { type ByteTransportFactory, PiClient, PiClientDisposedError, PiDisconnectedError } from "../src/index.ts";
+import { type ByteTransportFactory, Client, ClientDisposedError, DisconnectedError } from "../src/index.ts";
 import { MemoryByteServer } from "./support.ts";
 
 async function connectClient(
 	server: MemoryByteServer,
 	serverId = "00000000-0000-4000-8000-000000000001",
-): Promise<PiClient> {
-	return PiClient.connect({ serverId, transportFactory: (handlers) => server.connect(handlers) });
+): Promise<Client> {
+	return Client.connect({ serverId, transportFactory: (handlers) => server.connect(handlers) });
 }
 
 test("requires a canonical UUIDv4 server identity", () => {
-	expect(() => new PiClient({ serverId: "invalid-server", transportFactory: () => Promise.reject() })).toThrow(
+	expect(() => new Client({ serverId: "invalid-server", transportFactory: () => Promise.reject() })).toThrow(
 		/serverId/,
 	);
 });
 
-describe("PiClient service operations", () => {
+describe("Client service operations", () => {
 	test("connects only to the expected logical server", async () => {
 		const matching = new MemoryByteServer();
 		const client = await connectClient(matching);
@@ -468,17 +468,17 @@ describe("PiClient service operations", () => {
 		const client = await connectClient(server);
 		const listing = client.listSessions();
 		server.disconnect();
-		await expect(listing).rejects.toBeInstanceOf(PiDisconnectedError);
+		await expect(listing).rejects.toBeInstanceOf(DisconnectedError);
 		await client.dispose();
-		await expect(client.listSessions()).rejects.toBeInstanceOf(PiClientDisposedError);
+		await expect(client.listSessions()).rejects.toBeInstanceOf(ClientDisposedError);
 	});
 });
 
-describe("PiClient connection lifecycle", () => {
+describe("Client connection lifecycle", () => {
 	test("rejects server data delivered before the client hello is sent", async () => {
 		let closeCount = 0;
 		let sendCount = 0;
-		const client = new PiClient({
+		const client = new Client({
 			serverId: "00000000-0000-4000-8000-000000000001",
 			transportFactory: (handlers) => {
 				handlers.onData(
@@ -511,7 +511,7 @@ describe("PiClient connection lifecycle", () => {
 	test("rejects typed handshake errors and closes the transport", async () => {
 		let handlers: Parameters<ByteTransportFactory>[0];
 		let closeCount = 0;
-		const client = new PiClient({
+		const client = new Client({
 			serverId: "00000000-0000-4000-8000-000000000001",
 			transportFactory: (createdHandlers) => {
 				handlers = createdHandlers;
@@ -532,7 +532,7 @@ describe("PiClient connection lifecycle", () => {
 		});
 
 		await expect(client.connect()).rejects.toMatchObject({
-			name: "PiServerError",
+			name: "ServerError",
 			code: "version",
 			message: "Unsupported protocol version",
 		});
@@ -546,7 +546,7 @@ describe("PiClient connection lifecycle", () => {
 		let connection = 0;
 		const transportFactory: ByteTransportFactory = (handlers) =>
 			(connection++ === 0 ? first : second).connect(handlers);
-		const client = new PiClient({
+		const client = new Client({
 			serverId: "00000000-0000-4000-8000-000000000001",
 			transportFactory,
 		});
@@ -567,7 +567,7 @@ describe("PiClient connection lifecycle", () => {
 		expect(first.messages[2]).toMatchObject({ call: { serviceId: "chat", member: "prompt" } });
 		first.disconnect();
 
-		await expect(pending).rejects.toBeInstanceOf(PiDisconnectedError);
+		await expect(pending).rejects.toBeInstanceOf(DisconnectedError);
 		await expect(client.reconnect()).resolves.toMatchObject({
 			serverId: "00000000-0000-4000-8000-000000000001",
 		});
@@ -586,7 +586,7 @@ describe("PiClient connection lifecycle", () => {
 		server.error(new Error("read failed"));
 
 		await expect(pending).rejects.toMatchObject({
-			name: "PiDisconnectedError",
+			name: "DisconnectedError",
 			message: "read failed",
 			cause: expect.objectContaining({ message: "read failed" }),
 		});

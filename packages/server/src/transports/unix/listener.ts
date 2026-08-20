@@ -5,7 +5,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { dirname, join } from "node:path";
 import { DEFAULT_MAX_FRAME_LENGTH } from "@earendil-works/pi-protocol";
 import type { ByteConnection, ByteConnectionAcceptor } from "../../connection.ts";
-import type { PiServerListener } from "../../listener.ts";
+import type { ServerListener } from "../../listener.ts";
 import type { UnixListenerOptions } from "./types.ts";
 
 const DEFAULT_SOCKET_MODE = 0o600;
@@ -26,7 +26,7 @@ interface FileIdentity {
 	dev: number;
 	ino: number;
 }
-class UnixListener implements PiServerListener {
+class UnixListener implements ServerListener {
 	private readonly options: ResolvedUnixListenerOptions;
 	private readonly path: string;
 	private readonly mode: number;
@@ -385,23 +385,23 @@ function isErrorCode(error: unknown, code: string): boolean {
 	return error instanceof Error && "code" in error && error.code === code;
 }
 
-export function createUnixListener(options: UnixListenerOptions): PiServerListener {
+export function createUnixListener(options: UnixListenerOptions): ServerListener {
 	return new UnixListener(options);
 }
 
 function resolveUnixListenerOptions(options: UnixListenerOptions): ResolvedUnixListenerOptions {
-	if (!options.path) throw new TypeError("PiServer Unix socket path must not be empty");
+	if (!options.path) throw new TypeError("Server Unix socket path must not be empty");
 	const mode = options.mode ?? DEFAULT_SOCKET_MODE;
 	if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) {
-		throw new TypeError("PiServer Unix socket mode must be an integer between 0 and 0o777");
+		throw new TypeError("Server Unix socket mode must be an integer between 0 and 0o777");
 	}
 	const maxFrameLength = options.maxFrameLength ?? DEFAULT_MAX_FRAME_LENGTH;
 	if (!Number.isSafeInteger(maxFrameLength) || maxFrameLength <= 0 || maxFrameLength > MAX_UINT32) {
-		throw new TypeError(`PiServer maxFrameLength must be an integer between 1 and ${MAX_UINT32}`);
+		throw new TypeError(`Server maxFrameLength must be an integer between 1 and ${MAX_UINT32}`);
 	}
 	const maxPendingBytes = options.maxPendingBytes ?? maxFrameLength * 4;
 	if (!Number.isSafeInteger(maxPendingBytes) || maxPendingBytes < maxFrameLength + 4) {
-		throw new TypeError("PiServer maxPendingBytes must be a safe integer at least maxFrameLength + 4");
+		throw new TypeError("Server maxPendingBytes must be a safe integer at least maxFrameLength + 4");
 	}
 	const gracefulCloseTimeoutMs = options.gracefulCloseTimeoutMs ?? DEFAULT_GRACEFUL_CLOSE_TIMEOUT_MS;
 	if (
@@ -409,7 +409,7 @@ function resolveUnixListenerOptions(options: UnixListenerOptions): ResolvedUnixL
 		gracefulCloseTimeoutMs <= 0 ||
 		gracefulCloseTimeoutMs > MAX_TIMER_DELAY_MS
 	) {
-		throw new TypeError(`PiServer gracefulCloseTimeoutMs must be an integer between 1 and ${MAX_TIMER_DELAY_MS}`);
+		throw new TypeError(`Server gracefulCloseTimeoutMs must be an integer between 1 and ${MAX_TIMER_DELAY_MS}`);
 	}
 	return {
 		path: options.path,

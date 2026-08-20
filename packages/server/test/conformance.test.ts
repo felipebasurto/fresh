@@ -1,19 +1,19 @@
 import { BACKGROUND_CONTEXT, type SessionMetadata } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, test } from "vitest";
 import type { ByteConnection, ByteConnectionHandler } from "../src/connection.ts";
-import { PiServer } from "../src/server.ts";
+import { Server } from "../src/server.ts";
 import { Deferred, ProtocolTestClient, TestServerHost, type WireChannel } from "../src/testing/index.ts";
-import type { PiServerHost } from "../src/types.ts";
+import type { ServerHost } from "../src/types.ts";
 
-const servers = new Set<PiServer>();
+const servers = new Set<Server>();
 
-function createServer(host: PiServerHost, serverId = "00000000-0000-4000-8000-000000000001"): PiServer {
-	const server = new PiServer(host, { listeners: [], serverId });
+function createServer(host: ServerHost, serverId = "00000000-0000-4000-8000-000000000001"): Server {
+	const server = new Server(host, { listeners: [], serverId });
 	servers.add(server);
 	return server;
 }
 
-function connect(server: PiServer): ProtocolTestClient {
+function connect(server: Server): ProtocolTestClient {
 	let handler: ByteConnectionHandler;
 	let client: ProtocolTestClient;
 	let closed = false;
@@ -123,7 +123,7 @@ describe("Session protocol", () => {
 			modifiedAt: 2,
 		};
 		let received: BackendMetadata | undefined;
-		const host: PiServerHost<BackendMetadata> = {
+		const host: ServerHost<BackendMetadata> = {
 			sessions: { list: async () => [metadata], create: async () => metadata },
 			openSession: async (candidate) => {
 				received = candidate;
@@ -139,7 +139,7 @@ describe("Session protocol", () => {
 				};
 			},
 		};
-		const server = new PiServer(host, {
+		const server = new Server(host, {
 			listeners: [],
 			serverId: "00000000-0000-4000-8000-000000000001",
 		});
@@ -174,7 +174,7 @@ describe("Session protocol", () => {
 		const backing = new TestServerHost();
 		await backing.seed("session-1");
 		let releaseCount = 0;
-		const host: PiServerHost = {
+		const host: ServerHost = {
 			sessions: backing.sessions,
 			openSession: (metadata, context) => backing.openSession(metadata, context),
 			serverServices: {
@@ -360,7 +360,7 @@ describe("Session protocol", () => {
 		const host = new TestServerHost();
 		await host.seed("session-1");
 		const errors: Error[] = [];
-		const server = new PiServer(host, {
+		const server = new Server(host, {
 			listeners: [],
 			serverId: "00000000-0000-4000-8000-000000000001",
 			onError: (error) => errors.push(error),
@@ -579,7 +579,7 @@ describe("Session protocol", () => {
 
 	test("rejects an ambiguous session ID without creating a Harness", async () => {
 		type BackendMetadata = SessionMetadata & { path: string };
-		const host: PiServerHost<BackendMetadata> = {
+		const host: ServerHost<BackendMetadata> = {
 			sessions: {
 				list: async () => [
 					{ id: "duplicate", createdAt: 1, storageVersion: 1, cwd: "/one", path: "/one/session.jsonl" },
@@ -593,7 +593,7 @@ describe("Session protocol", () => {
 				throw new Error("must not create a Harness for an ambiguous session");
 			},
 		};
-		const server = new PiServer(host, {
+		const server = new Server(host, {
 			listeners: [],
 			serverId: "00000000-0000-4000-8000-000000000001",
 		});
@@ -650,7 +650,7 @@ describe("routed Session acquisition failures", () => {
 		const continueAcquiring = new Deferred<void>();
 		const terminated = new Deferred<Error | undefined>();
 		let releaseCount = 0;
-		const host: PiServerHost = {
+		const host: ServerHost = {
 			sessions: { list: async () => [metadata], create: async () => metadata },
 			openSession: async () => ({
 				terminated: terminated.promise,
@@ -670,7 +670,7 @@ describe("routed Session acquisition failures", () => {
 				close: async () => {},
 			}),
 		};
-		const server = new PiServer(host, {
+		const server = new Server(host, {
 			listeners: [],
 			serverId: "00000000-0000-4000-8000-000000000001",
 		});

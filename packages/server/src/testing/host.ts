@@ -1,7 +1,7 @@
 import type { Context, Session, SessionMetadata } from "@earendil-works/pi-agent-core";
 import { BACKGROUND_CONTEXT, MemorySessionRepo } from "@earendil-works/pi-agent-core";
 import type { LaneEvent, LaneSnapshot, PromptArguments, RunResult } from "@earendil-works/pi-protocol";
-import type { PiServerHost, RoutedSessionHandle, RoutedSessionWatch } from "../types.ts";
+import type { RoutedSessionHandle, RoutedSessionWatch, ServerHost } from "../types.ts";
 
 export class Deferred<T> {
 	readonly promise: Promise<T>;
@@ -196,13 +196,13 @@ interface ListDelay {
 	release: Deferred<void>;
 }
 
-export class TestServerHost implements PiServerHost {
+export class TestServerHost implements ServerHost {
 	readonly repo = new MemorySessionRepo({ now: () => 1 });
 	readonly harnesses = new Map<string, TestHarness[]>();
 	openSessionCount = 0;
 	nextOpenSessionError?: Error;
 	nextHarnessCloseError?: Error;
-	readonly sessions: PiServerHost["sessions"] = {
+	readonly sessions: ServerHost["sessions"] = {
 		list: async (context) => {
 			const delay = this.nextListDelay;
 			if (delay) {

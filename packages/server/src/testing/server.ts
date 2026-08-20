@@ -1,22 +1,22 @@
-import { PiServer } from "../server.ts";
-import type { PiServerHost, PiServerOptions } from "../types.ts";
+import { Server } from "../server.ts";
+import type { ServerHost, ServerOptions } from "../types.ts";
 import { TestServerHost } from "./host.ts";
 
-export interface TestServerOptions extends Omit<PiServerOptions, "serverId"> {
-	host?: PiServerHost;
+export interface TestServerOptions extends Omit<ServerOptions, "serverId"> {
+	host?: ServerHost;
 	serverId?: string;
 }
 
 export interface TestServer {
-	server: PiServer;
-	host: PiServerHost;
+	server: Server;
+	host: ServerHost;
 }
 
-/** Create an unstarted PiServer with deterministic defaults for transport conformance tests. */
+/** Create an unstarted Server with deterministic defaults for transport conformance tests. */
 export function createTestServer(options: TestServerOptions): TestServer {
 	const host = options.host ?? new TestServerHost();
 	return {
-		server: new PiServer(host, {
+		server: new Server(host, {
 			listeners: options.listeners,
 			maxFrameLength: options.maxFrameLength,
 			handshakeTimeoutMs: options.handshakeTimeoutMs,

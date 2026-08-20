@@ -1,11 +1,11 @@
 import { basename } from "node:path";
 import { BACKGROUND_CONTEXT, type RemoteServiceNamespace, type RemoteState } from "@earendil-works/pi-agent-core";
-import { PiClient } from "@earendil-works/pi-client";
+import { Client } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
 import { isServerId, type LaneEvent, type SessionAddress } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
-import { createPiServerServiceNamespace } from "./services/connection.ts";
+import { createServerServiceNamespace } from "./services/connection.ts";
 import { SessionDirectory, SessionManagement, type SessionManagementService } from "./services/sessions.ts";
 
 export type ClientResult =
@@ -35,7 +35,7 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 	}
 	const directory = resolveServerDirectory(options.directory);
 	let routes: UnixServerRoute[];
-	let activatedClient: PiClient | undefined;
+	let activatedClient: Client | undefined;
 	if (command.connect) {
 		routes = [routeFromExplicitPath(command.connect.path)];
 	} else {
@@ -55,13 +55,13 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 			activatedClient = activated.client;
 		}
 	}
-	const openedClients = new Set<PiClient>();
+	const openedClients = new Set<Client>();
 	const serviceNamespaces = new Set<RemoteServiceNamespace>();
 	if (activatedClient) openedClients.add(activatedClient);
 	const discovered: {
 		route: UnixServerRoute;
 		sessionIds: string[];
-		client: PiClient;
+		client: Client;
 		management: SessionManagementService;
 	}[] = [];
 
@@ -69,13 +69,13 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 		for (const route of routes) {
 			const client =
 				activatedClient ??
-				(await PiClient.connect({
+				(await Client.connect({
 					serverId: route.serverId,
 					transportFactory: createUnixTransportFactory({ path: route.path }),
 				}));
 			activatedClient = undefined;
 			openedClients.add(client);
-			const services = createPiServerServiceNamespace(client, {
+			const services = createServerServiceNamespace(client, {
 				services: [SessionDirectory, SessionManagement],
 			});
 			serviceNamespaces.add(services);

@@ -3,7 +3,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { ClientMessageDecoder, encodeServerMessage, PROTOCOL_VERSION } from "@earendil-works/pi-protocol";
 import { afterEach, describe, expect, test } from "vitest";
-import { PiClient } from "../src/index.ts";
+import { Client } from "../src/index.ts";
 import { createUnixTransportFactory } from "../src/unix.ts";
 
 const serverId = "00000000-0000-4000-8000-000000000001";
@@ -51,7 +51,7 @@ test("rejects invalid Unix transport options", () => {
 });
 
 describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () => {
-	test("carries a complete PiClient handshake and request over a real Unix socket", async () => {
+	test("carries a complete Client handshake and request over a real Unix socket", async () => {
 		const path = await makeSocketPath();
 		const receivedMembers: string[] = [];
 		const server = createServer((socket) => {
@@ -82,7 +82,7 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 			});
 		});
 		await listen(server, path);
-		const client = new PiClient({ serverId, transportFactory: createUnixTransportFactory({ path }) });
+		const client = new Client({ serverId, transportFactory: createUnixTransportFactory({ path }) });
 
 		try {
 			await expect(client.connect()).resolves.toMatchObject({ serverId });
@@ -93,7 +93,7 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 		}
 	});
 
-	test("reports truncated final frames through PiClient", async () => {
+	test("reports truncated final frames through Client", async () => {
 		const path = await makeSocketPath();
 		const server = createServer((socket) => {
 			const decoder = new ClientMessageDecoder();
@@ -114,7 +114,7 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 			});
 		});
 		await listen(server, path);
-		const client = new PiClient({ serverId, transportFactory: createUnixTransportFactory({ path }) });
+		const client = new Client({ serverId, transportFactory: createUnixTransportFactory({ path }) });
 
 		try {
 			await client.connect();

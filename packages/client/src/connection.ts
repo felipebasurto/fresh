@@ -7,7 +7,7 @@ import {
 	type ServerMessage,
 	ServerMessageDecoder,
 } from "@earendil-works/pi-protocol";
-import { PiDisconnectedError, PiServerError, toDisconnectedError, toError } from "./errors.ts";
+import { DisconnectedError, ServerError, toDisconnectedError, toError } from "./errors.ts";
 import { createPromiseResolvers, type PromiseResolvers } from "./promise.ts";
 import type { ByteTransport, ByteTransportFactory, ByteTransportHandlers } from "./transport.ts";
 import type { ConnectionState, ConnectionStateChange } from "./types.ts";
@@ -52,7 +52,7 @@ export class Connection {
 			this.#maxFrameLength <= 0 ||
 			this.#maxFrameLength > MAX_UINT32
 		) {
-			throw new TypeError(`PiClient maxFrameLength must be an integer between 1 and ${MAX_UINT32}`);
+			throw new TypeError(`Client maxFrameLength must be an integer between 1 and ${MAX_UINT32}`);
 		}
 	}
 
@@ -66,7 +66,7 @@ export class Connection {
 
 	connect(): Promise<ServerHello> {
 		if (this.#lifecycle.state !== "disconnected") {
-			return Promise.reject(new PiDisconnectedError(`PiClient is already ${this.#lifecycle.state}`));
+			return Promise.reject(new DisconnectedError(`Client is already ${this.#lifecycle.state}`));
 		}
 		const id = ++this.#sequence;
 		const handshake = createPromiseResolvers<ServerHello>();
@@ -92,7 +92,7 @@ export class Connection {
 
 	disconnect(reason: string | Error = "Client disconnected"): void {
 		if (this.#lifecycle.state === "disconnected") return;
-		this.#failAndClose(typeof reason === "string" ? new PiDisconnectedError(reason) : reason);
+		this.#failAndClose(typeof reason === "string" ? new DisconnectedError(reason) : reason);
 	}
 
 	fail(error: Error): void {
@@ -101,7 +101,7 @@ export class Connection {
 
 	send(frame: Uint8Array): void {
 		const lifecycle = this.#lifecycle;
-		if (lifecycle.state !== "connected") throw new PiDisconnectedError();
+		if (lifecycle.state !== "connected") throw new DisconnectedError();
 		let sending: Promise<void>;
 		try {
 			sending = lifecycle.transport.send(frame);
@@ -164,7 +164,7 @@ export class Connection {
 		const lifecycle = this.#lifecycle;
 		if (lifecycle.state === "connecting") {
 			if (message.type === "hello_error") {
-				this.#failAndClose(new PiServerError(message.error));
+				this.#failAndClose(new ServerError(message.error));
 				return;
 			}
 			if (message.type !== "hello") {
@@ -215,7 +215,7 @@ export class Connection {
 	#handleClose(): void {
 		const lifecycle = this.#lifecycle;
 		if (lifecycle.state === "disconnected") return;
-		let error: Error = new PiDisconnectedError("Byte transport closed");
+		let error: Error = new DisconnectedError("Byte transport closed");
 		try {
 			lifecycle.decoder.end();
 		} catch (decoderError) {

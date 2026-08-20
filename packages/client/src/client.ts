@@ -29,15 +29,15 @@ import {
 	type SessionTarget,
 } from "@earendil-works/pi-protocol";
 import { Connection } from "./connection.ts";
-import { PiClientDisposedError, PiDisconnectedError, PiServerError, toError } from "./errors.ts";
+import { ClientDisposedError, DisconnectedError, ServerError, toError } from "./errors.ts";
 import { createPromiseResolvers } from "./promise.ts";
 import type {
 	AttachmentChangeListener,
+	ClientOptions,
 	ConnectionState,
 	ConnectionStateChange,
-	PiClientOptions,
-	PiLaneWatch,
-	PiServiceSubscription,
+	LaneWatch,
+	ServiceSubscription,
 	Unsubscribe,
 } from "./types.ts";
 
@@ -60,8 +60,8 @@ interface ActiveServiceListener {
 	ready: boolean;
 }
 
-export class PiClient {
-	readonly #options: PiClientOptions;
+export class Client {
+	readonly #options: ClientOptions;
 	readonly #connection: Connection;
 	readonly #pendingRequests = new Map<string, PendingRequest>();
 	readonly #connectionStateListeners = new Set<(change: ConnectionStateChange) => void>();
@@ -76,9 +76,9 @@ export class PiClient {
 	#disposed = false;
 	#disposePromise: Promise<void> | undefined;
 
-	constructor(options: PiClientOptions) {
+	constructor(options: ClientOptions) {
 		if (!isServerId(options.serverId)) {
-			throw new TypeError("PiClient serverId must be a canonical lowercase UUIDv4");
+			throw new TypeError("serverId must be a canonical lowercase UUIDv4");
 		}
 		this.#options = options;
 		this.#connection = new Connection({
@@ -122,8 +122,8 @@ export class PiClient {
 		return this.#attachment;
 	}
 
-	static async connect(options: PiClientOptions): Promise<PiClient> {
-		const client = new PiClient(options);
+	static async connect(options: ClientOptions): Promise<Client> {
+		const client = new Client(options);
 		try {
 			await client.connect();
 			return client;
@@ -134,7 +134,7 @@ export class PiClient {
 	}
 
 	connect(): Promise<ServerHello> {
-		if (this.#disposed) return Promise.reject(new PiClientDisposedError());
+		if (this.#disposed) return Promise.reject(new ClientDisposedError());
 		this.#hello = undefined;
 		return this.#connection.connect();
 	}
@@ -175,7 +175,7 @@ export class PiClient {
 	async attachSession(session: string | SessionAddress): Promise<ServiceRpcResult<"attach">> {
 		const sessionId = typeof session === "string" ? session : session.sessionId;
 		if (typeof session !== "string" && session.serverId !== this.#options.serverId) {
-			throw new PiServerError({ code: "wrong_server", message: "Session belongs to another server" });
+			throw new ServerError({ code: "wrong_server", message: "Session belongs to another server" });
 		}
 		const result = await this.#request(
 			{ serverId: this.#options.serverId },
@@ -226,7 +226,7 @@ export class PiClient {
 		mode: ServiceMode,
 		listener: (update: ServiceProviderUpdate) => void | Promise<void>,
 		signal?: AbortSignal,
-	): Promise<PiServiceSubscription> {
+	): Promise<ServiceSubscription> {
 		const subscriptionId = `service-${++this.#serviceSubscriptionSequence}`;
 		const active: ActiveServiceListener = {
 			target,
@@ -256,7 +256,7 @@ export class PiClient {
 			if (this.#serviceListeners.get(subscriptionId) === active) this.#serviceListeners.delete(subscriptionId);
 			throw error;
 		}
-		if (this.#serviceListeners.get(subscriptionId) !== active) throw new PiDisconnectedError();
+		if (this.#serviceListeners.get(subscriptionId) !== active) throw new DisconnectedError();
 		let disposed = false;
 		return {
 			id: subscriptionId,
@@ -283,7 +283,7 @@ export class PiClient {
 		};
 	}
 
-	async watchSession(sessionId: string): Promise<PiLaneWatch> {
+	async watchSession(sessionId: string): Promise<LaneWatch> {
 		this.#requireSessionTarget(sessionId);
 		const { watchId, snapshot } = await this.#rpc.watch();
 		const connection = this.#hello;
@@ -293,7 +293,7 @@ export class PiClient {
 			sessionId,
 			snapshot,
 			start: async (listener) => {
-				if (state !== "ready") throw new Error("Pi lane watch may be started only once");
+				if (state !== "ready") throw new Error("Lane watch may be started only once");
 				if (this.#watchListeners.has(watchId)) {
 					this.#connection.fail(new ProtocolValidationError("Server reused an active lane watch ID"));
 					throw new ProtocolValidationError("Server reused an active lane watch ID");
@@ -327,8 +327,8 @@ export class PiClient {
 	}
 
 	#request(target: RpcTarget, call: ProtocolRpcCall, signal?: AbortSignal): Promise<unknown> {
-		if (this.#disposed) return Promise.reject(new PiClientDisposedError());
-		if (!this.connected) return Promise.reject(new PiDisconnectedError());
+		if (this.#disposed) return Promise.reject(new ClientDisposedError());
+		if (!this.connected) return Promise.reject(new DisconnectedError());
 		if (signal?.aborted) return Promise.reject(abortError(signal));
 		const id = `request-${++this.#requestSequence}`;
 		const { promise, resolve, reject } = createPromiseResolvers<unknown>();
@@ -407,7 +407,7 @@ export class PiClient {
 			return;
 		}
 		if (!message.ok) {
-			pending.reject(new PiServerError(message.error));
+			pending.reject(new ServerError(message.error));
 			return;
 		}
 		pending.resolve(message.result);
@@ -417,7 +417,7 @@ export class PiClient {
 		if (change.state === "disconnected") {
 			this.#hello = undefined;
 			this.#setAttachment(undefined);
-			this.#rejectPendingRequests(change.error ?? new PiDisconnectedError());
+			this.#rejectPendingRequests(change.error ?? new DisconnectedError());
 			this.#watchListeners.clear();
 			this.#serviceListeners.clear();
 		}
@@ -452,7 +452,7 @@ export class PiClient {
 		if (this.#disposePromise) return this.#disposePromise;
 		this.#disposed = true;
 		this.#disposePromise = Promise.resolve();
-		const error = new PiClientDisposedError();
+		const error = new ClientDisposedError();
 		this.#rejectPendingRequests(error);
 		this.#connection.disconnect(error);
 		this.#hello = undefined;
@@ -485,7 +485,7 @@ export class PiClient {
 	#requireSessionTarget(sessionId?: string): SessionTarget {
 		const attachment = this.#attachment;
 		if (attachment === undefined || (sessionId !== undefined && attachment.sessionId !== sessionId)) {
-			throw new PiServerError({ code: "session_not_attached", message: "Session is not attached" });
+			throw new ServerError({ code: "session_not_attached", message: "Session is not attached" });
 		}
 		return attachment;
 	}
@@ -526,7 +526,7 @@ export class PiClient {
 	}
 
 	#assertNotDisposed(): void {
-		if (this.#disposed) throw new PiClientDisposedError();
+		if (this.#disposed) throw new ClientDisposedError();
 	}
 
 	#reportListenerError(error: unknown): void {

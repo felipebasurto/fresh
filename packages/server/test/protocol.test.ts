@@ -1,13 +1,13 @@
 import { encodeCbor, encodeClientMessage, encodeFrame, PROTOCOL_VERSION } from "@earendil-works/pi-protocol";
 import { afterEach, expect, test } from "vitest";
 import type { ByteConnection, ByteConnectionHandler } from "../src/connection.ts";
-import { PiServer } from "../src/server.ts";
+import { Server } from "../src/server.ts";
 import { ProtocolTestClient, TestServerHost, type WireChannel } from "../src/testing/index.ts";
 
-let server: PiServer | undefined;
+let server: Server | undefined;
 
 function connect(): ProtocolTestClient {
-	server = new PiServer(new TestServerHost(), { listeners: [], serverId: "00000000-0000-4000-8000-000000000001" });
+	server = new Server(new TestServerHost(), { listeners: [], serverId: "00000000-0000-4000-8000-000000000001" });
 	let handler: ByteConnectionHandler;
 	let client: ProtocolTestClient;
 	let closed = false;
@@ -144,7 +144,7 @@ test("processes a hello and request coalesced in one byte chunk", async () => {
 
 test("reports a truncated final frame when the peer closes", async () => {
 	const errors: Error[] = [];
-	server = new PiServer(new TestServerHost(), {
+	server = new Server(new TestServerHost(), {
 		listeners: [],
 		serverId: "00000000-0000-4000-8000-000000000001",
 		onError: (error) => errors.push(error),

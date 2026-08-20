@@ -7,20 +7,20 @@ import {
 	type RemoteServiceConnection,
 	RemoteServiceNamespace,
 } from "@earendil-works/pi-agent-core";
-import type { PiClient } from "@earendil-works/pi-client";
+import type { Client } from "@earendil-works/pi-client";
 import type { ProtocolRpcCall, RpcTarget, ServiceProviderUpdate } from "@earendil-works/pi-protocol";
 
-export interface PiServiceNamespaceOptions {
+export interface ServiceNamespaceOptions {
 	readonly services: readonly { readonly id: string }[];
 	readonly onError?: (error: Error) => void;
 }
 
-class PiServerServiceNamespace extends RemoteServiceNamespace {
+class ServerServiceNamespace extends RemoteServiceNamespace {
 	readonly #removeConnectionListener: () => void;
 	readonly #onError: ((error: Error) => void) | undefined;
 	#transition = Promise.resolve();
 
-	constructor(client: PiClient, connection: RemoteServiceConnection, options: PiServiceNamespaceOptions) {
+	constructor(client: Client, connection: RemoteServiceConnection, options: ServiceNamespaceOptions) {
 		super({
 			services: options.services,
 			connection,
@@ -42,12 +42,12 @@ class PiServerServiceNamespace extends RemoteServiceNamespace {
 	}
 }
 
-class PiSessionServiceNamespace extends RemoteServiceNamespace {
+class SessionServiceNamespace extends RemoteServiceNamespace {
 	readonly #removeAttachmentListener: () => void;
 	readonly #onError: ((error: Error) => void) | undefined;
 	#transition = Promise.resolve();
 
-	constructor(client: PiClient, connection: RemoteServiceConnection, options: PiServiceNamespaceOptions) {
+	constructor(client: Client, connection: RemoteServiceConnection, options: ServiceNamespaceOptions) {
 		super({
 			services: options.services,
 			connection,
@@ -70,24 +70,21 @@ class PiSessionServiceNamespace extends RemoteServiceNamespace {
 }
 
 /** Bind plugin service facades to the connected server route. */
-export function createPiServerServiceNamespace(
-	client: PiClient,
-	options: PiServiceNamespaceOptions,
-): RemoteServiceNamespace {
+export function createServerServiceNamespace(client: Client, options: ServiceNamespaceOptions): RemoteServiceNamespace {
 	const connection = createServiceConnection(client, () => ({ serverId: client.serverId }));
-	return new PiServerServiceNamespace(client, connection, options);
+	return new ServerServiceNamespace(client, connection, options);
 }
 
-/** Bind plugin service facades to the Pi client's selected Session route. */
-export function createPiSessionServiceNamespace(
-	client: PiClient,
-	options: PiServiceNamespaceOptions,
+/** Bind plugin service facades to the client's selected Session route. */
+export function createSessionServiceNamespace(
+	client: Client,
+	options: ServiceNamespaceOptions,
 ): RemoteServiceNamespace {
 	const connection = createServiceConnection(client, () => client.attachment);
-	return new PiSessionServiceNamespace(client, connection, options);
+	return new SessionServiceNamespace(client, connection, options);
 }
 
-function createServiceConnection(client: PiClient, getTarget: () => RpcTarget | undefined): RemoteServiceConnection {
+function createServiceConnection(client: Client, getTarget: () => RpcTarget | undefined): RemoteServiceConnection {
 	return {
 		invoke: async (call, context) => {
 			const target = getTarget();

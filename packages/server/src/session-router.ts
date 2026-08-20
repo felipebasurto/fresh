@@ -25,7 +25,7 @@ import {
 	WatchInUseError,
 	WatchNotFoundError,
 } from "./errors.ts";
-import type { PiServerHost, RoutedSessionAttachment, RoutedSessionHandle, RoutedSessionWatch } from "./types.ts";
+import type { RoutedSessionAttachment, RoutedSessionHandle, RoutedSessionWatch, ServerHost } from "./types.ts";
 
 class SessionCleanupError extends AggregateError {}
 
@@ -64,7 +64,7 @@ interface HostedSession {
 }
 
 interface SessionRouterOptions<TMetadata extends SessionMetadata> {
-	host: PiServerHost<TMetadata>;
+	host: ServerHost<TMetadata>;
 	serverId: string;
 	isClosing: () => boolean;
 	publishAttachment(client: object, attachment: SessionTarget | undefined, context: Context): Promise<void>;

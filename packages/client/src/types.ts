@@ -18,7 +18,7 @@ export type Unsubscribe = () => void;
 export type ListenerErrorHandler = (error: Error) => void;
 export type AttachmentChangeListener = (attachment: SessionTarget | undefined) => void;
 
-export interface PiLaneWatch {
+export interface LaneWatch {
 	readonly id: string;
 	readonly sessionId: string;
 	readonly snapshot: LaneSnapshot;
@@ -26,7 +26,7 @@ export interface PiLaneWatch {
 	dispose(): Promise<void>;
 }
 
-export interface PiServiceSubscription {
+export interface ServiceSubscription {
 	readonly id: string;
 	readonly target: RpcTarget;
 	readonly snapshot: ServiceSubscriptionSnapshot;
@@ -35,7 +35,7 @@ export interface PiServiceSubscription {
 	dispose(): Promise<void>;
 }
 
-export interface PiClientOptions {
+export interface ClientOptions {
 	transportFactory: ByteTransportFactory;
 	/** Logical server identity expected at the physical endpoint. */
 	serverId: string;

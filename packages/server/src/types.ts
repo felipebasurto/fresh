@@ -9,10 +9,10 @@ import type {
 	ServiceProviderUpdate,
 	SessionCreateOptions,
 } from "@earendil-works/pi-protocol";
-import type { PiServerListener } from "./listener.ts";
+import type { ServerListener } from "./listener.ts";
 
-export interface PiServerOptions {
-	listeners: readonly PiServerListener[];
+export interface ServerOptions {
+	listeners: readonly ServerListener[];
 	/** Stable logical server identity supplied by the installation or profile. */
 	serverId: string;
 	maxFrameLength?: number;
@@ -76,7 +76,7 @@ export interface RoutedSessionHandle {
 }
 
 /** Application capabilities used by server-wide management and Session routing. */
-export interface PiServerHost<TMetadata extends SessionMetadata = SessionMetadata> {
+export interface ServerHost<TMetadata extends SessionMetadata = SessionMetadata> {
 	readonly serverServices?: RoutedServerServiceHost;
 	readonly sessions: {
 		list(context: Context): Promise<TMetadata[]>;

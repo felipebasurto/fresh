@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { ServerMessageDecoder } from "@earendil-works/pi-protocol";
 import { afterEach, expect, test } from "vitest";
 import type { ByteConnection } from "../src/connection.ts";
-import { PiServer } from "../src/index.ts";
-import type { PiServerListener } from "../src/listener.ts";
+import { Server } from "../src/index.ts";
+import type { ServerListener } from "../src/listener.ts";
 import { TestServerHost } from "../src/testing/index.ts";
 import { createUnixServer } from "../src/transports/unix/index.ts";
 
 const host = new TestServerHost();
 
-let server: PiServer | undefined;
+let server: Server | undefined;
 let tempDirectory: string | undefined;
 
 async function makeSocketPath(): Promise<string> {
@@ -27,9 +27,9 @@ afterEach(async () => {
 });
 
 test("requires explicit listeners and a canonical UUIDv4 server identity", () => {
-	expect(() => Reflect.construct(PiServer, [host, {}])).toThrow(/listeners/);
-	expect(() => new PiServer(host, { listeners: [], serverId: "" })).toThrow(/serverId/);
-	expect(() => new PiServer(host, { listeners: [], serverId: "invalid-server" })).toThrow(/serverId/);
+	expect(() => Reflect.construct(Server, [host, {}])).toThrow(/listeners/);
+	expect(() => new Server(host, { listeners: [], serverId: "" })).toThrow(/serverId/);
+	expect(() => new Server(host, { listeners: [], serverId: "invalid-server" })).toThrow(/serverId/);
 });
 
 test("rejects concurrent start calls without leaking the Unix listener", async () => {
@@ -61,7 +61,7 @@ test("handshake timeout closes with a final hello_error frame", async () => {
 			resolveClosed?.();
 		}
 	}
-	const core = new PiServer(host, {
+	const core = new Server(host, {
 		listeners: [],
 		serverId: "00000000-0000-4000-8000-000000000001",
 		maxFrameLength: 1024,
@@ -110,13 +110,13 @@ test("rejects pending-byte limits smaller than one maximum frame", async () => {
 
 test("rejects close and closed when listener shutdown fails", async () => {
 	const failure = new Error("listener close failed");
-	const listener: PiServerListener = {
+	const listener: ServerListener = {
 		start: async () => {},
 		close: async () => {
 			throw failure;
 		},
 	};
-	const core = new PiServer(host, {
+	const core = new Server(host, {
 		listeners: [listener],
 		serverId: "00000000-0000-4000-8000-000000000001",
 	});

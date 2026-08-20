@@ -1,4 +1,4 @@
-import { PiClient } from "@earendil-works/pi-client";
+import { Client } from "@earendil-works/pi-client";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 import { complete, getModel, getProviders, streamSimple } from "@earendil-works/pi-ai/compat";
 import {
@@ -57,7 +57,7 @@ console.log(
 	new FileError("not_found", "missing").code,
 	toError("boom").message,
 	typeof streamProxy,
-	typeof PiClient,
+	typeof Client,
 	PROTOCOL_VERSION,
 	decodeCbor(encodeCbor({ browser: true })),
 );

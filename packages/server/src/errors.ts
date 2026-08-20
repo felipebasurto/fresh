@@ -1,6 +1,6 @@
 import type { ProtocolErrorCode, ServiceErrorCode } from "@earendil-works/pi-protocol";
 
-type PiServerOperationErrorCode =
+type ServerOperationErrorCode =
 	| ServiceErrorCode
 	| Extract<
 			ProtocolErrorCode,
@@ -17,66 +17,66 @@ type PiServerOperationErrorCode =
 export const INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error";
 
 /** A host or lifecycle error that can safely cross the protocol boundary. */
-export class PiServerError extends Error {
-	readonly code: PiServerOperationErrorCode;
+export class ServerError extends Error {
+	readonly code: ServerOperationErrorCode;
 
-	constructor(code: PiServerOperationErrorCode, message: string) {
+	constructor(code: ServerOperationErrorCode, message: string) {
 		super(message);
-		this.name = "PiServerError";
+		this.name = "ServerError";
 		this.code = code;
 	}
 }
 
-export class WrongServerError extends PiServerError {
+export class WrongServerError extends ServerError {
 	constructor() {
 		super("wrong_server", "Request was addressed to another server");
 		this.name = "WrongServerError";
 	}
 }
 
-export class SessionNotFoundError extends PiServerError {
+export class SessionNotFoundError extends ServerError {
 	constructor(message = "Session was not found") {
 		super("session_not_found", message);
 		this.name = "SessionNotFoundError";
 	}
 }
 
-export class SessionAmbiguousError extends PiServerError {
+export class SessionAmbiguousError extends ServerError {
 	constructor() {
 		super("session_ambiguous", "Session ID matches more than one session");
 		this.name = "SessionAmbiguousError";
 	}
 }
 
-export class SessionNotAttachedError extends PiServerError {
+export class SessionNotAttachedError extends ServerError {
 	constructor() {
 		super("session_not_attached", "Session is not attached to this client");
 		this.name = "SessionNotAttachedError";
 	}
 }
 
-export class WatchNotFoundError extends PiServerError {
+export class WatchNotFoundError extends ServerError {
 	constructor() {
 		super("watch_not_found", "Lane watch was not found");
 		this.name = "WatchNotFoundError";
 	}
 }
 
-export class WatchInUseError extends PiServerError {
+export class WatchInUseError extends ServerError {
 	constructor() {
 		super("watch_in_use", "Session attachment already has a lane watch");
 		this.name = "WatchInUseError";
 	}
 }
 
-export class NotSupportedError extends PiServerError {
+export class NotSupportedError extends ServerError {
 	constructor(message: string) {
 		super("not_supported", message);
 		this.name = "NotSupportedError";
 	}
 }
 
-export class ServerDrainingError extends PiServerError {
+export class ServerDrainingError extends ServerError {
 	constructor() {
 		super("server_draining", "Server is draining");
 		this.name = "ServerDrainingError";
