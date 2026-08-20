@@ -7,6 +7,15 @@ import { applyInitialSchema } from "../src/sqlite/migrations.ts";
 import { advanceNextSeq, readNextSeq } from "../src/sqlite/session/session-sequences.ts";
 import { listValueReadQuery } from "../src/sqlite/session/values.ts";
 
+const ZERO_USAGE = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
 async function withStorage<T>(run: (storage: SqliteStorage, db: SqliteDatabase) => Promise<T>): Promise<T> {
 	const db = await createNodeSqliteFactory().open(":memory:");
 	try {
@@ -41,14 +50,7 @@ function insertCommitSessionRow(db: SqliteDatabase, nextSeq = 1): void {
 			${1},
 			${null},
 			${0},
-			${JSON.stringify({
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			})},
+			${JSON.stringify(ZERO_USAGE)},
 			${nextSeq}
 		)`.run(db);
 }
@@ -70,7 +72,12 @@ describe("SqliteStorage", () => {
 					],
 					BACKGROUND_CONTEXT,
 				),
-			).toEqual({ firstSeq: 1, seqs: [1], timestamp: 1_700_000_000_000 });
+			).toEqual({
+				firstSeq: 1,
+				seqs: [1],
+				timestamp: 1_700_000_000_000,
+				stats: { messageCount: 1, usage: ZERO_USAGE },
+			});
 			expect(
 				await storage.commit(
 					[
@@ -83,7 +90,12 @@ describe("SqliteStorage", () => {
 					],
 					BACKGROUND_CONTEXT,
 				),
-			).toEqual({ firstSeq: 2, seqs: [2], timestamp: 1_700_000_000_000 });
+			).toEqual({
+				firstSeq: 2,
+				seqs: [2],
+				timestamp: 1_700_000_000_000,
+				stats: { messageCount: 2, usage: ZERO_USAGE },
+			});
 
 			expect(sql`SELECT branch_id, tip_entry_id, tip_seq FROM branch_meta`.all(db)).toEqual([
 				{ branch_id: "root", tip_entry_id: "child", tip_seq: 2 },
@@ -521,6 +533,47 @@ describe("SqliteStorage", () => {
 				VALUES (${1}, ${null}, ${1}, ${null}, ${2}, ${JSON.stringify(usage)}, ${3})`.run(db);
 
 			expect(await storage.getStats(BACKGROUND_CONTEXT)).toEqual({ messageCount: 2, usage });
+			const next = await storage.commit(
+				[storedValues.setValue(storedValues.sessionName, "after-history")],
+				BACKGROUND_CONTEXT,
+			);
+			expect(next.stats).toEqual({ messageCount: 2, usage });
+		});
+	});
+
+	it("includes historical totals in the first commit after storage reopen", async () => {
+		await withStorage(async (storage, db) => {
+			insertCommitSessionRow(db);
+			const usage = {
+				input: 1,
+				output: 2,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 3,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			};
+			await storage.commit(
+				[
+					sessionWrites.insertEntry({
+						id: "history",
+						parentId: null,
+						type: "message",
+						message: { role: "user", content: "history", timestamp: 1 },
+					}),
+					sessionWrites.insertUsage({ id: "usage", usage, adjustment: false }),
+				],
+				BACKGROUND_CONTEXT,
+			);
+			await storage.close(BACKGROUND_CONTEXT);
+
+			const reopened = new SqliteStorage(db, { now: () => 1_700_000_000_000 });
+			const result = await reopened.commit(
+				[storedValues.setValue(storedValues.sessionName, "reopened")],
+				BACKGROUND_CONTEXT,
+			);
+			expect(result.stats).toEqual({ messageCount: 1, usage });
+			expect(result.stats).toEqual(await reopened.getStats(BACKGROUND_CONTEXT));
+			await reopened.close(BACKGROUND_CONTEXT);
 		});
 	});
 

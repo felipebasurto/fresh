@@ -197,7 +197,7 @@ export class SqliteStorage implements Storage {
 				}
 			}
 			advanceNextSeq(this.db, firstSeq + prepared.writes.length);
-			return prepared.result;
+			return { ...prepared.result, stats: readSessionStats(this.db) };
 		});
 	}
 
