@@ -1,4 +1,9 @@
-import type { AgentHarness, RunResult as HarnessRunResult, RemoteServiceProvider } from "@earendil-works/pi-agent-core";
+import {
+	type AgentHarness,
+	type RunResult as HarnessRunResult,
+	type RemoteServiceProvider,
+	ServiceSliceNotImplemented,
+} from "@earendil-works/pi-agent-core";
 import type { PromptArguments } from "@earendil-works/pi-protocol";
 import { toHarnessPromptArguments } from "../harness-wire-adapter.ts";
 import { Chat, type ChatPromptRequest, type ChatPromptResponse } from "./chat.ts";
@@ -16,6 +21,27 @@ export function provideChatService(provider: RemoteServiceProvider, harness: Age
 		async requestAbort(operationId, context) {
 			const result = await harness.requestAbort(operationId, context);
 			if (!result.ok) throw new Error(result.error.message);
+		},
+		async steer() {
+			throw new ServiceSliceNotImplemented("Chat.steer");
+		},
+		async followUp() {
+			throw new ServiceSliceNotImplemented("Chat.followUp");
+		},
+		async nextRun() {
+			throw new ServiceSliceNotImplemented("Chat.nextRun");
+		},
+		async cancelQueued() {
+			throw new ServiceSliceNotImplemented("Chat.cancelQueued");
+		},
+		async resume() {
+			throw new ServiceSliceNotImplemented("Chat.resume");
+		},
+		async compact() {
+			throw new ServiceSliceNotImplemented("Chat.compact");
+		},
+		async navigate() {
+			throw new ServiceSliceNotImplemented("Chat.navigate");
 		},
 	});
 }

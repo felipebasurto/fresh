@@ -13,6 +13,7 @@ import {
 	type JsonlSessionMetadata,
 	JsonlSessionRepo,
 	RemoteServiceError,
+	ServiceSliceNotImplemented,
 	type Session,
 	TODO_CONTEXT,
 	withCancel,
@@ -724,7 +725,8 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 				response: { type: "operation_result", requestId: request.requestId, scope: request.scope, result },
 			});
 		} catch (error) {
-			const code: ServiceErrorCode | undefined = error instanceof RemoteServiceError ? error.code : undefined;
+			const code: ServiceErrorCode | undefined =
+				error instanceof RemoteServiceError || error instanceof ServiceSliceNotImplemented ? error.code : undefined;
 			await control.send({
 				type: "operation_response",
 				token,

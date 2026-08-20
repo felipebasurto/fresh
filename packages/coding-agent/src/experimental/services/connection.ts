@@ -6,19 +6,42 @@ import {
 	isJsonValue,
 	type RemoteServiceConnection,
 	RemoteServiceNamespace,
+	type RemoteServiceNamespaceApi,
+	type RemoteState,
+	remoteState,
 } from "@earendil-works/pi-agent-core";
 import type { Client } from "@earendil-works/pi-client";
 import type { ProtocolRpcCall, RpcTarget, ServiceProviderUpdate } from "@earendil-works/pi-protocol";
+import { BUILTIN_SERVER_SERVICES, BUILTIN_SESSION_SERVICES } from "./builtins.ts";
+
+export type ServerConnectionState =
+	| { status: "connecting"; attempt: number }
+	| { status: "connected"; since: string }
+	| { status: "disconnected"; since: string; reason: string; retryAt: string | null };
+
+export type SessionAttachmentState =
+	| { status: "detached" }
+	| { status: "attaching" | "attached" | "degraded"; sessionId: string };
+
+export interface ServerServices extends RemoteServiceNamespaceApi {
+	readonly connection: RemoteState<ServerConnectionState>;
+}
+
+export interface SessionServices extends RemoteServiceNamespaceApi {
+	readonly attachment: RemoteState<SessionAttachmentState>;
+}
 
 export interface ServiceNamespaceOptions {
 	readonly services: readonly { readonly id: string }[];
 	readonly onError?: (error: Error) => void;
 }
 
-class ServerServiceNamespace extends RemoteServiceNamespace {
+class ServerServiceNamespace extends RemoteServiceNamespace implements ServerServices {
+	readonly connection: RemoteState<ServerConnectionState>;
 	readonly #removeConnectionListener: () => void;
 	readonly #onError: ((error: Error) => void) | undefined;
 	#transition = Promise.resolve();
+	#connectionAttempt: number;
 
 	constructor(client: Client, connection: RemoteServiceConnection, options: ServiceNamespaceOptions) {
 		super({
@@ -28,10 +51,17 @@ class ServerServiceNamespace extends RemoteServiceNamespace {
 			...(options.onError === undefined ? {} : { onError: options.onError }),
 		});
 		this.#onError = options.onError;
-		this.#removeConnectionListener = client.onConnectionStateChange(({ state }) => {
+		this.#connectionAttempt = client.connectionState === "connecting" ? 1 : 0;
+		const connectionState = remoteState<ServerConnectionState>(
+			toServerConnectionState(client, this.#connectionAttempt),
+		);
+		this.connection = connectionState;
+		this.#removeConnectionListener = client.onConnectionStateChange(({ state, error }) => {
+			if (state === "connecting") this.#connectionAttempt += 1;
+			connectionState.set(toServerConnectionState(client, this.#connectionAttempt, error), BACKGROUND_CONTEXT);
 			this.#transition = this.#transition
 				.then(() => this.rebind(state === "connected", BACKGROUND_CONTEXT))
-				.catch((error: unknown) => this.#onError?.(toError(error)));
+				.catch((transitionError: unknown) => this.#onError?.(toError(transitionError)));
 		});
 	}
 
@@ -42,7 +72,8 @@ class ServerServiceNamespace extends RemoteServiceNamespace {
 	}
 }
 
-class SessionServiceNamespace extends RemoteServiceNamespace {
+class SessionServiceNamespace extends RemoteServiceNamespace implements SessionServices {
+	readonly attachment: RemoteState<SessionAttachmentState>;
 	readonly #removeAttachmentListener: () => void;
 	readonly #onError: ((error: Error) => void) | undefined;
 	#transition = Promise.resolve();
@@ -55,7 +86,13 @@ class SessionServiceNamespace extends RemoteServiceNamespace {
 			...(options.onError === undefined ? {} : { onError: options.onError }),
 		});
 		this.#onError = options.onError;
+		const attachmentState = remoteState<SessionAttachmentState>(toSessionAttachmentState(client));
+		this.attachment = attachmentState;
 		this.#removeAttachmentListener = client.onAttachmentChange((attachment) => {
+			attachmentState.set(
+				attachment === undefined ? { status: "detached" } : { status: "attached", sessionId: attachment.sessionId },
+				BACKGROUND_CONTEXT,
+			);
 			this.#transition = this.#transition
 				.then(() => this.rebind(attachment !== undefined, BACKGROUND_CONTEXT))
 				.catch((error: unknown) => this.#onError?.(toError(error)));
@@ -70,18 +107,31 @@ class SessionServiceNamespace extends RemoteServiceNamespace {
 }
 
 /** Bind plugin service facades to the connected server route. */
-export function createServerServiceNamespace(client: Client, options: ServiceNamespaceOptions): RemoteServiceNamespace {
+export function createServerServiceNamespace(client: Client, options: ServiceNamespaceOptions): ServerServices {
 	const connection = createServiceConnection(client, () => ({ serverId: client.serverId }));
 	return new ServerServiceNamespace(client, connection, options);
 }
 
-/** Bind plugin service facades to the client's selected Session route. */
-export function createSessionServiceNamespace(
+/** Bind every built-in server service expected by the presentation host. */
+export function createBuiltinServerServiceNamespace(
 	client: Client,
-	options: ServiceNamespaceOptions,
-): RemoteServiceNamespace {
+	options: Omit<ServiceNamespaceOptions, "services"> = {},
+): ServerServices {
+	return createServerServiceNamespace(client, { ...options, services: BUILTIN_SERVER_SERVICES });
+}
+
+/** Bind plugin service facades to the client's selected Session route. */
+export function createSessionServiceNamespace(client: Client, options: ServiceNamespaceOptions): SessionServices {
 	const connection = createServiceConnection(client, () => client.attachment);
 	return new SessionServiceNamespace(client, connection, options);
+}
+
+/** Bind every built-in Session service expected by the presentation host. */
+export function createBuiltinSessionServiceNamespace(
+	client: Client,
+	options: Omit<ServiceNamespaceOptions, "services"> = {},
+): SessionServices {
+	return createSessionServiceNamespace(client, { ...options, services: BUILTIN_SESSION_SERVICES });
 }
 
 function createServiceConnection(client: Client, getTarget: () => RpcTarget | undefined): RemoteServiceConnection {
@@ -117,6 +167,28 @@ function createServiceConnection(client: Client, getTarget: () => RpcTarget | un
 			};
 		},
 	};
+}
+
+function toServerConnectionState(client: Client, attempt: number, error?: Error): ServerConnectionState {
+	const since = new Date().toISOString();
+	switch (client.connectionState) {
+		case "connecting":
+			return { status: "connecting", attempt };
+		case "connected":
+			return { status: "connected", since };
+		case "disconnected":
+			return {
+				status: "disconnected",
+				since,
+				reason: error?.message ?? "Client is disconnected",
+				retryAt: null,
+			};
+	}
+}
+
+function toSessionAttachmentState(client: Client): SessionAttachmentState {
+	const attachment = client.attachment;
+	return attachment === undefined ? { status: "detached" } : { status: "attached", sessionId: attachment.sessionId };
 }
 
 function toError(error: unknown): Error {

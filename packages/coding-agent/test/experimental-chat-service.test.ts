@@ -6,6 +6,7 @@ import {
 	InvalidMessage,
 	LaneBusy,
 	RemoteServiceProvider,
+	ServiceSliceNotImplemented,
 	UnknownSkill,
 	UnknownTemplate,
 } from "@earendil-works/pi-agent-core";
@@ -64,6 +65,12 @@ describe("Chat service", () => {
 			).resolves.toBeUndefined();
 			expect(prompt).toHaveBeenCalledWith("hello", undefined, BACKGROUND_CONTEXT);
 			expect(requestAbort).toHaveBeenCalledWith("operation-1", BACKGROUND_CONTEXT);
+			await expect(
+				provider.invoke(
+					{ serviceId: "chat", member: "steer", args: [{ message: "later", images: null }] },
+					BACKGROUND_CONTEXT,
+				),
+			).rejects.toBeInstanceOf(ServiceSliceNotImplemented);
 		} finally {
 			provider.dispose();
 		}

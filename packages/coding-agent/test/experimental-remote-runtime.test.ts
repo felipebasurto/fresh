@@ -13,6 +13,7 @@ import {
 } from "../src/experimental/services/connection.ts";
 import { Models } from "../src/experimental/services/models.ts";
 import { SessionDirectory, SessionManagement } from "../src/experimental/services/sessions.ts";
+import { Transcript } from "../src/experimental/services/transcript.ts";
 import {
 	configureExperimentalWorkerModel,
 	createExperimentalSessions,
@@ -302,6 +303,8 @@ describe("experimental durable server composition", () => {
 			services: [SessionDirectory, SessionManagement],
 			onError: (error) => errors.push(error),
 		});
+		expect(firstServices.connection.value).toMatchObject({ status: "connected" });
+		expect(secondServices.connection.value).toMatchObject({ status: "connected" });
 		const firstDirectory = firstServices.use(SessionDirectory);
 		const secondDirectory = secondServices.use(SessionDirectory);
 		const firstManagement = firstServices.use(SessionManagement);
@@ -368,6 +371,8 @@ describe("experimental durable server composition", () => {
 			services: [Models],
 			onError: (error) => errors.push(error),
 		});
+		expect(firstServices.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });
+		expect(secondServices.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });
 		const firstModels = firstServices.use(Models);
 		const secondModels = secondServices.use(Models);
 
@@ -387,6 +392,19 @@ describe("experimental durable server composition", () => {
 		expect(errors).toEqual([]);
 
 		await Promise.all([firstServices.dispose(BACKGROUND_CONTEXT), secondServices.dispose(BACKGROUND_CONTEXT)]);
+	});
+
+	test("routes explicit later-slice errors across the framed service boundary", async () => {
+		const { runtime } = await makeServer();
+		const client = await attachClient(runtime, "demo-1");
+		const services = createSessionServiceNamespace(client, { services: [Transcript] });
+		const transcript = services.use(Transcript);
+
+		await expect(transcript.snapshot(BACKGROUND_CONTEXT)).rejects.toMatchObject({
+			code: "service_not_implemented",
+			message: "Transcript.snapshot is not implemented until its later plugin-service slice",
+		});
+		await services.dispose(BACKGROUND_CONTEXT);
 	});
 
 	test("observes keyed service instances and fences replacement generations over framed transport", async ({
@@ -433,6 +451,7 @@ describe("experimental durable server composition", () => {
 		const replaced = observed[1]!.service;
 		await expect(client.attachSession("demo-2")).resolves.toMatchObject({ sessionId: "demo-2" });
 		await vi.waitFor(() => expect(observed).toHaveLength(3));
+		expect(services.attachment.value).toEqual({ status: "attached", sessionId: "demo-2" });
 		expect(observed[1]!.context.abortSignal?.aborted).toBe(true);
 		expect(observed[2]!.value).toBe("first");
 		await expect(replaced.replace("late", BACKGROUND_CONTEXT)).rejects.toMatchObject({

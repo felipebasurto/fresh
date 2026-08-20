@@ -1,6 +1,7 @@
 import {
 	BACKGROUND_CONTEXT,
 	RemoteServiceError,
+	ServiceSliceNotImplemented,
 	type SessionMetadata,
 	TODO_CONTEXT,
 	withAbortSignal,
@@ -466,7 +467,11 @@ export class Server<TMetadata extends SessionMetadata = SessionMetadata> {
 	}
 
 	private toProtocolError(error: unknown): ProtocolError {
-		if (error instanceof ServerError || error instanceof RemoteServiceError) {
+		if (
+			error instanceof ServerError ||
+			error instanceof RemoteServiceError ||
+			error instanceof ServiceSliceNotImplemented
+		) {
 			return { code: error.code, message: error.message };
 		}
 		if (error instanceof ProtocolValidationError) {

@@ -105,7 +105,7 @@ export type ProtocolRpcResult = JsonValue | undefined;
 
 export const ServiceMemberDescriptionSchema = StrictObject({
 	name: IdSchema,
-	kind: Type.Union([Type.Literal("method"), Type.Literal("state")]),
+	kind: Type.Union([Type.Literal("method"), Type.Literal("state"), Type.Literal("events")]),
 });
 export type ServiceMemberDescription = Static<typeof ServiceMemberDescriptionSchema>;
 
@@ -237,6 +237,7 @@ export const ServiceErrorCodeSchema = Type.Union([
 	Type.Literal("service_instance_not_found"),
 	Type.Literal("service_stale_instance"),
 	Type.Literal("service_invalid_value"),
+	Type.Literal("service_not_implemented"),
 ]);
 export type ServiceErrorCode = Static<typeof ServiceErrorCodeSchema>;
 

@@ -1,12 +1,12 @@
 import { basename } from "node:path";
-import { BACKGROUND_CONTEXT, type RemoteServiceNamespace, type RemoteState } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, type RemoteServiceNamespaceApi, type RemoteState } from "@earendil-works/pi-agent-core";
 import { Client } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
 import { isServerId, type LaneEvent, type PromptMessage, type SessionAddress } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
 import { Chat, type ChatPromptResponse } from "./services/chat.ts";
-import { createServerServiceNamespace, createSessionServiceNamespace } from "./services/connection.ts";
+import { createBuiltinServerServiceNamespace, createBuiltinSessionServiceNamespace } from "./services/connection.ts";
 import { SessionDirectory, SessionManagement, type SessionManagementService } from "./services/sessions.ts";
 
 export type ClientResult =
@@ -57,7 +57,7 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 		}
 	}
 	const openedClients = new Set<Client>();
-	const serviceNamespaces = new Set<RemoteServiceNamespace>();
+	const serviceNamespaces = new Set<RemoteServiceNamespaceApi>();
 	if (activatedClient) openedClients.add(activatedClient);
 	const discovered: {
 		route: UnixServerRoute;
@@ -76,9 +76,7 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 				}));
 			activatedClient = undefined;
 			openedClients.add(client);
-			const services = createServerServiceNamespace(client, {
-				services: [SessionDirectory, SessionManagement],
-			});
+			const services = createBuiltinServerServiceNamespace(client);
 			serviceNamespaces.add(services);
 			const directory = services.use(SessionDirectory);
 			const management = services.use(SessionManagement);
@@ -130,7 +128,7 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 			return { kind: "attached", serverId: match.route.serverId, sessionId };
 		}
 
-		const sessionServices = createSessionServiceNamespace(match.client, { services: [Chat] });
+		const sessionServices = createBuiltinSessionServiceNamespace(match.client);
 		serviceNamespaces.add(sessionServices);
 		const chat = sessionServices.use(Chat);
 		const completedText = new Map<string, string>();

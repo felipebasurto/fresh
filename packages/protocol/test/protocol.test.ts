@@ -27,6 +27,7 @@ import {
 	ProtocolValidationError,
 	parseClientMessage,
 	parseServerMessage,
+	parseServiceSubscriptionSnapshot,
 	type RunResult,
 	RunResultSchema,
 	type ServerHello,
@@ -218,6 +219,17 @@ describe("protocol validation", () => {
 		expect(decodeServiceControlCall(createServiceUnsubscribeCall("subscription-1"))).toEqual({
 			type: "unsubscribe",
 			subscriptionId: "subscription-1",
+		});
+		expect(
+			parseServiceSubscriptionSnapshot({
+				serviceId: "transcript",
+				mode: "singleton",
+				instances: [{ members: [{ name: "events", kind: "events" }], states: {} }],
+			}),
+		).toEqual({
+			serviceId: "transcript",
+			mode: "singleton",
+			instances: [{ members: [{ name: "events", kind: "events" }], states: {} }],
 		});
 		const keyed: ClientMessage = {
 			type: "request",

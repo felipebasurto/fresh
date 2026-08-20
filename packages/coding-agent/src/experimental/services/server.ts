@@ -3,6 +3,7 @@ import {
 	type Context,
 	type ServiceProviderUpdate as CoreServiceProviderUpdate,
 	RemoteServiceProvider,
+	remoteEvents,
 	remoteState,
 	type ServiceProviderSubscription,
 } from "@earendil-works/pi-agent-core";
@@ -17,7 +18,13 @@ import {
 } from "@earendil-works/pi-protocol";
 import type { RoutedServerServiceAttachment, RoutedServerServiceHost } from "@earendil-works/pi-server";
 import { Check } from "typebox/value";
-import { SessionDirectory, type SessionDirectoryState, SessionManagement } from "./sessions.ts";
+import { BUILTIN_SERVER_SERVICES } from "./server-builtins.ts";
+import {
+	SessionDirectory,
+	type SessionDirectoryEvent,
+	type SessionDirectoryState,
+	SessionManagement,
+} from "./sessions.ts";
 
 export interface ExperimentalServerServices {
 	readonly host: RoutedServerServiceHost;
@@ -35,6 +42,7 @@ export async function createExperimentalServerServices(options: {
 		revision,
 		sessions: await options.list(BACKGROUND_CONTEXT),
 	});
+	const directoryEvents = remoteEvents<SessionDirectoryEvent>();
 	const attachments = new Set<RoutedServerServiceAttachment>();
 	let mutationTail = Promise.resolve();
 
@@ -54,8 +62,8 @@ export async function createExperimentalServerServices(options: {
 	return {
 		host: {
 			attachClient(presentation) {
-				const provider = new RemoteServiceProvider([SessionDirectory, SessionManagement]);
-				provider.provide(SessionDirectory, { state: directory });
+				const provider = new RemoteServiceProvider(BUILTIN_SERVER_SERVICES);
+				provider.provide(SessionDirectory, { state: directory, events: directoryEvents });
 				provider.provide(SessionManagement, {
 					create: (createOptions, context) =>
 						serialize(async () => {

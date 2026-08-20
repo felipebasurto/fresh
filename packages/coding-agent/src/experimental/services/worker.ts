@@ -16,10 +16,10 @@ import {
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import type { ModelRuntime } from "../../core/model-runtime.ts";
-import { Chat } from "./chat.ts";
 import { provideChatService } from "./chat-provider.ts";
-import { Models } from "./models.ts";
 import { provideModelsService } from "./models-provider.ts";
+import { BUILTIN_SESSION_SERVICES } from "./session-builtins.ts";
+import { provideBuiltinServiceStubs } from "./stubs-provider.ts";
 
 export const ServiceOperationResultSchema = Type.Object(
 	{ result: Type.Optional(JsonValueSchema) },
@@ -57,10 +57,11 @@ export async function createSessionWorkerServices(options: {
 	readonly configureServices: ((provider: RemoteServiceProvider) => void | Promise<void>) | undefined;
 	publish(scope: WorkerServiceScope, subscriptionId: string, update: ProtocolServiceProviderUpdate): Promise<void>;
 }): Promise<SessionWorkerServices> {
-	const provider = new RemoteServiceProvider([Chat, Models, ...options.serviceTokens]);
+	const provider = new RemoteServiceProvider([...BUILTIN_SESSION_SERVICES, ...options.serviceTokens]);
 	try {
 		provideChatService(provider, options.harness);
 		await provideModelsService(provider, options.harness, options.modelRuntime);
+		provideBuiltinServiceStubs(provider);
 		await options.configureServices?.(provider);
 	} catch (error) {
 		provider.dispose();
