@@ -209,13 +209,13 @@ export function decodeServiceControlCall(call: ProtocolRpcCall): ServiceControlC
 }
 
 const ServiceRpcAddresses = {
-	list: { serviceId: "session-directory", member: "list" },
-	create: { serviceId: "session-management", member: "create" },
-	attach: { serviceId: "session-management", member: "attach" },
-	prompt: { serviceId: "chat", member: "prompt" },
-	watch: { serviceId: "transcript", member: "watch" },
-	startWatch: { serviceId: "transcript", member: "startWatch" },
-	stopWatch: { serviceId: "transcript", member: "stopWatch" },
+	list: { serviceId: "pi.session-directory", member: "list" },
+	create: { serviceId: "pi.session-management", member: "create" },
+	attach: { serviceId: "pi.session-management", member: "attach" },
+	prompt: { serviceId: "pi.chat", member: "prompt" },
+	watch: { serviceId: "pi.transcript", member: "watch" },
+	startWatch: { serviceId: "pi.transcript", member: "startWatch" },
+	stopWatch: { serviceId: "pi.transcript", member: "stopWatch" },
 } as const satisfies Record<ServiceRpcMethod, { serviceId: string; member: string }>;
 
 /** Translate the current built-in contract to its generic service envelope. */

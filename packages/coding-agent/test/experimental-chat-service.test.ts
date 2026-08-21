@@ -56,18 +56,21 @@ describe("Chat service", () => {
 		try {
 			await expect(
 				provider.invoke(
-					{ serviceId: "chat", member: "prompt", args: [{ message: "hello", images: null }] },
+					{ serviceId: "pi.chat", member: "prompt", args: [{ message: "hello", images: null }] },
 					BACKGROUND_CONTEXT,
 				),
 			).resolves.toEqual({ accepted: true, operationId: "operation-1", error: null });
 			await expect(
-				provider.invoke({ serviceId: "chat", member: "requestAbort", args: ["operation-1"] }, BACKGROUND_CONTEXT),
+				provider.invoke(
+					{ serviceId: "pi.chat", member: "requestAbort", args: ["operation-1"] },
+					BACKGROUND_CONTEXT,
+				),
 			).resolves.toBeUndefined();
 			expect(prompt).toHaveBeenCalledWith("hello", undefined, BACKGROUND_CONTEXT);
 			expect(requestAbort).toHaveBeenCalledWith("operation-1", BACKGROUND_CONTEXT);
 			await expect(
 				provider.invoke(
-					{ serviceId: "chat", member: "steer", args: [{ message: "later", images: null }] },
+					{ serviceId: "pi.chat", member: "steer", args: [{ message: "later", images: null }] },
 					BACKGROUND_CONTEXT,
 				),
 			).rejects.toBeInstanceOf(ServiceSliceNotImplemented);

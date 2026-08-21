@@ -5,30 +5,25 @@ import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute }
 import { isServerId } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
-import { Chat, type ChatService } from "./services/chat.ts";
+import { Chat } from "./services/chat.ts";
 import {
 	createBuiltinServerServiceNamespace,
 	createBuiltinSessionServiceNamespace,
 	type ServerServices,
 	type SessionServices,
 } from "./services/connection.ts";
-import { Models, type ModelsService } from "./services/models.ts";
-import {
-	SessionDirectory,
-	type SessionDirectoryService,
-	SessionManagement,
-	type SessionManagementService,
-} from "./services/sessions.ts";
+import { Models } from "./services/models.ts";
+import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
 
 export interface ClientRuntimeServer {
 	readonly route: UnixServerRoute;
 	readonly client: Client;
 	readonly server: ServerServices;
 	readonly session: SessionServices;
-	readonly directory: SessionDirectoryService;
-	readonly management: SessionManagementService;
-	readonly models: ModelsService;
-	readonly chat: ChatService;
+	readonly directory: SessionDirectory;
+	readonly management: SessionManagement;
+	readonly models: Models;
+	readonly chat: Chat;
 }
 
 export interface ClientRuntime {

@@ -23,7 +23,7 @@ import {
 	createExperimentalSessions,
 	readExperimentalSessionState,
 } from "./experimental-session-support.ts";
-import { KeyedProbe, type KeyedProbeService } from "./fixtures/keyed-service.ts";
+import { KeyedProbe } from "./fixtures/keyed-service.ts";
 
 const servers = new Set<RunningServer>();
 const clients = new Set<Client>();
@@ -449,7 +449,7 @@ describe("experimental durable server composition", () => {
 			services: [KeyedProbe],
 			onError: (error) => errors.push(error),
 		});
-		const observed: { service: KeyedProbeService; context: Context; value: string | undefined }[] = [];
+		const observed: { service: KeyedProbe; context: Context; value: string | undefined }[] = [];
 		const stop = services.observe(KeyedProbe, (instance, context) => {
 			observed.push({ service: instance.service, context, value: instance.service.state.value?.value });
 		});

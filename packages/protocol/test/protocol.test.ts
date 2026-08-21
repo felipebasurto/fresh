@@ -112,12 +112,12 @@ describe("RPC manifest", () => {
 	test("maps built-in contracts onto generic service/member envelopes", () => {
 		const encoded = encodeServiceRpcCall({ method: "attach", args: ["session-1"] });
 		expect(encoded).toEqual({
-			serviceId: "session-management",
+			serviceId: "pi.session-management",
 			member: "attach",
 			args: ["session-1"],
 		});
 		expect(decodeServiceRpcCall(encoded)).toEqual({ method: "attach", args: ["session-1"] });
-		expect(decodeServiceRpcCall({ serviceId: "session-management", member: "attach", args: [] })).toBeUndefined();
+		expect(decodeServiceRpcCall({ serviceId: "pi.session-management", member: "attach", args: [] })).toBeUndefined();
 		expect(decodeServiceRpcCall({ serviceId: "unknown", member: "method", args: [] })).toBeUndefined();
 	});
 
@@ -209,11 +209,11 @@ describe("protocol validation", () => {
 	});
 
 	test("encodes service control and keyed instance addresses", () => {
-		const subscribe = createServiceSubscribeCall("subscription-1", "models", "singleton");
+		const subscribe = createServiceSubscribeCall("subscription-1", "pi.models", "singleton");
 		expect(decodeServiceControlCall(subscribe)).toEqual({
 			type: "subscribe",
 			subscriptionId: "subscription-1",
-			serviceId: "models",
+			serviceId: "pi.models",
 			mode: "singleton",
 		});
 		expect(decodeServiceControlCall(createServiceUnsubscribeCall("subscription-1"))).toEqual({
@@ -222,12 +222,12 @@ describe("protocol validation", () => {
 		});
 		expect(
 			parseServiceSubscriptionSnapshot({
-				serviceId: "transcript",
+				serviceId: "pi.transcript",
 				mode: "singleton",
 				instances: [{ members: [{ name: "events", kind: "events" }], states: {} }],
 			}),
 		).toEqual({
-			serviceId: "transcript",
+			serviceId: "pi.transcript",
 			mode: "singleton",
 			instances: [{ members: [{ name: "events", kind: "events" }], states: {} }],
 		});
@@ -251,7 +251,7 @@ describe("protocol validation", () => {
 				attachmentId: "attachment-1",
 			},
 			call: {
-				serviceId: "question-dialog",
+				serviceId: "pi.question-dialog",
 				instance: { key: "invocation-1", generation: 2 },
 				member: "submit",
 				args: [{ outcome: "selected", index: 0 }],
@@ -265,19 +265,19 @@ describe("protocol validation", () => {
 			type: "request",
 			id: "request-1",
 			target: { serverId: "00000000-0000-4000-8000-000000000001" },
-			call: { serviceId: "session-directory", member: "list", args: [] },
+			call: { serviceId: "pi.session-directory", member: "list", args: [] },
 		};
 		const create: ClientMessage = {
 			type: "request",
 			id: "request-2",
 			target: { serverId: "00000000-0000-4000-8000-000000000001" },
-			call: { serviceId: "session-management", member: "create", args: [{}] },
+			call: { serviceId: "pi.session-management", member: "create", args: [{}] },
 		};
 		const attach: ClientMessage = {
 			type: "request",
 			id: "request-3",
 			target: { serverId: "00000000-0000-4000-8000-000000000001" },
-			call: { serviceId: "session-management", member: "attach", args: ["session-1"] },
+			call: { serviceId: "pi.session-management", member: "attach", args: ["session-1"] },
 		};
 		const prompt: ClientMessage = {
 			type: "request",
@@ -287,17 +287,17 @@ describe("protocol validation", () => {
 				sessionId: "session-1",
 				attachmentId: "attachment-1",
 			},
-			call: { serviceId: "chat", member: "prompt", args: [["Hello"]] },
+			call: { serviceId: "pi.chat", member: "prompt", args: [["Hello"]] },
 		};
 		expect(parseClientMessage(list)).toEqual(list);
 		expect(parseClientMessage(create)).toEqual(create);
 		expect(parseClientMessage(attach)).toEqual(attach);
 		expect(parseClientMessage(prompt)).toEqual(prompt);
 		expect(parseClientMessage({ ...create, call: { ...create.call, args: [{ cwd: "" }] } })).toMatchObject({
-			call: { serviceId: "session-management", member: "create" },
+			call: { serviceId: "pi.session-management", member: "create" },
 		});
 		expect(parseClientMessage({ ...attach, call: { ...attach.call, args: [] } })).toMatchObject({
-			call: { serviceId: "session-management", member: "attach", args: [] },
+			call: { serviceId: "pi.session-management", member: "attach", args: [] },
 		});
 		expect(
 			parseClientMessage({
@@ -306,7 +306,7 @@ describe("protocol validation", () => {
 			}),
 		).toMatchObject({ call: { serviceId: "unknown", member: "method" } });
 		expect(parseClientMessage({ ...prompt, call: { ...prompt.call, args: ["session-1", []] } })).toMatchObject({
-			call: { serviceId: "chat", member: "prompt" },
+			call: { serviceId: "pi.chat", member: "prompt" },
 		});
 	});
 
@@ -618,7 +618,7 @@ describe("validated framed protocol APIs", () => {
 			type: "request",
 			id: "request-1",
 			target: { serverId: "00000000-0000-4000-8000-000000000001" },
-			call: { serviceId: "session-directory", member: "list", args: [] },
+			call: { serviceId: "pi.session-directory", member: "list", args: [] },
 		};
 		const first = encodeClientMessage(clientHello);
 		const second = encodeClientMessage(request);

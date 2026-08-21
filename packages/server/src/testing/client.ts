@@ -166,16 +166,16 @@ export class ProtocolTestClient {
 function serviceAddress(method: string): { serviceId: string; member: string } {
 	switch (method) {
 		case "list":
-			return { serviceId: "session-directory", member: "list" };
+			return { serviceId: "pi.session-directory", member: "list" };
 		case "create":
 		case "attach":
-			return { serviceId: "session-management", member: method };
+			return { serviceId: "pi.session-management", member: method };
 		case "prompt":
-			return { serviceId: "chat", member: "prompt" };
+			return { serviceId: "pi.chat", member: "prompt" };
 		case "watch":
 		case "startWatch":
 		case "stopWatch":
-			return { serviceId: "transcript", member: method };
+			return { serviceId: "pi.transcript", member: method };
 		default:
 			return { serviceId: "unknown", member: method };
 	}

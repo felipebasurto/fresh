@@ -1,4 +1,4 @@
-import { type Context, defineRemoteService, type RemoteState } from "@earendil-works/pi-agent-core";
+import { type Context, defineService, type ReplicatedState } from "@earendil-works/pi-agent-core";
 
 export interface AccountSummary {
 	provider: string;
@@ -9,9 +9,9 @@ export interface AccountsState {
 	providers: AccountSummary[];
 }
 
-export interface AccountsService {
-	readonly state: RemoteState<AccountsState>;
+export interface Accounts {
+	readonly state: ReplicatedState<AccountsState>;
 	remove(provider: string, context: Context): Promise<void>;
 }
 
-export const Accounts = defineRemoteService<AccountsService>("accounts");
+export const Accounts = defineService<Accounts>("pi.accounts");

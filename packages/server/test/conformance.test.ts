@@ -181,7 +181,7 @@ describe("Session protocol", () => {
 				attachClient(presentation) {
 					return {
 						async invokeService(call, _publish, context) {
-							if (call.serviceId !== "session-management") throw new Error("Unexpected service");
+							if (call.serviceId !== "pi.session-management") throw new Error("Unexpected service");
 							if (call.member === "attach" && typeof call.args[0] === "string") {
 								await presentation.attachSession(call.args[0], context);
 								return undefined;
@@ -208,7 +208,7 @@ describe("Session protocol", () => {
 			type: "request",
 			id: "service-attach",
 			target: { serverId: "00000000-0000-4000-8000-000000000001" },
-			call: { serviceId: "session-management", member: "attach", args: ["session-1"] },
+			call: { serviceId: "pi.session-management", member: "attach", args: ["session-1"] },
 		});
 		await expect(attached).resolves.toMatchObject({
 			type: "attachment",
@@ -227,7 +227,7 @@ describe("Session protocol", () => {
 			type: "request",
 			id: "service-detach",
 			target: { serverId: "00000000-0000-4000-8000-000000000001" },
-			call: { serviceId: "session-management", member: "detach", args: [] },
+			call: { serviceId: "pi.session-management", member: "detach", args: [] },
 		});
 		await expect(detached).resolves.toMatchObject({ type: "attachment", attachment: null });
 		await expect(detachResponse).resolves.toEqual({
@@ -451,7 +451,7 @@ describe("Session protocol", () => {
 			type: "request",
 			id: "stale-request",
 			target: { serverId, sessionId: "session-1", attachmentId: first.result.attachmentId },
-			call: { serviceId: "chat", member: "prompt", args: [["stale"]] },
+			call: { serviceId: "pi.chat", member: "prompt", args: [["stale"]] },
 		});
 		await expect(response).resolves.toMatchObject({
 			type: "response",

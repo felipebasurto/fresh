@@ -179,7 +179,7 @@ export class Client {
 		}
 		const result = await this.#request(
 			{ serverId: this.#options.serverId },
-			{ serviceId: "session-management", member: "attach", args: [sessionId] },
+			{ serviceId: "pi.session-management", member: "attach", args: [sessionId] },
 		);
 		if (
 			typeof result === "object" &&

@@ -1,4 +1,4 @@
-import { type Context, defineRemoteService } from "@earendil-works/pi-agent-core";
+import { type Context, defineService } from "@earendil-works/pi-agent-core";
 import type { PromptImage } from "@earendil-works/pi-protocol";
 
 export interface ChatPromptRequest {
@@ -30,7 +30,7 @@ export interface ChatNavigationRequest {
 	customInstructions: string | null;
 }
 
-export interface ChatService {
+export interface Chat {
 	prompt(request: ChatPromptRequest, context: Context): Promise<ChatPromptResponse>;
 	requestAbort(operationId: string, context: Context): Promise<void>;
 	steer(request: ChatPromptRequest, context: Context): Promise<ChatQueueResponse>;
@@ -45,4 +45,4 @@ export interface ChatService {
 	navigate(request: ChatNavigationRequest, context: Context): Promise<ChatPromptResponse>;
 }
 
-export const Chat = defineRemoteService<ChatService>("chat");
+export const Chat = defineService<Chat>("pi.chat");

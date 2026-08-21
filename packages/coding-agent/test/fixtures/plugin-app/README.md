@@ -10,7 +10,7 @@ packages/coding-agent/test/fixtures/plugin-app/run.sh
 
 ```text
 lib/                 Reusable plugin and transport library
-  api.ts             Service tokens, plugins, RemoteState, RPC cancellation
+  api.ts             Service tokens, plugins, ReplicatedState, RPC cancellation
   client.ts          Typed client proxies and replicated state
   session.ts         Session service host and lifecycle
   protocol.ts        Generic JSON wire messages
@@ -30,11 +30,11 @@ The library knows nothing about models, providers, commands, or TUI components. 
 ## Plugin author model
 
 1. Define a typed service token in `model-app/services.ts`.
-2. In `plugin.session()`, create remote state and provide the service implementation.
+2. In `plugin.session()`, create replicated state and provide the service implementation.
 3. In `plugin.client()`, use the typed proxy and register client-local UI.
 4. Add the plugin to the application's plugin list.
 
-Remote state and ordinary method arguments/results must be JSON-serializable. `RpcOptions` are transport metadata and travel out of band.
+Replicated state and ordinary method arguments/results must be JSON-serializable. `RpcOptions` are transport metadata and travel out of band.
 
 ## Disconnect contract
 

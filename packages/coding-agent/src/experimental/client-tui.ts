@@ -1,4 +1,4 @@
-import { BACKGROUND_CONTEXT, type RemoteState } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, type ReplicatedState } from "@earendil-works/pi-agent-core";
 import type { SessionSummary } from "@earendil-works/pi-protocol";
 import {
 	type Component,
@@ -13,15 +13,15 @@ import chalk from "chalk";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { type OpenClientRuntimeOptions, openClientRuntime, waitForRemoteState } from "./client-runtime.ts";
 import type { SessionAttachmentState } from "./services/connection.ts";
-import type { ModelsService } from "./services/models.ts";
-import type { SessionDirectoryEvent, SessionDirectoryService, SessionManagementService } from "./services/sessions.ts";
+import type { Models } from "./services/models.ts";
+import type { SessionDirectory, SessionDirectoryEvent, SessionManagement } from "./services/sessions.ts";
 
 export interface ClientTuiServer {
 	readonly serverId: string;
-	readonly directory: SessionDirectoryService;
-	readonly management: Pick<SessionManagementService, "create" | "attach" | "detach">;
-	readonly attachment: RemoteState<SessionAttachmentState>;
-	readonly models: ModelsService;
+	readonly directory: SessionDirectory;
+	readonly management: Pick<SessionManagement, "create" | "attach" | "detach">;
+	readonly attachment: ReplicatedState<SessionAttachmentState>;
+	readonly models: Models;
 }
 
 type ClientTuiAction =
@@ -265,7 +265,7 @@ function findSession(server: ClientTuiServer, sessionId: string): SessionSummary
 	return session;
 }
 
-function waitForAttachment(state: RemoteState<SessionAttachmentState>, sessionId: string): Promise<void> {
+function waitForAttachment(state: ReplicatedState<SessionAttachmentState>, sessionId: string): Promise<void> {
 	if (state.value?.status === "attached" && state.value.sessionId === sessionId) return Promise.resolve();
 	return new Promise((resolve, reject) => {
 		let unsubscribe: (() => void) | undefined;

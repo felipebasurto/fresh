@@ -7,7 +7,7 @@ import {
 	type RemoteServiceConnection,
 	RemoteServiceNamespace,
 	type RemoteServiceNamespaceApi,
-	type RemoteState,
+	type ReplicatedState,
 	remoteState,
 } from "@earendil-works/pi-agent-core";
 import type { Client } from "@earendil-works/pi-client";
@@ -24,11 +24,11 @@ export type SessionAttachmentState =
 	| { status: "attaching" | "attached" | "degraded"; sessionId: string };
 
 export interface ServerServices extends RemoteServiceNamespaceApi {
-	readonly connection: RemoteState<ServerConnectionState>;
+	readonly connection: ReplicatedState<ServerConnectionState>;
 }
 
 export interface SessionServices extends RemoteServiceNamespaceApi {
-	readonly attachment: RemoteState<SessionAttachmentState>;
+	readonly attachment: ReplicatedState<SessionAttachmentState>;
 }
 
 export interface ServiceNamespaceOptions {
@@ -37,7 +37,7 @@ export interface ServiceNamespaceOptions {
 }
 
 class ServerServiceNamespace extends RemoteServiceNamespace implements ServerServices {
-	readonly connection: RemoteState<ServerConnectionState>;
+	readonly connection: ReplicatedState<ServerConnectionState>;
 	readonly #removeConnectionListener: () => void;
 	readonly #onError: ((error: Error) => void) | undefined;
 	#transition = Promise.resolve();
@@ -73,7 +73,7 @@ class ServerServiceNamespace extends RemoteServiceNamespace implements ServerSer
 }
 
 class SessionServiceNamespace extends RemoteServiceNamespace implements SessionServices {
-	readonly attachment: RemoteState<SessionAttachmentState>;
+	readonly attachment: ReplicatedState<SessionAttachmentState>;
 	readonly #removeAttachmentListener: () => void;
 	readonly #onError: ((error: Error) => void) | undefined;
 	#transition = Promise.resolve();

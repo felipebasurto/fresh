@@ -81,7 +81,7 @@ describe("Client service operations", () => {
 			type: "request",
 			id: "request-1",
 			target: { serverId: "00000000-0000-4000-8000-000000000001" },
-			call: { serviceId: "session-directory", member: "list", args: [] },
+			call: { serviceId: "pi.session-directory", member: "list", args: [] },
 		});
 		server.send({
 			type: "response",
@@ -108,7 +108,7 @@ describe("Client service operations", () => {
 		expect(server.messages[2]).toMatchObject({
 			type: "request",
 			target: { serverId: "00000000-0000-4000-8000-000000000001" },
-			call: { serviceId: "session-management", member: "create", args: [{}] },
+			call: { serviceId: "pi.session-management", member: "create", args: [{}] },
 		});
 		server.send({
 			type: "response",
@@ -131,7 +131,7 @@ describe("Client service operations", () => {
 		expect(server.messages[3]).toMatchObject({
 			type: "request",
 			target: { serverId: "00000000-0000-4000-8000-000000000001" },
-			call: { serviceId: "session-management", member: "attach", args: ["session-1"] },
+			call: { serviceId: "pi.session-management", member: "attach", args: ["session-1"] },
 		});
 		server.send({
 			type: "response",
@@ -150,7 +150,7 @@ describe("Client service operations", () => {
 				sessionId: "session-1",
 				attachmentId: "attachment-1",
 			},
-			call: { serviceId: "chat", member: "prompt", args: [["Hello"]] },
+			call: { serviceId: "pi.chat", member: "prompt", args: [["Hello"]] },
 		});
 		server.send({
 			type: "response",
@@ -190,15 +190,15 @@ describe("Client service operations", () => {
 		expect(
 			server.messages.slice(2).map((message) => (message.type === "request" ? message.call : undefined)),
 		).toEqual([
-			{ serviceId: "chat", member: "prompt", args: [["text"]] },
+			{ serviceId: "pi.chat", member: "prompt", args: [["text"]] },
 			{
-				serviceId: "chat",
+				serviceId: "pi.chat",
 				member: "prompt",
 				args: [["image", [{ type: "image", data: "aW1n", mimeType: "image/png" }]]],
 			},
-			{ serviceId: "chat", member: "prompt", args: [[{ role: "user", content: "message", timestamp: 1 }]] },
+			{ serviceId: "pi.chat", member: "prompt", args: [[{ role: "user", content: "message", timestamp: 1 }]] },
 			{
-				serviceId: "chat",
+				serviceId: "pi.chat",
 				member: "prompt",
 				args: [
 					[
@@ -236,7 +236,7 @@ describe("Client service operations", () => {
 		await attaching;
 		const opening = client.watchSession("session-1");
 		await server.waitForMessages(3);
-		expect(server.messages[2]).toMatchObject({ call: { serviceId: "transcript", member: "watch", args: [] } });
+		expect(server.messages[2]).toMatchObject({ call: { serviceId: "pi.transcript", member: "watch", args: [] } });
 		server.send({
 			type: "response",
 			id: "request-2",
@@ -268,7 +268,7 @@ describe("Client service operations", () => {
 		});
 		await server.waitForMessages(4);
 		expect(server.messages[3]).toMatchObject({
-			call: { serviceId: "transcript", member: "startWatch", args: ["watch-1"] },
+			call: { serviceId: "pi.transcript", member: "startWatch", args: ["watch-1"] },
 		});
 		server.send({
 			type: "event",
@@ -286,7 +286,7 @@ describe("Client service operations", () => {
 		});
 		await server.waitForMessages(5);
 		expect(server.messages[4]).toMatchObject({
-			call: { serviceId: "transcript", member: "stopWatch", args: ["watch-1"] },
+			call: { serviceId: "pi.transcript", member: "stopWatch", args: ["watch-1"] },
 		});
 		server.send({ type: "response", id: "request-4", ok: true, result: { watchId: "watch-1" } });
 		await Promise.resolve();
@@ -317,7 +317,7 @@ describe("Client service operations", () => {
 		await attaching;
 		const target = client.attachment!;
 		const updates: string[] = [];
-		const opening = client.subscribeService(target, "models", "singleton", (update) => {
+		const opening = client.subscribeService(target, "pi.models", "singleton", (update) => {
 			updates.push(update.type);
 		});
 		await server.waitForMessages(3);
@@ -327,7 +327,7 @@ describe("Client service operations", () => {
 			call: {
 				serviceId: "$pi.service",
 				member: "subscribe",
-				args: ["service-1", "models", "singleton"],
+				args: ["service-1", "pi.models", "singleton"],
 			},
 		});
 		server.send({
@@ -342,7 +342,7 @@ describe("Client service operations", () => {
 			id: "request-2",
 			ok: true,
 			result: {
-				serviceId: "models",
+				serviceId: "pi.models",
 				mode: "singleton",
 				instances: [
 					{
@@ -564,7 +564,7 @@ describe("Client connection lifecycle", () => {
 		await attaching;
 		const pending = client.promptSession("session-1", "Hello");
 		await first.waitForMessages(3);
-		expect(first.messages[2]).toMatchObject({ call: { serviceId: "chat", member: "prompt" } });
+		expect(first.messages[2]).toMatchObject({ call: { serviceId: "pi.chat", member: "prompt" } });
 		first.disconnect();
 
 		await expect(pending).rejects.toBeInstanceOf(DisconnectedError);

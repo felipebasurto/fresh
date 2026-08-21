@@ -54,7 +54,7 @@ test("requires hello as the first message", async () => {
 		type: "request",
 		id: "request-1",
 		target: { serverId: "00000000-0000-4000-8000-000000000001" },
-		call: { serviceId: "session-directory", member: "list", args: [] },
+		call: { serviceId: "pi.session-directory", member: "list", args: [] },
 	});
 	await expect(client.next((message) => message.type === "hello_error")).resolves.toMatchObject({
 		type: "hello_error",
@@ -87,7 +87,7 @@ test("accepts fragmented hello and request frames", async () => {
 		type: "request" as const,
 		id: "request-1",
 		target: { serverId: "00000000-0000-4000-8000-000000000001" },
-		call: { serviceId: "session-directory" as const, member: "list" as const, args: [] as [] },
+		call: { serviceId: "pi.session-directory" as const, member: "list" as const, args: [] as [] },
 	};
 	const frame = encodeClientMessage(request);
 	await client.sendFragmentedMessage(request, Math.floor(frame.byteLength / 2));
@@ -126,7 +126,7 @@ test("processes a hello and request coalesced in one byte chunk", async () => {
 		type: "request",
 		id: "request-1",
 		target: { serverId: "00000000-0000-4000-8000-000000000001" },
-		call: { serviceId: "session-directory", member: "list", args: [] },
+		call: { serviceId: "pi.session-directory", member: "list", args: [] },
 	});
 	const wire = new Uint8Array(hello.byteLength + request.byteLength);
 	wire.set(hello);

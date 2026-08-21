@@ -1,4 +1,4 @@
-import { type Context, defineRemoteService, type RemoteEvents, type RemoteJson } from "@earendil-works/pi-agent-core";
+import { type Context, defineService, type RemoteEvents, type RemoteJson } from "@earendil-works/pi-agent-core";
 import type { LaneEvent, LaneSnapshot } from "@earendil-works/pi-protocol";
 
 export interface TranscriptSnapshot {
@@ -12,11 +12,11 @@ export interface TranscriptEvent {
 	event: RemoteJson<LaneEvent>;
 }
 
-export interface TranscriptService {
+export interface Transcript {
 	/** Authoritative snapshot at one transcript revision. */
 	snapshot(context: Context): Promise<TranscriptSnapshot>;
 	/** Ordered semantic deltas; final message events replace streamed projections authoritatively. */
 	readonly events: RemoteEvents<TranscriptEvent>;
 }
 
-export const Transcript = defineRemoteService<TranscriptService>("transcript");
+export const Transcript = defineService<Transcript>("pi.transcript");
