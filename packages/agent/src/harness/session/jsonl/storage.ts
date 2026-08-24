@@ -289,13 +289,14 @@ export class JsonlStorage implements Storage {
 			context,
 		);
 
-		this.storageState.applyValidated(prepared.writes);
+		const stats = this.storageState.applyValidated(prepared.writes);
 		this.backing = { kind: "v4" };
 		// The first sequence belongs to the internal usage adjustment; return only caller-write sequences.
 		return {
 			...prepared.result,
 			firstSeq: prepared.result.firstSeq + 1,
 			seqs: prepared.result.seqs.slice(1),
+			stats,
 		};
 	}
 
