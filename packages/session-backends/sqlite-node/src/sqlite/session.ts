@@ -9,6 +9,7 @@ import type {
 	ListElement,
 	ListReadOptions,
 	Session,
+	SessionMutation,
 	SessionMutator,
 	SessionStats,
 	SessionTree,
@@ -57,6 +58,10 @@ export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 			}
 		}, options.renewIntervalMs);
 		this.renewalTimer.unref?.();
+	}
+
+	beginMutation(lane: string, context: Context): Promise<SessionMutation> {
+		return this.admit(() => this.session.beginMutation(lane, context));
 	}
 
 	mutate<T>(

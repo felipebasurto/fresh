@@ -116,6 +116,30 @@ describe("SqliteSessionRepo", () => {
 		});
 	});
 
+	it("commits an explicit mutation through the open-session facade", async () => {
+		await withTempDir(async (directory) => {
+			const repo = new SqliteSessionRepo({
+				directory,
+				databaseFactory: createNodeSqliteFactory(),
+				now: () => 1_700_000_000_000,
+			});
+			const session = await repo.create({ id: "session" }, BACKGROUND_CONTEXT);
+			const mutation = await session.beginMutation("main", BACKGROUND_CONTEXT);
+			const result = await mutation.commit(
+				[storedValues.setValue(storedValues.sessionName, "explicit")],
+				BACKGROUND_CONTEXT,
+			);
+
+			expect(result.seqs).toHaveLength(1);
+			expect(await mutation.getValue(storedValues.sessionName, BACKGROUND_CONTEXT)).toMatchObject({
+				value: "explicit",
+			});
+			await mutation.end(BACKGROUND_CONTEXT);
+			expect(await session.getName(BACKGROUND_CONTEXT)).toBe("explicit");
+			await session.close(BACKGROUND_CONTEXT);
+		});
+	});
+
 	it("rejects duplicate create without deleting the existing database", async () => {
 		await withTempDir(async (directory) => {
 			const repo = new SqliteSessionRepo({
