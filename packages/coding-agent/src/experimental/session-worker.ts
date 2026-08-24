@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
-import { isAbsolute, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute } from "node:path";
 import {
 	AgentHarness,
 	type AgentHarness as AgentHarnessInstance,
@@ -48,7 +47,12 @@ import {
 	toWireLaneSnapshot,
 	toWireRunResult,
 } from "./harness-wire-adapter.ts";
-import { consumeInternalProcessRole, encodeControlLine, MAX_CONTROL_LINE_BYTES } from "./process.ts";
+import {
+	consumeInternalProcessRole,
+	encodeControlLine,
+	isDirectInternalProcessEntry,
+	MAX_CONTROL_LINE_BYTES,
+} from "./process.ts";
 import {
 	createSessionWorkerServices,
 	ServiceOperationResultSchema,
@@ -952,7 +956,7 @@ export function runSessionWorkerProcess(args: readonly string[]): Promise<void> 
 	return runSessionWorkerWithHarness(args, createCodingAgentHarness);
 }
 
-if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectInternalProcessEntry(import.meta.url)) {
 	const role = consumeInternalProcessRole();
 	if (role !== "session-worker") {
 		throw new Error("Session worker entrypoint requires an internal session-worker invocation");

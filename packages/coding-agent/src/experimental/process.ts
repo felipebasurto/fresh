@@ -1,10 +1,21 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { isBunBinary } from "../config.ts";
+import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { getPackageDir, isBunBinary, isBundledNode } from "../config.ts";
 
 export const INTERNAL_PROCESS_ENV = "__PI_INTERNAL_SPAWN";
 
 export type InternalProcessRole = "coordinator" | "server" | "session-worker";
+
+/** Detect a directly executed source or unbundled internal-process module. */
+export function isDirectInternalProcessEntry(moduleUrl: string): boolean {
+	return (
+		!isBunBinary &&
+		!isBundledNode &&
+		process.argv[1] !== undefined &&
+		resolve(process.argv[1]) === fileURLToPath(moduleUrl)
+	);
+}
 
 /** Read and validate an internal process role without consuming it. */
 export function getInternalProcessRole(): InternalProcessRole | undefined {
@@ -71,6 +82,10 @@ export async function terminateInternalProcess(child: ChildProcess): Promise<voi
 
 function defaultEntryUrl(role: InternalProcessRole, override: URL | undefined): URL {
 	if (override) return override;
+	if (isBundledNode) {
+		const entry = role === "coordinator" ? "coordinator.js" : "cli.js";
+		return pathToFileURL(join(getPackageDir(), "dist", "bundle", entry));
+	}
 	const javaScript = import.meta.url.endsWith(".js");
 	if (role === "coordinator") {
 		return new URL(javaScript ? "coordinator.js" : "coordinator.ts", import.meta.url);

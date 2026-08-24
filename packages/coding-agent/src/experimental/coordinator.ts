@@ -1,13 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { chmod, lstat, unlink } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import {
 	consumeInternalProcessRole,
 	encodeControlLine,
+	isDirectInternalProcessEntry,
 	MAX_CONTROL_LINE_BYTES,
 	spawnInternalProcess,
 } from "./process.ts";
@@ -603,7 +602,7 @@ async function cleanupSocket(path: string): Promise<void> {
 	});
 }
 
-if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectInternalProcessEntry(import.meta.url)) {
 	const role = consumeInternalProcessRole();
 	if (role !== "coordinator") throw new Error("Coordinator entrypoint requires an internal coordinator invocation");
 	void runCoordinatorProcess(process.argv.slice(2)).catch((error: unknown) => {

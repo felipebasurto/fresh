@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute, join } from "node:path";
 import {
 	BACKGROUND_CONTEXT,
 	type JsonlSessionMetadata,
@@ -19,7 +18,12 @@ import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { CoordinatorConnection, type CoordinatorStartupLease, ensureCoordinator } from "./coordinator.ts";
-import { consumeInternalProcessRole, spawnInternalProcess, terminateInternalProcess } from "./process.ts";
+import {
+	consumeInternalProcessRole,
+	isDirectInternalProcessEntry,
+	spawnInternalProcess,
+	terminateInternalProcess,
+} from "./process.ts";
 import { createExperimentalServerServices } from "./services/server.ts";
 import { SessionWorkerManager } from "./session-worker-manager.ts";
 
@@ -621,7 +625,7 @@ export async function runServerProcess(args: readonly string[]): Promise<void> {
 	}
 }
 
-if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectInternalProcessEntry(import.meta.url)) {
 	const role = consumeInternalProcessRole();
 	if (role !== "server") throw new Error("Server entrypoint requires an internal server invocation");
 	void runServerProcess(process.argv.slice(2)).catch((error: unknown) => {
