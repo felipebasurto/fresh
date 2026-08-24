@@ -579,7 +579,7 @@ describe("experimental durable server composition", () => {
 		expect(legacyPrompt).not.toHaveBeenCalled();
 	});
 
-	// Runtime2 cannot complete no-tool runs yet; keep the framed prompt path covered as a sanitized failure above.
+	// Runtime cannot complete no-tool runs yet; keep the framed prompt path covered as a sanitized failure above.
 	test.skip("streams prompt events from the worker to the client", async ({ onTestFinished }) => {
 		const spawn = vi
 			.spyOn(processRuntime, "spawnInternalProcess")
@@ -622,7 +622,7 @@ describe("experimental durable server composition", () => {
 		);
 	});
 
-	// Re-enable with runtime2 no-tool execution.
+	// Re-enable with runtime no-tool execution.
 	test.skip("completes and persists a prompt through the worker-owned Harness", async ({ onTestFinished }) => {
 		const spawn = vi
 			.spyOn(processRuntime, "spawnInternalProcess")

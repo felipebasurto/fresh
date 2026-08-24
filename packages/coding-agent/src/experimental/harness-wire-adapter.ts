@@ -10,17 +10,17 @@ import type {
 	LaneSnapshot as HarnessLaneSnapshot,
 	RunResult as HarnessRunResult,
 } from "@earendil-works/pi-agent-core";
-import {
-	type AssistantMessage,
-	assistantMessageEventToFrame,
-	type DeferredHandle,
-	type ImageContent,
-	type TextContent,
-	type ThinkingContent,
-	type ToolCall,
-	type ToolResultMessage,
-	type Usage,
-	type UserMessage,
+import type {
+	AssistantMessageFrame as AiAssistantMessageFrame,
+	AssistantMessage,
+	DeferredHandle,
+	ImageContent,
+	TextContent,
+	ThinkingContent,
+	ToolCall,
+	ToolResultMessage,
+	Usage,
+	UserMessage,
 } from "@earendil-works/pi-ai";
 import {
 	type AssistantMessageFrame,
@@ -580,9 +580,7 @@ function toWireToolOutput(result: AgentToolResult<unknown>): ToolOutput {
 	};
 }
 
-function toWireFrame(event: Extract<HarnessEvent, { type: "message_update" }>): AssistantMessageFrame {
-	const frame = assistantMessageEventToFrame(event.event);
-	if (frame === undefined) throw new TypeError(`Unsupported assistant message event: ${event.event.type}`);
+function toWireFrame(frame: AiAssistantMessageFrame): AssistantMessageFrame {
 	switch (frame.type) {
 		case "start":
 			return { type: "start", partial: toWireAssistantMessage(frame.partial) };
@@ -590,6 +588,7 @@ function toWireFrame(event: Extract<HarnessEvent, { type: "message_update" }>): 
 			return { type: "text_start", contentIndex: frame.contentIndex, content: { ...frame.content } };
 		case "text_delta":
 		case "thinking_delta":
+		case "toolcall_checkpoint":
 		case "toolcall_delta":
 			return { ...frame };
 		case "text_end":
@@ -735,7 +734,15 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 		case "message_end":
 			return { ...event, message: toWireMessage(event.message), ...base, lane: event.lane };
 		case "message_update":
-			return { type: "message_update", runId: event.runId, frame: toWireFrame(event), ...base, lane: event.lane };
+			return event.frame === undefined
+				? undefined
+				: {
+						type: "message_update",
+						runId: event.runId,
+						frame: toWireFrame(event.frame),
+						...base,
+						lane: event.lane,
+					};
 		case "tool_start":
 			return {
 				...event,

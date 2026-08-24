@@ -278,6 +278,11 @@ export const AssistantMessageFrameSchema = Type.Union([
 		toolCall: ToolCallSchema,
 	}),
 	StrictObject({
+		type: Type.Literal("toolcall_checkpoint"),
+		contentIndex: Type.Integer({ minimum: 0 }),
+		json: Type.String(),
+	}),
+	StrictObject({
 		type: Type.Literal("toolcall_delta"),
 		contentIndex: Type.Integer({ minimum: 0 }),
 		delta: Type.String(),

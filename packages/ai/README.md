@@ -652,6 +652,10 @@ for await (const event of s) {
 
 ### Complete Event Reference
 
+Successful generation follows `start → updates* → done`. A failure after generation starts follows `start → updates* → error`. Request setup may fail before generation starts, in which case the stream contains only `error`; `done` and update events are invalid before `start`.
+
+Every non-terminal event's `partial` is the shared live response-so-far helper. It is intentionally not an event-time snapshot: providers may mutate the same message and content blocks as generation advances, including while older events wait in the stream queue. Inspect it when handling an event instead of retaining it as historical state. Text and ordinary thinking blocks are empty when their `*_start` event is emitted and grow only through matching `*_delta` events until the authoritative `*_end`; redacted thinking may be complete at start and emit no deltas. A streaming tool call starts with empty arguments and emits its full raw JSON through `toolcall_delta`. A provider that starts with complete arguments must emit a cumulative delta prefix that parses to those arguments at an event boundary before later argument deltas.
+
 All streaming events emitted during assistant message generation:
 
 | Event Type | Description | Key Properties |
@@ -673,28 +677,31 @@ Streaming events for different content blocks are not guaranteed to be contiguou
 
 ### Compact Assistant Message Frames
 
-`assistantMessageEventToFrame()` converts stream events to compact, persistable `AssistantMessageFrame` values. It snapshots only public message/block fields, omits the growing `partial` message and provider scratch fields from later frames, and returns `undefined` for terminal `done` and `error` events because final message settlement is separate. End frames retain authoritative completed text, thinking, or tool arguments once; this permits provider end events to correct or supply content without repeated full-partial snapshots.
+`AssistantMessageFrameEncoder` converts one stream into compact, persistable `AssistantMessageFrame` values. Create one encoder per stream and feed it every event in order. The encoder understands that `partial` is live: a block-start event consumed after the provider has already queued later deltas snapshots the current block once, and covered queued text/thinking deltas produce no duplicate frame. It retains only per-open-block counters plus, temporarily, the raw prefix needed to synchronize an already-advanced tool call. It never clones the growing full partial per token.
 
-`reduceAssistantMessageFrames()` is the canonical pure reducer for these frames. It reconstructs text, thinking, and tool-call arguments, including interleaved blocks identified by `contentIndex`, and rejects malformed block sequences. It returns `undefined` when there is no start frame to reduce. For an unfinished tool call, the reducer accumulates its JSON deltas and invokes `parseStreamingJson` once after consuming the iterable; a `toolcall_end` frame instead supplies authoritative final arguments. The reducer does not validate arguments against a tool's TypeBox schema. Call `validateToolCall` before execution where schema validation is required.
+The start frame contains message metadata with empty content. Text and thinking frames store each generated character at most once before the authoritative end frame. Tool calls that were already advanced when their start event was consumed use one compact JSON checkpoint before ordinary deltas resume. Terminal `done` and `error` events produce no frame because final message settlement is separate. A pre-generation `error` therefore produces no frames.
 
-Deltas reconstruct the latest unfinished block. An end frame replaces that block with the provider's authoritative completed content and metadata. Persist every frame in order; terminal `done`/`error` message settlement remains separate.
+`reduceAssistantMessageFrames()` is the canonical pure reducer. It reconstructs text, thinking, and tool-call arguments, including interleaved blocks identified by `contentIndex`, and rejects malformed sequences. It performs a single pass over the iterable and returns `undefined` when there is no start frame. End frames replace blocks with the provider's authoritative completed content and metadata. The reducer does not validate tool arguments against a TypeBox schema; call `validateToolCall` before execution.
 
 ```typescript
 import {
-  assistantMessageEventToFrame,
+  AssistantMessageFrameEncoder,
   reduceAssistantMessageFrames,
   type AssistantMessageFrame,
 } from '@earendil-works/pi-ai';
 
+const encoder = new AssistantMessageFrameEncoder();
 const frames: AssistantMessageFrame[] = [];
 for await (const event of s) {
-  const frame = assistantMessageEventToFrame(event);
+  const frame = encoder.encode(event);
   if (frame) frames.push(frame);
 }
 
 const reconstructedPartial = reduceAssistantMessageFrames(frames);
 const finalMessage = await s.result(); // Persist terminal settlement separately.
 ```
+
+An encoder rejects duplicate starts, updates before start, `done` before start, events after a terminal event, duplicate block starts, and block-kind mismatches. An `error` before start is valid and returns no frame.
 
 ## Image Input
 
@@ -920,7 +927,7 @@ Every `AssistantMessage` includes a `stopReason` field that indicates how the ge
 
 ## Error Handling
 
-Request failures never throw out of the stream functions: when a request ends with an error (including aborts and tool call validation errors), the streaming API emits an error event and the final message carries the details:
+Request failures never throw out of the stream functions: when a request ends with an error (including aborts and tool call validation errors), the streaming API emits an error event and the final message carries the details. Setup failures may emit `error` without `start`; failures after generation begins emit `start`, any observed updates, then `error`:
 
 ```typescript
 // In streaming

@@ -244,6 +244,7 @@ describe("Harness wire adapter", () => {
 			runId: "run-1",
 			message: partial,
 			event: { type: "text_delta", contentIndex: 0, delta: "swer", partial },
+			frame: { type: "text_delta", contentIndex: 0, delta: "swer" },
 		};
 		const wire = toWireLaneEvent(event);
 		expect(Check(LaneEventSchema, wire)).toBe(true);
