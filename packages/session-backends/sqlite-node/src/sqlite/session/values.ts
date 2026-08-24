@@ -25,46 +25,50 @@ export interface ListValueRow {
 	value: string;
 }
 
-export function insertInitialMainLaneValues(db: SqliteDatabase): void {
+export function insertInitialMainLaneValues(db: SqliteDatabase, sessionId: string): void {
 	const writes = [
 		setValue(laneLeaf("main"), null),
 		setValue(laneState("main"), { currentOperationId: null, pendingNextRun: [] }),
 	];
 	for (const [index, write] of writes.entries()) {
 		if (write.op !== "set") throw new Error("Expected initial scalar value write");
-		setScalarValueRow(db, write.namespace, write.key, index + 1, write.value);
+		setScalarValueRow(db, sessionId, write.namespace, write.key, index + 1, write.value);
 	}
 }
 
 export function setScalarValueRow(
 	db: SqliteDatabase,
+	sessionId: string,
 	namespace: string,
 	key: string,
 	seq: number,
 	storedValue: unknown,
 ): void {
-	sql`INSERT INTO scalar_values (namespace, key, seq, value)
-		VALUES (${namespace}, ${key}, ${seq}, ${JSON.stringify(storedValue)})
-		ON CONFLICT(namespace, key) DO UPDATE SET seq = excluded.seq, value = excluded.value`.run(db);
+	sql`INSERT INTO scalar_values (session_id, namespace, key, seq, value)
+		VALUES (${sessionId}, ${namespace}, ${key}, ${seq}, ${JSON.stringify(storedValue)})
+		ON CONFLICT(session_id, namespace, key) DO UPDATE SET seq = excluded.seq, value = excluded.value`.run(db);
 }
 
-export function deleteScalarValueRow(db: SqliteDatabase, namespace: string, key: string): void {
-	sql`DELETE FROM scalar_values WHERE namespace = ${namespace} AND key = ${key}`.run(db);
+export function deleteScalarValueRow(db: SqliteDatabase, sessionId: string, namespace: string, key: string): void {
+	sql`DELETE FROM scalar_values
+		WHERE session_id = ${sessionId} AND namespace = ${namespace} AND key = ${key}`.run(db);
 }
 
 export function appendListValueRow(
 	db: SqliteDatabase,
+	sessionId: string,
 	namespace: string,
 	key: string,
 	seq: number,
 	element: unknown,
 ): void {
-	sql`INSERT INTO list_values (namespace, key, seq, value)
-		VALUES (${namespace}, ${key}, ${seq}, ${JSON.stringify(element)})`.run(db);
+	sql`INSERT INTO list_values (session_id, namespace, key, seq, value)
+		VALUES (${sessionId}, ${namespace}, ${key}, ${seq}, ${JSON.stringify(element)})`.run(db);
 }
 
-export function deleteListValueRows(db: SqliteDatabase, namespace: string, key: string): void {
-	sql`DELETE FROM list_values WHERE namespace = ${namespace} AND key = ${key}`.run(db);
+export function deleteListValueRows(db: SqliteDatabase, sessionId: string, namespace: string, key: string): void {
+	sql`DELETE FROM list_values
+		WHERE session_id = ${sessionId} AND namespace = ${namespace} AND key = ${key}`.run(db);
 }
 
 function decodeScalarValueRow<T>(address: Value<T>, row: ScalarValueRow): StoredValue<T> {
@@ -74,14 +78,21 @@ function decodeScalarValueRow<T>(address: Value<T>, row: ScalarValueRow): Stored
 	return { address, seq: row.seq, value: JSON.parse(row.value) as T };
 }
 
-export function readScalarValueRow<T>(db: SqliteDatabase, address: Value<T>): StoredValue<T> | undefined {
+export function readScalarValueRow<T>(
+	db: SqliteDatabase,
+	sessionId: string,
+	address: Value<T>,
+): StoredValue<T> | undefined {
 	const row = sql`SELECT namespace, key, seq, value FROM scalar_values
-		WHERE namespace = ${address.namespace} AND key = ${address.key}`.get<ScalarValueRow>(db);
+		WHERE session_id = ${sessionId} AND namespace = ${address.namespace} AND key = ${address.key}`.get<ScalarValueRow>(
+		db,
+	);
 	return row === undefined ? undefined : decodeScalarValueRow(address, row);
 }
 
-export function readAllScalarValueRows(db: SqliteDatabase): StoredValue<unknown>[] {
-	return sql`SELECT namespace, key, seq, value FROM scalar_values ORDER BY seq ASC`
+export function readAllScalarValueRows(db: SqliteDatabase, sessionId: string): StoredValue<unknown>[] {
+	return sql`SELECT namespace, key, seq, value FROM scalar_values
+		WHERE session_id = ${sessionId} ORDER BY seq ASC`
 		.all<ScalarValueRow>(db)
 		.map((row) => ({
 			address: value<unknown>(row.namespace, row.key),
@@ -104,45 +115,46 @@ function nextPrefixBoundary(prefix: string): string | undefined {
 	return undefined;
 }
 
-export function scanScalarValueRows<T>(db: SqliteDatabase, prefix: Value<T>): StoredValue<T>[] {
+export function scanScalarValueRows<T>(db: SqliteDatabase, sessionId: string, prefix: Value<T>): StoredValue<T>[] {
 	const upperBound = nextPrefixBoundary(prefix.key);
 	const rows =
 		upperBound === undefined
 			? sql`SELECT namespace, key, seq, value FROM scalar_values
-				WHERE namespace = ${prefix.namespace} AND key >= ${prefix.key}
+				WHERE session_id = ${sessionId} AND namespace = ${prefix.namespace} AND key >= ${prefix.key}
 				ORDER BY key ASC`.all<ScalarValueRow>(db)
 			: sql`SELECT namespace, key, seq, value FROM scalar_values
-				WHERE namespace = ${prefix.namespace} AND key >= ${prefix.key} AND key < ${upperBound}
+				WHERE session_id = ${sessionId} AND namespace = ${prefix.namespace} AND key >= ${prefix.key} AND key < ${upperBound}
 				ORDER BY key ASC`.all<ScalarValueRow>(db);
 	return rows.map((row) => decodeScalarValueRow(value<T>(row.namespace, row.key), row));
 }
 
-export function listValueReadQuery<T>(address: ValueList<T>, options?: ListReadOptions): SqlQuery {
+export function listValueReadQuery<T>(sessionId: string, address: ValueList<T>, options?: ListReadOptions): SqlQuery {
 	const resolved = resolveListReadOptions(options);
 	if (resolved.order === "asc") {
 		return resolved.cursor === undefined
 			? sql`SELECT seq, value FROM list_values
-				WHERE namespace = ${address.namespace} AND key = ${address.key}
+				WHERE session_id = ${sessionId} AND namespace = ${address.namespace} AND key = ${address.key}
 				ORDER BY seq ASC LIMIT ${resolved.limit}`
 			: sql`SELECT seq, value FROM list_values
-				WHERE namespace = ${address.namespace} AND key = ${address.key} AND seq > ${resolved.cursor.seq}
+				WHERE session_id = ${sessionId} AND namespace = ${address.namespace} AND key = ${address.key} AND seq > ${resolved.cursor.seq}
 				ORDER BY seq ASC LIMIT ${resolved.limit}`;
 	}
 	return resolved.cursor === undefined
 		? sql`SELECT seq, value FROM list_values
-			WHERE namespace = ${address.namespace} AND key = ${address.key}
+			WHERE session_id = ${sessionId} AND namespace = ${address.namespace} AND key = ${address.key}
 			ORDER BY seq DESC LIMIT ${resolved.limit}`
 		: sql`SELECT seq, value FROM list_values
-			WHERE namespace = ${address.namespace} AND key = ${address.key} AND seq < ${resolved.cursor.seq}
+			WHERE session_id = ${sessionId} AND namespace = ${address.namespace} AND key = ${address.key} AND seq < ${resolved.cursor.seq}
 			ORDER BY seq DESC LIMIT ${resolved.limit}`;
 }
 
 export function readListValueRows<T>(
 	db: SqliteDatabase,
+	sessionId: string,
 	address: ValueList<T>,
 	options?: ListReadOptions,
 ): ListElement<T>[] {
-	return listValueReadQuery(address, options)
+	return listValueReadQuery(sessionId, address, options)
 		.all<ListValueRow>(db)
 		.map((row) => ({ seq: row.seq, value: JSON.parse(row.value) as T }));
 }

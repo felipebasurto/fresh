@@ -1,5 +1,5 @@
 import { access, mkdir, open as openFile, readdir, rm } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import type { Context, Entry, ForkOptions, SessionCreateOptions, StoredValue } from "@earendil-works/pi-agent-core";
 import { createForkSnapshot, laneLeaf, StorageBackedSession } from "@earendil-works/pi-agent-core";
 import { uuidv7 } from "@earendil-works/pi-ai";
@@ -7,10 +7,12 @@ import { applyInitialSchema } from "./migrations.ts";
 import { appendEntryToBranchIndex, scanBranchEntries } from "./session/branch-entries.ts";
 import { decodeEntryRow, type EntryRow, EntryRowWriter } from "./session/entries.ts";
 import {
+	deleteSessionRows,
+	hasSessionRow,
 	insertSessionRow,
 	metadataFromSessionRow,
-	readSessionRowCount,
-	readSingleSessionRow,
+	readAllSessionRows,
+	readSessionRow,
 	type SqliteSessionMetadata,
 } from "./session/session-row.ts";
 import { insertInitialMainLaneValues, readAllScalarValueRows, setScalarValueRow } from "./session/values.ts";
@@ -37,17 +39,14 @@ export type SqliteSessionCreateOptions = SessionCreateOptions;
 
 export interface SqliteSessionRepoOptions {
 	directory: string;
+	/** Optional single container path. Defaults to one `${id}.sqlite` file per session under directory. */
+	databasePath?: string;
 	databaseFactory: SqliteDatabaseFactory;
 	now?: () => number;
 }
 
 function sessionPath(directory: string, id: string): string {
 	return join(directory, `${id}${SQLITE_SESSION_EXTENSION}`);
-}
-
-function sessionIdFromPath(path: string): string {
-	const name = basename(path);
-	return name.endsWith(SQLITE_SESSION_EXTENSION) ? name.slice(0, -SQLITE_SESSION_EXTENSION.length) : name;
 }
 
 async function removeSessionFiles(path: string, options: { force: boolean }): Promise<void> {
@@ -67,9 +66,9 @@ interface ForkSnapshot {
 	nextSeq: number;
 }
 
-function readSourceEntries(db: SqliteDatabase): Entry[] {
+function readSourceEntries(db: SqliteDatabase, sessionId: string): Entry[] {
 	return sql`SELECT id, parent_id, seq, type, custom_type, timestamp, payload
-		FROM entries ORDER BY seq ASC`
+		FROM entries WHERE session_id = ${sessionId} ORDER BY seq ASC`
 		.all<EntryRow>(db)
 		.map(decodeEntryRow);
 }
@@ -94,27 +93,28 @@ function buildForkSnapshot(source: SqliteStorageSnapshot, options: ForkOptions):
 
 function readForkSourceEntries(
 	db: SqliteDatabase,
+	sessionId: string,
 	scalarValues: readonly StoredValue<unknown>[],
 	options: ForkOptions,
 ): Entry[] {
-	if (options.scope === "tree") return readSourceEntries(db);
+	if (options.scope === "tree") return readSourceEntries(db, sessionId);
 	const mainAddress = laneLeaf("main");
 	const mainLeaf = scalarValues.find(
 		(stored) => stored.address.namespace === mainAddress.namespace && stored.address.key === mainAddress.key,
 	) as StoredValue<string | null> | undefined;
 	if (mainLeaf === undefined) throw new Error("Source session is missing main lane");
 	const requested = options.entryId ?? mainLeaf.value;
-	return requested === null ? [] : scanBranchEntries(db, { start: requested, order: "oldestFirst" });
+	return requested === null ? [] : scanBranchEntries(db, sessionId, { start: requested, order: "oldestFirst" });
 }
 
-function createSqliteForkSnapshot(sourceDb: SqliteDatabase, options: ForkOptions): ForkSnapshot {
+function createSqliteForkSnapshot(sourceDb: SqliteDatabase, sessionId: string, options: ForkOptions): ForkSnapshot {
 	sourceDb.exec("BEGIN");
 	let committed = false;
 	try {
-		const scalarValues = readAllScalarValueRows(sourceDb);
+		const scalarValues = readAllScalarValueRows(sourceDb, sessionId);
 		const snapshot = buildForkSnapshot(
 			{
-				entries: readForkSourceEntries(sourceDb, scalarValues, options),
+				entries: readForkSourceEntries(sourceDb, sessionId, scalarValues, options),
 				scalarValues,
 				entriesComplete: options.scope === "tree",
 			},
@@ -129,16 +129,17 @@ function createSqliteForkSnapshot(sourceDb: SqliteDatabase, options: ForkOptions
 	}
 }
 
-function insertForkValue(db: SqliteDatabase, stored: StoredValue<unknown>): void {
-	setScalarValueRow(db, stored.address.namespace, stored.address.key, stored.seq, stored.value);
+function insertForkValue(db: SqliteDatabase, sessionId: string, stored: StoredValue<unknown>): void {
+	setScalarValueRow(db, sessionId, stored.address.namespace, stored.address.key, stored.seq, stored.value);
 }
 
-function updateForkSessionStats(db: SqliteDatabase, messageCount: number): void {
-	sql`UPDATE session SET message_count = ${messageCount}`.run(db);
+function updateForkSessionStats(db: SqliteDatabase, sessionId: string, messageCount: number): void {
+	sql`UPDATE sessions SET message_count = ${messageCount} WHERE id = ${sessionId}`.run(db);
 }
 
 export class SqliteSessionRepo {
 	private readonly directory: string;
+	private readonly databasePath: string | undefined;
 	private readonly databaseFactory: SqliteDatabaseFactory;
 	private readonly now: () => number;
 	private readonly pendingIds = new Set<string>();
@@ -149,6 +150,7 @@ export class SqliteSessionRepo {
 
 	constructor(options: SqliteSessionRepoOptions) {
 		this.directory = options.directory;
+		this.databasePath = options.databasePath;
 		this.databaseFactory = options.databaseFactory;
 		this.now = options.now ?? Date.now;
 	}
@@ -159,7 +161,7 @@ export class SqliteSessionRepo {
 		const createdAt = this.now();
 		const id = options.id ?? uuidv7(createdAt);
 		this.reserveId(id);
-		const path = sessionPath(this.directory, id);
+		const path = this.pathForSession(id);
 		let db: SqliteDatabase | undefined;
 		let lease: WriterLeaseRow | undefined;
 		let reservedFile = false;
@@ -167,9 +169,11 @@ export class SqliteSessionRepo {
 		let session: SqliteOpenSession | undefined;
 		try {
 			await mkdir(this.directory, { recursive: true });
-			const file = await openFile(path, "wx");
-			await file.close();
-			reservedFile = true;
+			if (!this.usesSharedDatabase()) {
+				const file = await openFile(path, "wx");
+				await file.close();
+				reservedFile = true;
+			}
 			const activeDb = await this.databaseFactory.open(path);
 			db = activeDb;
 			configureConnection(activeDb);
@@ -182,10 +186,10 @@ export class SqliteSessionRepo {
 				path,
 			};
 			lease = activeDb.transaction(() => {
-				if (readSessionRowCount(activeDb) !== 0) throw new Error(`SQLite session already exists at ${path}`);
+				if (hasSessionRow(activeDb, id)) throw new Error(`SQLite session already exists: ${id}`);
 				insertSessionRow(activeDb, metadata, SQLITE_STORAGE_VERSION, FIRST_AVAILABLE_COMMIT_SEQ);
-				insertInitialMainLaneValues(activeDb);
-				return claimWriterLease(activeDb, uuidv7(this.now()), this.now(), DEFAULT_WRITER_LEASE_MS);
+				insertInitialMainLaneValues(activeDb, id);
+				return claimWriterLease(activeDb, id, uuidv7(this.now()), this.now(), DEFAULT_WRITER_LEASE_MS);
 			});
 			initialized = true;
 			session = this.openStorageBackedSession(metadata, activeDb, lease);
@@ -198,7 +202,7 @@ export class SqliteSessionRepo {
 				const failedDb = db;
 				const failedLease = lease;
 				if (failedDb !== undefined && failedLease !== undefined) {
-					failedDb.transaction(() => releaseWriterLease(failedDb, failedLease.owner_id, failedLease.fence));
+					failedDb.transaction(() => releaseWriterLease(failedDb, id, failedLease.owner_id, failedLease.fence));
 				}
 				db?.close();
 				this.pendingIds.delete(id);
@@ -218,17 +222,12 @@ export class SqliteSessionRepo {
 			db = activeDb;
 			configureConnection(activeDb);
 			const stored = activeDb.transaction(() => {
-				const id = sessionIdFromPath(metadata.path);
 				const stored = metadataFromSessionRow(
 					metadata.path,
-					id,
-					readSingleSessionRow(activeDb),
+					readSessionRow(activeDb, metadata.id),
 					SQLITE_STORAGE_VERSION,
 				);
-				if (stored.id !== metadata.id) {
-					throw new Error(`SQLite session path ${metadata.path} contains ${stored.id}, not ${metadata.id}`);
-				}
-				lease = claimWriterLease(activeDb, uuidv7(this.now()), this.now(), DEFAULT_WRITER_LEASE_MS);
+				lease = claimWriterLease(activeDb, metadata.id, uuidv7(this.now()), this.now(), DEFAULT_WRITER_LEASE_MS);
 				return stored;
 			});
 			if (lease === undefined) throw new Error("Failed to claim SQLite writer lease");
@@ -239,7 +238,9 @@ export class SqliteSessionRepo {
 				const failedDb = db;
 				const failedLease = lease;
 				if (failedDb !== undefined && failedLease !== undefined) {
-					failedDb.transaction(() => releaseWriterLease(failedDb, failedLease.owner_id, failedLease.fence));
+					failedDb.transaction(() =>
+						releaseWriterLease(failedDb, metadata.id, failedLease.owner_id, failedLease.fence),
+					);
 				}
 				db?.close();
 				this.pendingIds.delete(metadata.id);
@@ -250,18 +251,21 @@ export class SqliteSessionRepo {
 	async list(_options: undefined, _context: Context): Promise<SqliteSessionMetadata[]> {
 		this.assertOpen();
 		await mkdir(this.directory, { recursive: true });
-		const names = await readdir(this.directory);
+		const paths = this.usesSharedDatabase()
+			? [this.pathForSession("")]
+			: (await readdir(this.directory))
+					.filter((name) => name.endsWith(SQLITE_SESSION_EXTENSION))
+					.map((name) => join(this.directory, name));
 		const sessions: SqliteSessionMetadata[] = [];
-		for (const name of names) {
-			if (!name.endsWith(SQLITE_SESSION_EXTENSION)) continue;
-			const path = join(this.directory, name);
+		for (const path of paths) {
 			let db: SqliteDatabase | undefined;
 			try {
+				await access(path);
 				db = await this.databaseFactory.open(path);
 				configureConnection(db);
-				sessions.push(
-					metadataFromSessionRow(path, sessionIdFromPath(path), readSingleSessionRow(db), SQLITE_STORAGE_VERSION),
-				);
+				for (const row of readAllSessionRows(db)) {
+					sessions.push(metadataFromSessionRow(path, row, SQLITE_STORAGE_VERSION));
+				}
 			} catch {
 				// Discovery is best-effort: corrupt files, incompatible versions, and
 				// unrelated *.sqlite files are reported when explicitly opened.
@@ -279,14 +283,24 @@ export class SqliteSessionRepo {
 		const db = await this.databaseFactory.open(metadata.path);
 		try {
 			configureConnection(db);
-			const lease = readWriterLease(db);
+			const lease = readWriterLease(db, metadata.id);
 			if (lease !== undefined && lease.expires_at_ms > this.now()) {
 				throw new Error(`SQLite session is already claimed by writer ${lease.owner_id}`);
 			}
 		} finally {
 			db.close();
 		}
-		await removeSessionFiles(metadata.path, { force: false });
+		if (this.usesSharedDatabase()) {
+			const deleteDb = await this.databaseFactory.open(metadata.path);
+			try {
+				configureConnection(deleteDb);
+				deleteDb.transaction(() => deleteSessionRows(deleteDb, metadata.id));
+			} finally {
+				deleteDb.close();
+			}
+		} else {
+			await removeSessionFiles(metadata.path, { force: false });
+		}
 	}
 
 	async fork(source: SqliteSessionMetadata, options: ForkOptions, context: Context): Promise<SqliteOpenSession> {
@@ -298,16 +312,18 @@ export class SqliteSessionRepo {
 		const activeSourceSnapshot = sourceStorage?.snapshot(options, context);
 		void activeSourceSnapshot?.catch(() => undefined);
 		await mkdir(this.directory, { recursive: true });
-		const path = sessionPath(this.directory, id);
+		const path = this.pathForSession(id);
 		let db: SqliteDatabase | undefined;
 		let lease: WriterLeaseRow | undefined;
 		let reservedFile = false;
 		let initialized = false;
 		let session: SqliteOpenSession | undefined;
 		try {
-			const file = await openFile(path, "wx");
-			await file.close();
-			reservedFile = true;
+			if (!this.usesSharedDatabase()) {
+				const file = await openFile(path, "wx");
+				await file.close();
+				reservedFile = true;
+			}
 
 			const snapshot =
 				activeSourceSnapshot === undefined
@@ -326,15 +342,16 @@ export class SqliteSessionRepo {
 				path,
 			};
 			lease = activeDb.transaction(() => {
+				if (hasSessionRow(activeDb, id)) throw new Error(`SQLite session already exists: ${id}`);
 				insertSessionRow(activeDb, metadata, SQLITE_STORAGE_VERSION, snapshot.nextSeq);
-				const entryWriter = new EntryRowWriter(activeDb);
+				const entryWriter = new EntryRowWriter(activeDb, id);
 				for (const entry of snapshot.entries) {
 					entryWriter.insert(entry);
-					appendEntryToBranchIndex(activeDb, entry);
+					appendEntryToBranchIndex(activeDb, id, entry);
 				}
-				for (const stored of snapshot.scalarValues) insertForkValue(activeDb, stored);
-				updateForkSessionStats(activeDb, snapshot.messageCount);
-				return claimWriterLease(activeDb, uuidv7(this.now()), this.now(), DEFAULT_WRITER_LEASE_MS);
+				for (const stored of snapshot.scalarValues) insertForkValue(activeDb, id, stored);
+				updateForkSessionStats(activeDb, id, snapshot.messageCount);
+				return claimWriterLease(activeDb, id, uuidv7(this.now()), this.now(), DEFAULT_WRITER_LEASE_MS);
 			});
 			initialized = true;
 			session = this.openStorageBackedSession(metadata, activeDb, lease);
@@ -347,7 +364,7 @@ export class SqliteSessionRepo {
 				const failedDb = db;
 				const failedLease = lease;
 				if (failedDb !== undefined && failedLease !== undefined) {
-					failedDb.transaction(() => releaseWriterLease(failedDb, failedLease.owner_id, failedLease.fence));
+					failedDb.transaction(() => releaseWriterLease(failedDb, id, failedLease.owner_id, failedLease.fence));
 				}
 				db?.close();
 				this.pendingIds.delete(id);
@@ -362,16 +379,8 @@ export class SqliteSessionRepo {
 		const sourceDb = await this.databaseFactory.open(source.path);
 		try {
 			configureConnection(sourceDb);
-			const storedSource = metadataFromSessionRow(
-				source.path,
-				sessionIdFromPath(source.path),
-				readSingleSessionRow(sourceDb),
-				SQLITE_STORAGE_VERSION,
-			);
-			if (storedSource.id !== source.id) {
-				throw new Error(`SQLite session path ${source.path} contains ${storedSource.id}, not ${source.id}`);
-			}
-			return createSqliteForkSnapshot(sourceDb, options);
+			metadataFromSessionRow(source.path, readSessionRow(sourceDb, source.id), SQLITE_STORAGE_VERSION);
+			return createSqliteForkSnapshot(sourceDb, source.id, options);
 		} finally {
 			sourceDb.close();
 		}
@@ -394,15 +403,16 @@ export class SqliteSessionRepo {
 		let lease = initialLease;
 		const renew = () => {
 			lease = db.transaction(() =>
-				renewWriterLease(db, lease.owner_id, lease.fence, this.now(), DEFAULT_WRITER_LEASE_MS),
+				renewWriterLease(db, metadata.id, lease.owner_id, lease.fence, this.now(), DEFAULT_WRITER_LEASE_MS),
 			);
 		};
-		const storage = new SqliteStorage(db, { now: this.now, beforeCommit: renew });
+		const storage = new SqliteStorage(db, { sessionId: metadata.id, now: this.now, beforeCommit: renew });
 		this.openStorages.set(metadata.id, storage);
 		const session = new StorageBackedSession(metadata, storage);
 		const openSession = new SqliteOpenSession(session, {
 			renewWriterLease: renew,
-			releaseWriterLease: () => db.transaction(() => releaseWriterLease(db, lease.owner_id, lease.fence)),
+			releaseWriterLease: () =>
+				db.transaction(() => releaseWriterLease(db, metadata.id, lease.owner_id, lease.fence)),
 			renewIntervalMs: WRITER_LEASE_RENEW_INTERVAL_MS,
 			onClose: () => {
 				db.close();
@@ -418,6 +428,14 @@ export class SqliteSessionRepo {
 	private reserveId(id: string): void {
 		if (this.pendingIds.has(id)) throw new Error(`Session is already open: ${id}`);
 		this.pendingIds.add(id);
+	}
+
+	private pathForSession(id: string): string {
+		return this.databasePath ?? sessionPath(this.directory, id);
+	}
+
+	private usesSharedDatabase(): boolean {
+		return this.databasePath !== undefined;
 	}
 
 	private assertOpen(): void {

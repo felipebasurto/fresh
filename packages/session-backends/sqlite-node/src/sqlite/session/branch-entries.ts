@@ -48,11 +48,12 @@ interface CompactionBoundaryRow {
 	entry_seq: number | null;
 }
 
-function readBranchMembership(db: SqliteDatabase, entryId: string): BranchMembershipRow {
+function readBranchMembership(db: SqliteDatabase, sessionId: string, entryId: string): BranchMembershipRow {
 	const row = sql`SELECT b.branch_id, b.entry_seq
 		FROM branch_entries b
-		JOIN branch_meta m ON m.branch_id = b.branch_id
-		WHERE b.entry_id = ${entryId}
+		JOIN branch_meta m ON m.session_id = b.session_id AND m.branch_id = b.branch_id
+		WHERE b.session_id = ${sessionId}
+			AND b.entry_id = ${entryId}
 			AND ((m.base_seq IS NULL AND b.entry_seq > 0) OR (m.base_seq IS NOT NULL AND b.entry_seq > m.base_seq))
 			AND b.entry_seq <= m.tip_seq
 		ORDER BY m.tip_seq DESC, b.branch_id
@@ -61,44 +62,44 @@ function readBranchMembership(db: SqliteDatabase, entryId: string): BranchMember
 	return row;
 }
 
-function readBranchMeta(db: SqliteDatabase, branchId: string): BranchMetaRow {
+function readBranchMeta(db: SqliteDatabase, sessionId: string, branchId: string): BranchMetaRow {
 	const row = sql`SELECT branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq
 		FROM branch_meta
-		WHERE branch_id = ${branchId}`.get<BranchMetaRow>(db);
+		WHERE session_id = ${sessionId} AND branch_id = ${branchId}`.get<BranchMetaRow>(db);
 	if (row === undefined) throw new Error(`Branch metadata missing for branch ${branchId}`);
 	return row;
 }
 
-function insertBranchEntry(db: SqliteDatabase, branchId: string, entry: Entry): void {
-	sql`INSERT INTO branch_entries (branch_id, entry_id, entry_seq, entry_type)
-		VALUES (${branchId}, ${entry.id}, ${entry.seq}, ${entry.type})`.run(db);
+function insertBranchEntry(db: SqliteDatabase, sessionId: string, branchId: string, entry: Entry): void {
+	sql`INSERT INTO branch_entries (session_id, branch_id, entry_id, entry_seq, entry_type)
+		VALUES (${sessionId}, ${branchId}, ${entry.id}, ${entry.seq}, ${entry.type})`.run(db);
 }
 
-function readBranchTipForParent(db: SqliteDatabase, parentId: string): BranchTipRow | undefined {
+function readBranchTipForParent(db: SqliteDatabase, sessionId: string, parentId: string): BranchTipRow | undefined {
 	return sql`SELECT branch_id
 		FROM branch_meta
-		WHERE tip_entry_id = ${parentId}`.get<BranchTipRow>(db);
+		WHERE session_id = ${sessionId} AND tip_entry_id = ${parentId}`.get<BranchTipRow>(db);
 }
 
-function createRootBranchForEntry(db: SqliteDatabase, entry: Entry): void {
-	sql`INSERT INTO branch_meta (branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq)
-		VALUES (${entry.id}, ${entry.id}, ${entry.seq}, ${null}, ${null})`.run(db);
-	insertBranchEntry(db, entry.id, entry);
+function createRootBranchForEntry(db: SqliteDatabase, sessionId: string, entry: Entry): void {
+	sql`INSERT INTO branch_meta (session_id, branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq)
+		VALUES (${sessionId}, ${entry.id}, ${entry.id}, ${entry.seq}, ${null}, ${null})`.run(db);
+	insertBranchEntry(db, sessionId, entry.id, entry);
 }
 
-function appendEntryToExistingBranch(db: SqliteDatabase, branchId: string, entry: Entry): void {
-	insertBranchEntry(db, branchId, entry);
+function appendEntryToExistingBranch(db: SqliteDatabase, sessionId: string, branchId: string, entry: Entry): void {
+	insertBranchEntry(db, sessionId, branchId, entry);
 	const result = sql`UPDATE branch_meta
 		SET tip_entry_id = ${entry.id}, tip_seq = ${entry.seq}
-		WHERE branch_id = ${branchId}`.run(db);
+		WHERE session_id = ${sessionId} AND branch_id = ${branchId}`.run(db);
 	if (result.changes !== 1) throw new Error(`Expected to update branch ${branchId}, updated ${result.changes}`);
 }
 
-function readBranchSegmentsNewestFirst(db: SqliteDatabase, start: string): BranchSegment[] {
-	let { branch_id: branchId, entry_seq: upperSeq } = readBranchMembership(db, start);
+function readBranchSegmentsNewestFirst(db: SqliteDatabase, sessionId: string, start: string): BranchSegment[] {
+	let { branch_id: branchId, entry_seq: upperSeq } = readBranchMembership(db, sessionId, start);
 	const segments: BranchSegment[] = [];
 	while (true) {
-		const meta = readBranchMeta(db, branchId);
+		const meta = readBranchMeta(db, sessionId, branchId);
 		const lowerSeq = meta.base_seq ?? 0;
 		segments.push({ branchId, lowerSeq, upperSeq });
 		if (meta.base_branch_id === null) break;
@@ -111,12 +112,14 @@ function readBranchSegmentsNewestFirst(db: SqliteDatabase, start: string): Branc
 
 function readNewestCompactionBoundary(
 	db: SqliteDatabase,
+	sessionId: string,
 	segmentsNewestFirst: readonly BranchSegment[],
 ): CompactionBoundary | undefined {
 	for (const segment of segmentsNewestFirst) {
 		const row = sql`SELECT MAX(entry_seq) AS entry_seq
 			FROM branch_entries
-			WHERE branch_id = ${segment.branchId}
+			WHERE session_id = ${sessionId}
+				AND branch_id = ${segment.branchId}
 				AND entry_seq > ${segment.lowerSeq}
 				AND entry_seq <= ${segment.upperSeq}
 				AND entry_type = ${"compaction"}`.get<CompactionBoundaryRow>(db);
@@ -128,6 +131,7 @@ function readNewestCompactionBoundary(
 
 function copyBranchEntriesAfterSeqThroughParent(
 	db: SqliteDatabase,
+	sessionId: string,
 	targetBranchId: string,
 	segmentsNewestFirst: readonly BranchSegment[],
 	afterSeq: number,
@@ -135,41 +139,42 @@ function copyBranchEntriesAfterSeqThroughParent(
 	for (const segment of [...segmentsNewestFirst].reverse()) {
 		const lowerSeq = Math.max(segment.lowerSeq, afterSeq);
 		if (segment.upperSeq <= lowerSeq) continue;
-		sql`INSERT INTO branch_entries (branch_id, entry_id, entry_seq, entry_type)
-			SELECT ${targetBranchId}, entry_id, entry_seq, entry_type
+		sql`INSERT INTO branch_entries (session_id, branch_id, entry_id, entry_seq, entry_type)
+			SELECT ${sessionId}, ${targetBranchId}, entry_id, entry_seq, entry_type
 			FROM branch_entries
-			WHERE branch_id = ${segment.branchId}
+			WHERE session_id = ${sessionId}
+				AND branch_id = ${segment.branchId}
 				AND entry_seq > ${lowerSeq}
 				AND entry_seq <= ${segment.upperSeq}`.run(db);
 	}
 }
 
-function createDivergentBranchForEntry(db: SqliteDatabase, entry: Entry): void {
+function createDivergentBranchForEntry(db: SqliteDatabase, sessionId: string, entry: Entry): void {
 	if (entry.parentId === null) throw new Error("Root entries do not create divergent branches");
-	const segmentsNewestFirst = readBranchSegmentsNewestFirst(db, entry.parentId);
-	const compaction = readNewestCompactionBoundary(db, segmentsNewestFirst);
+	const segmentsNewestFirst = readBranchSegmentsNewestFirst(db, sessionId, entry.parentId);
+	const compaction = readNewestCompactionBoundary(db, sessionId, segmentsNewestFirst);
 	const branchId = entry.id;
 	// A null base means this segment stores its own root-through-parent prefix.
-	sql`INSERT INTO branch_meta (branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq)
-		VALUES (${branchId}, ${entry.id}, ${entry.seq}, ${compaction?.branchId ?? null}, ${compaction?.seq ?? null})`.run(
+	sql`INSERT INTO branch_meta (session_id, branch_id, tip_entry_id, tip_seq, base_branch_id, base_seq)
+		VALUES (${sessionId}, ${branchId}, ${entry.id}, ${entry.seq}, ${compaction?.branchId ?? null}, ${compaction?.seq ?? null})`.run(
 		db,
 	);
-	copyBranchEntriesAfterSeqThroughParent(db, branchId, segmentsNewestFirst, compaction?.seq ?? 0);
-	insertBranchEntry(db, branchId, entry);
+	copyBranchEntriesAfterSeqThroughParent(db, sessionId, branchId, segmentsNewestFirst, compaction?.seq ?? 0);
+	insertBranchEntry(db, sessionId, branchId, entry);
 }
 
-export function appendEntryToBranchIndex(db: SqliteDatabase, entry: Entry): void {
+export function appendEntryToBranchIndex(db: SqliteDatabase, sessionId: string, entry: Entry): void {
 	if (entry.parentId === null) {
-		createRootBranchForEntry(db, entry);
+		createRootBranchForEntry(db, sessionId, entry);
 		return;
 	}
 
-	const branch = readBranchTipForParent(db, entry.parentId);
+	const branch = readBranchTipForParent(db, sessionId, entry.parentId);
 	if (branch === undefined) {
-		createDivergentBranchForEntry(db, entry);
+		createDivergentBranchForEntry(db, sessionId, entry);
 		return;
 	}
-	appendEntryToExistingBranch(db, branch.branch_id, entry);
+	appendEntryToExistingBranch(db, sessionId, branch.branch_id, entry);
 }
 
 function stopPredicates(query: StorageBranchScan): SqlQuery[] {
@@ -181,6 +186,7 @@ function stopPredicates(query: StorageBranchScan): SqlQuery[] {
 
 function readStopSeq(
 	db: SqliteDatabase,
+	sessionId: string,
 	segment: BranchSegment,
 	query: StorageBranchScan,
 	oldestFirst: boolean,
@@ -190,7 +196,8 @@ function readStopSeq(
 	const aggregate = oldestFirst ? sql`MIN(b.entry_seq)` : sql`MAX(b.entry_seq)`;
 	const row = sql`SELECT ${aggregate} AS stop_seq
 		FROM branch_entries b
-		WHERE b.branch_id = ${segment.branchId}
+		WHERE b.session_id = ${sessionId}
+			AND b.branch_id = ${segment.branchId}
 			AND b.entry_seq > ${segment.lowerSeq}
 			AND b.entry_seq <= ${segment.upperSeq}
 			AND (${joinSqlFragments(stop, " OR ")})`.get<StopSeqRow>(db);
@@ -198,15 +205,18 @@ function readStopSeq(
 }
 
 function branchScanPredicates(
+	sessionId: string,
 	segment: BranchSegment,
 	query: StorageBranchScan,
 	oldestFirst: boolean,
 	stopSeq: number | undefined,
 ): SqlQuery[] {
 	const predicates: SqlQuery[] = [
+		sql`b.session_id = ${sessionId}`,
 		sql`b.branch_id = ${segment.branchId}`,
 		sql`b.entry_seq > ${segment.lowerSeq}`,
 		sql`b.entry_seq <= ${segment.upperSeq}`,
+		sql`e.session_id = b.session_id`,
 	];
 	if (stopSeq !== undefined)
 		predicates.push(oldestFirst ? sql`b.entry_seq <= ${stopSeq}` : sql`b.entry_seq >= ${stopSeq}`);
@@ -224,17 +234,18 @@ function limitSql(limit: number | undefined): SqlQuery {
 
 function scanEntrySegmentRows(
 	db: SqliteDatabase,
+	sessionId: string,
 	segment: BranchSegment,
 	query: StorageBranchScan,
 	oldestFirst: boolean,
 	stopSeq: number | undefined,
 	limit: number | undefined,
 ): EntryRow[] {
-	const predicates = branchScanPredicates(segment, query, oldestFirst, stopSeq);
+	const predicates = branchScanPredicates(sessionId, segment, query, oldestFirst, stopSeq);
 	const order = oldestFirst ? sql`ASC` : sql`DESC`;
 	return sql`SELECT e.id, e.parent_id, e.seq, e.type, e.custom_type, e.timestamp, e.payload
 		FROM branch_entries b
-		CROSS JOIN entries e ON e.id = b.entry_id
+		CROSS JOIN entries e ON e.session_id = b.session_id AND e.id = b.entry_id
 		WHERE ${joinSqlFragments(predicates, " AND ")}
 		ORDER BY b.entry_seq ${order} ${limitSql(limit)}`.all<EntryRow>(db);
 }
@@ -252,17 +263,18 @@ function decodeEntryStructureRow(row: EntryStructureRow): EntryStructure {
 
 function scanStructureSegmentRows(
 	db: SqliteDatabase,
+	sessionId: string,
 	segment: BranchSegment,
 	query: StorageBranchScan,
 	oldestFirst: boolean,
 	stopSeq: number | undefined,
 	limit: number | undefined,
 ): EntryStructure[] {
-	const predicates = branchScanPredicates(segment, query, oldestFirst, stopSeq);
+	const predicates = branchScanPredicates(sessionId, segment, query, oldestFirst, stopSeq);
 	const order = oldestFirst ? sql`ASC` : sql`DESC`;
 	const rows = sql`SELECT e.id, e.parent_id, e.seq, e.type, e.custom_type, e.timestamp
 		FROM branch_entries b
-		CROSS JOIN entries e ON e.id = b.entry_id
+		CROSS JOIN entries e ON e.session_id = b.session_id AND e.id = b.entry_id
 		WHERE ${joinSqlFragments(predicates, " AND ")}
 		ORDER BY b.entry_seq ${order} ${limitSql(limit)}`.all<EntryStructureRow>(db);
 	return rows.map(decodeEntryStructureRow);
@@ -270,9 +282,11 @@ function scanStructureSegmentRows(
 
 function scanBranchSegments<T>(
 	db: SqliteDatabase,
+	sessionId: string,
 	query: StorageBranchScan,
 	readSegment: (
 		db: SqliteDatabase,
+		sessionId: string,
 		segment: BranchSegment,
 		query: StorageBranchScan,
 		oldestFirst: boolean,
@@ -281,7 +295,7 @@ function scanBranchSegments<T>(
 	) => T[],
 ): T[] {
 	const oldestFirst = query.order === "oldestFirst";
-	const segmentsNewestFirst = readBranchSegmentsNewestFirst(db, query.start);
+	const segmentsNewestFirst = readBranchSegmentsNewestFirst(db, sessionId, query.start);
 	const segments = oldestFirst ? [...segmentsNewestFirst].reverse() : segmentsNewestFirst;
 	const limit = query.limit === undefined ? undefined : Math.max(0, query.limit);
 	if (limit === 0) return [];
@@ -290,17 +304,21 @@ function scanBranchSegments<T>(
 	for (const segment of segments) {
 		const remaining = limit === undefined ? undefined : limit - rows.length;
 		if (remaining !== undefined && remaining <= 0) break;
-		const stopSeq = readStopSeq(db, segment, query, oldestFirst);
-		rows.push(...readSegment(db, segment, query, oldestFirst, stopSeq, remaining));
+		const stopSeq = readStopSeq(db, sessionId, segment, query, oldestFirst);
+		rows.push(...readSegment(db, sessionId, segment, query, oldestFirst, stopSeq, remaining));
 		if (stopSeq !== undefined) break;
 	}
 	return rows;
 }
 
-export function scanBranchEntries(db: SqliteDatabase, query: StorageBranchScan): Entry[] {
-	return scanBranchSegments(db, query, scanEntrySegmentRows).map(decodeEntryRow);
+export function scanBranchEntries(db: SqliteDatabase, sessionId: string, query: StorageBranchScan): Entry[] {
+	return scanBranchSegments(db, sessionId, query, scanEntrySegmentRows).map(decodeEntryRow);
 }
 
-export function scanBranchEntryStructures(db: SqliteDatabase, query: StorageBranchScan): EntryStructure[] {
-	return scanBranchSegments(db, query, scanStructureSegmentRows);
+export function scanBranchEntryStructures(
+	db: SqliteDatabase,
+	sessionId: string,
+	query: StorageBranchScan,
+): EntryStructure[] {
+	return scanBranchSegments(db, sessionId, query, scanStructureSegmentRows);
 }

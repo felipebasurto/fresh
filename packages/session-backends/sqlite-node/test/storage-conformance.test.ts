@@ -8,6 +8,7 @@ import { describe, it } from "vitest";
 import { createNodeSqliteFactory, SQLITE_STORAGE_VERSION, SqliteStorage, sql } from "../src/index.ts";
 import { applyInitialSchema } from "../src/sqlite/migrations.ts";
 
+const SESSION_ID = "session";
 const NOW = 1_700_000_000_000;
 const EMPTY_USAGE = {
 	input: 0,
@@ -36,12 +37,12 @@ registerConformance(
 		const db = await createNodeSqliteFactory().open(":memory:");
 		try {
 			await applyInitialSchema(db);
-			sql`INSERT INTO session
-				(created_at, parent_session_id, storage_version, metadata, message_count, usage_payload, next_seq)
-				VALUES (${NOW}, ${null}, ${SQLITE_STORAGE_VERSION}, ${null}, ${0}, ${JSON.stringify(EMPTY_USAGE)}, ${1})`.run(
+			sql`INSERT INTO sessions
+				(id, created_at, parent_session_id, storage_version, metadata, message_count, usage_payload, next_seq)
+				VALUES (${SESSION_ID}, ${NOW}, ${null}, ${SQLITE_STORAGE_VERSION}, ${null}, ${0}, ${JSON.stringify(EMPTY_USAGE)}, ${1})`.run(
 				db,
 			);
-			const storage = new SqliteStorage(db, { now: () => NOW });
+			const storage = new SqliteStorage(db, { sessionId: SESSION_ID, now: () => NOW });
 			return {
 				storage,
 				async [Symbol.asyncDispose]() {

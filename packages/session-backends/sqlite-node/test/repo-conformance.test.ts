@@ -20,11 +20,22 @@ function registerConformance(name: string, cases: readonly ConformanceCase[]): v
 }
 
 let currentDirectory: string | undefined;
+let currentSharedDirectory: string | undefined;
 
 async function createConformanceRepo() {
 	currentDirectory = await mkdtemp(join(tmpdir(), "pi-sqlite-session-repo-conformance-"));
 	return new SqliteSessionRepo({
 		directory: currentDirectory,
+		databaseFactory: createNodeSqliteFactory(),
+		now: () => NOW,
+	});
+}
+
+async function createSharedContainerConformanceRepo() {
+	currentSharedDirectory = await mkdtemp(join(tmpdir(), "pi-sqlite-session-repo-shared-conformance-"));
+	return new SqliteSessionRepo({
+		directory: currentSharedDirectory,
+		databasePath: join(currentSharedDirectory, "sessions.sqlite"),
 		databaseFactory: createNodeSqliteFactory(),
 		now: () => NOW,
 	});
@@ -36,7 +47,18 @@ async function cleanupConformanceRepo() {
 	currentDirectory = undefined;
 }
 
+async function cleanupSharedContainerConformanceRepo() {
+	if (currentSharedDirectory === undefined) return;
+	await rm(currentSharedDirectory, { recursive: true, force: true });
+	currentSharedDirectory = undefined;
+}
+
 registerConformance(
 	"SqliteSessionRepo conformance",
 	createSessionRepoConformance(createConformanceRepo, cleanupConformanceRepo),
+);
+
+registerConformance(
+	"SqliteSessionRepo shared-container conformance",
+	createSessionRepoConformance(createSharedContainerConformanceRepo, cleanupSharedContainerConformanceRepo),
 );

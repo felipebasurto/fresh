@@ -45,8 +45,10 @@ describe("SqliteSessionRepo", () => {
 			expect(metadata.path).toBe(join(directory, "session.sqlite"));
 
 			await withDb(metadata.path, (db) => {
-				expect(sql`SELECT COUNT(*) AS count FROM session`.get<{ count: number }>(db)).toEqual({ count: 1 });
-				expect(sql`SELECT message_count, usage_payload, next_seq FROM session`.get(db)).toEqual({
+				expect(sql`SELECT COUNT(*) AS count FROM sessions`.get<{ count: number }>(db)).toEqual({ count: 1 });
+				expect(
+					sql`SELECT message_count, usage_payload, next_seq FROM sessions WHERE id = ${"session"}`.get(db),
+				).toEqual({
 					message_count: 0,
 					usage_payload: JSON.stringify({
 						input: 0,
@@ -58,7 +60,11 @@ describe("SqliteSessionRepo", () => {
 					}),
 					next_seq: 3,
 				});
-				expect(sql`SELECT namespace, key, seq, value FROM scalar_values ORDER BY seq`.all(db)).toEqual([
+				expect(
+					sql`SELECT namespace, key, seq, value FROM scalar_values WHERE session_id = ${"session"} ORDER BY seq`.all(
+						db,
+					),
+				).toEqual([
 					{
 						namespace: storedValues.laneLeaf("main").namespace,
 						key: "main",
@@ -72,7 +78,9 @@ describe("SqliteSessionRepo", () => {
 						value: JSON.stringify({ currentOperationId: null, pendingNextRun: [] }),
 					},
 				]);
-				expect(sql`SELECT COUNT(*) AS count FROM list_values`.get(db)).toEqual({ count: 0 });
+				expect(sql`SELECT COUNT(*) AS count FROM list_values WHERE session_id = ${"session"}`.get(db)).toEqual({
+					count: 0,
+				});
 			});
 			await session.close(BACKGROUND_CONTEXT);
 		});
@@ -120,7 +128,7 @@ describe("SqliteSessionRepo", () => {
 
 			await expect(repo.create({ id: "session" }, BACKGROUND_CONTEXT)).rejects.toThrow();
 			await withDb(metadata.path, (db) => {
-				expect(sql`SELECT COUNT(*) AS count FROM session`.get<{ count: number }>(db)).toEqual({ count: 1 });
+				expect(sql`SELECT COUNT(*) AS count FROM sessions`.get<{ count: number }>(db)).toEqual({ count: 1 });
 			});
 			await session.close(BACKGROUND_CONTEXT);
 		});
@@ -137,14 +145,16 @@ describe("SqliteSessionRepo", () => {
 			const { metadata } = session;
 			let leaseBeforeList: unknown[] = [];
 			await withDb(metadata.path, (db) => {
-				leaseBeforeList = sql`SELECT owner_id, fence FROM writer_lease`.all(db);
+				leaseBeforeList = sql`SELECT owner_id, fence FROM writer_lease WHERE session_id = ${"session"}`.all(db);
 			});
 
 			await expect(repo.list(undefined, BACKGROUND_CONTEXT)).resolves.toMatchObject([
 				{ id: "session", path: metadata.path },
 			]);
 			await withDb(metadata.path, (db) => {
-				expect(sql`SELECT owner_id, fence FROM writer_lease`.all(db)).toEqual(leaseBeforeList);
+				expect(sql`SELECT owner_id, fence FROM writer_lease WHERE session_id = ${"session"}`.all(db)).toEqual(
+					leaseBeforeList,
+				);
 			});
 			await session.close(BACKGROUND_CONTEXT);
 		});
@@ -161,7 +171,7 @@ describe("SqliteSessionRepo", () => {
 			await session.close(BACKGROUND_CONTEXT);
 			await writeFile(join(directory, "corrupt.sqlite"), "not a sqlite database");
 			await withDb(session.metadata.path, (db) => {
-				sql`UPDATE session SET storage_version = ${999}`.run(db);
+				sql`UPDATE sessions SET storage_version = ${999} WHERE id = ${"session"}`.run(db);
 			});
 
 			expect(await repo.list(undefined, BACKGROUND_CONTEXT)).toEqual([]);
@@ -195,13 +205,13 @@ describe("SqliteSessionRepo", () => {
 			await session.close(BACKGROUND_CONTEXT);
 
 			await withDb(metadata.path, (db) => {
-				sql`INSERT INTO writer_lease (owner_id, fence, expires_at_ms) VALUES (${"external"}, ${1}, ${1_000})`.run(
+				sql`INSERT INTO writer_lease (session_id, owner_id, fence, expires_at_ms) VALUES (${"session"}, ${"external"}, ${1}, ${1_000})`.run(
 					db,
 				);
 			});
 			await expect(repo.delete(metadata, BACKGROUND_CONTEXT)).rejects.toThrow("already claimed");
 			await withDb(metadata.path, (db) => {
-				sql`DELETE FROM writer_lease`.run(db);
+				sql`DELETE FROM writer_lease WHERE session_id = ${"session"}`.run(db);
 			});
 
 			await expect(
@@ -246,11 +256,72 @@ describe("SqliteSessionRepo", () => {
 			await opened.close(BACKGROUND_CONTEXT);
 
 			await withDb(metadata.path, (db) => {
-				sql`INSERT INTO writer_lease (owner_id, fence, expires_at_ms) VALUES (${"external"}, ${1}, ${1_000})`.run(
+				sql`INSERT INTO writer_lease (session_id, owner_id, fence, expires_at_ms) VALUES (${"session"}, ${"external"}, ${1}, ${1_000})`.run(
 					db,
 				);
 			});
 			await expect(repo.open(metadata, BACKGROUND_CONTEXT)).rejects.toThrow("already claimed");
+		});
+	});
+
+	it("isolates sessions stored in one shared SQLite container", async () => {
+		await withTempDir(async (directory) => {
+			const databasePath = join(directory, "sessions.sqlite");
+			const repo = new SqliteSessionRepo({
+				directory,
+				databasePath,
+				databaseFactory: createNodeSqliteFactory(),
+				now: () => 1_700_000_000_000,
+			});
+			const left = await repo.create({ id: "left" }, BACKGROUND_CONTEXT);
+			const right = await repo.create({ id: "right" }, BACKGROUND_CONTEXT);
+
+			expect(left.metadata.path).toBe(databasePath);
+			expect(right.metadata.path).toBe(databasePath);
+			await left.mutate(
+				"main",
+				(mutator) =>
+					mutator.commit(
+						[
+							sessionWrites.insertEntry({ id: "left-root", parentId: null, type: "custom", customType: "left" }),
+							storedValues.setValue(storedValues.sessionName, "left-name"),
+						],
+						BACKGROUND_CONTEXT,
+					),
+				BACKGROUND_CONTEXT,
+			);
+			await right.mutate(
+				"main",
+				(mutator) =>
+					mutator.commit(
+						[
+							sessionWrites.insertEntry({
+								id: "right-root",
+								parentId: null,
+								type: "custom",
+								customType: "right",
+							}),
+							storedValues.setValue(storedValues.sessionName, "right-name"),
+						],
+						BACKGROUND_CONTEXT,
+					),
+				BACKGROUND_CONTEXT,
+			);
+
+			expect((await repo.list(undefined, BACKGROUND_CONTEXT)).map((metadata) => metadata.id).sort()).toEqual([
+				"left",
+				"right",
+			]);
+			expect(await left.getValue(storedValues.sessionName, BACKGROUND_CONTEXT)).toMatchObject({
+				value: "left-name",
+			});
+			expect(await right.getValue(storedValues.sessionName, BACKGROUND_CONTEXT)).toMatchObject({
+				value: "right-name",
+			});
+			expect((await left.getEntries(["left-root", "right-root"], BACKGROUND_CONTEXT)).has("right-root")).toBe(false);
+			expect((await right.getEntries(["left-root", "right-root"], BACKGROUND_CONTEXT)).has("left-root")).toBe(false);
+
+			await Promise.all([left.close(BACKGROUND_CONTEXT), right.close(BACKGROUND_CONTEXT)]);
 		});
 	});
 
@@ -297,7 +368,9 @@ describe("SqliteSessionRepo", () => {
 			const fork = await repo.fork(source.metadata, { id: "fork", entryId: "child" }, BACKGROUND_CONTEXT);
 
 			await withDb(fork.metadata.path, (db) => {
-				expect(sql`SELECT COUNT(*) AS count FROM usage_ledger`.get<{ count: number }>(db)).toEqual({ count: 0 });
+				expect(
+					sql`SELECT COUNT(*) AS count FROM usage_ledger WHERE session_id = ${"fork"}`.get<{ count: number }>(db),
+				).toEqual({ count: 0 });
 			});
 			await Promise.all([source.close(BACKGROUND_CONTEXT), fork.close(BACKGROUND_CONTEXT)]);
 		});

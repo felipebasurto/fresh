@@ -4,7 +4,7 @@ import { sql } from "../sql.ts";
 import type { SqliteDatabase } from "../types.ts";
 
 export interface SessionRow {
-	rowid: number;
+	id: string;
 	created_at: number;
 	parent_session_id: string | null;
 	storage_version: number;
@@ -15,6 +15,7 @@ export interface SessionRow {
 }
 
 export interface SqliteSessionMetadata extends SessionMetadata {
+	/** SQLite container/shard path containing this session. */
 	path: string;
 }
 
@@ -29,21 +30,27 @@ function zeroUsage(): Usage {
 	};
 }
 
-export function readSingleSessionRow(db: SqliteDatabase): SessionRow {
-	const rows = sql`SELECT rowid, created_at, parent_session_id, storage_version, metadata,
+export function readSessionRow(db: SqliteDatabase, sessionId: string): SessionRow {
+	const row = sql`SELECT id, created_at, parent_session_id, storage_version, metadata,
 			message_count, usage_payload, next_seq
-		FROM session`.all<SessionRow>(db);
-	if (rows.length !== 1) throw new Error(`Expected exactly one session row, found ${rows.length}`);
-	return rows[0]!;
+		FROM sessions
+		WHERE id = ${sessionId}`.get<SessionRow>(db);
+	if (row === undefined) throw new Error(`Unknown SQLite session: ${sessionId}`);
+	return row;
 }
 
-export function readSessionRowCount(db: SqliteDatabase): number {
-	return sql`SELECT rowid FROM session`.all<{ rowid: number }>(db).length;
+export function readAllSessionRows(db: SqliteDatabase): SessionRow[] {
+	return sql`SELECT id, created_at, parent_session_id, storage_version, metadata,
+			message_count, usage_payload, next_seq
+		FROM sessions`.all<SessionRow>(db);
+}
+
+export function hasSessionRow(db: SqliteDatabase, sessionId: string): boolean {
+	return sql`SELECT id FROM sessions WHERE id = ${sessionId}`.get<{ id: string }>(db) !== undefined;
 }
 
 export function metadataFromSessionRow(
 	path: string,
-	id: string,
 	row: SessionRow,
 	currentStorageVersion: number,
 ): SqliteSessionMetadata {
@@ -54,7 +61,7 @@ export function metadataFromSessionRow(
 		throw new Error(`SQLite session storage version ${row.storage_version} requires migrations`);
 	}
 	return {
-		id,
+		id: row.id,
 		createdAt: row.created_at,
 		storageVersion: row.storage_version,
 		...(row.parent_session_id === null ? {} : { parentSessionId: row.parent_session_id }),
@@ -68,9 +75,10 @@ export function insertSessionRow(
 	storageVersion: number,
 	nextSeq: number,
 ): void {
-	sql`INSERT INTO session
-			(created_at, parent_session_id, storage_version, metadata, message_count, usage_payload, next_seq)
+	sql`INSERT INTO sessions
+			(id, created_at, parent_session_id, storage_version, metadata, message_count, usage_payload, next_seq)
 		VALUES (
+			${metadata.id},
 			${metadata.createdAt},
 			${metadata.parentSessionId ?? null},
 			${storageVersion},
@@ -79,4 +87,17 @@ export function insertSessionRow(
 			${JSON.stringify(zeroUsage())},
 			${nextSeq}
 		)`.run(db);
+}
+
+export function deleteSessionRows(db: SqliteDatabase, sessionId: string): void {
+	sql`DELETE FROM entries WHERE session_id = ${sessionId}`.run(db);
+	sql`DELETE FROM scalar_values WHERE session_id = ${sessionId}`.run(db);
+	sql`DELETE FROM list_values WHERE session_id = ${sessionId}`.run(db);
+	sql`DELETE FROM usage_ledger WHERE session_id = ${sessionId}`.run(db);
+	sql`DELETE FROM branch_entries WHERE session_id = ${sessionId}`.run(db);
+	sql`DELETE FROM branch_meta WHERE session_id = ${sessionId}`.run(db);
+	sql`DELETE FROM writer_lease WHERE session_id = ${sessionId}`.run(db);
+	const result = sql`DELETE FROM sessions WHERE id = ${sessionId}`.run(db);
+	if (result.changes !== 1)
+		throw new Error(`Expected to delete one SQLite session ${sessionId}, deleted ${result.changes}`);
 }

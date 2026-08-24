@@ -36,6 +36,7 @@ import {
 import type { SqliteDatabase } from "./types.ts";
 
 export interface SqliteStorageOptions {
+	sessionId: string;
 	now?: () => number;
 	beforeCommit?: () => void;
 }
@@ -48,6 +49,7 @@ export interface SqliteStorageSnapshot {
 
 export class SqliteStorage implements Storage {
 	private readonly db: SqliteDatabase;
+	private readonly sessionId: string;
 	private readonly now: () => number;
 	private readonly beforeCommit: () => void;
 	private readonly entryWriter: EntryRowWriter;
@@ -56,12 +58,13 @@ export class SqliteStorage implements Storage {
 	private state: "open" | "closing" | "closed" = "open";
 	private closePromise: Promise<void> | undefined;
 
-	constructor(db: SqliteDatabase, options: SqliteStorageOptions = {}) {
+	constructor(db: SqliteDatabase, options: SqliteStorageOptions) {
 		this.db = db;
+		this.sessionId = options.sessionId;
 		this.now = options.now ?? Date.now;
 		this.beforeCommit = options.beforeCommit ?? (() => undefined);
-		this.entryWriter = new EntryRowWriter(db);
-		this.usageWriter = new UsageLedgerRowWriter(db);
+		this.entryWriter = new EntryRowWriter(db, this.sessionId);
+		this.usageWriter = new UsageLedgerRowWriter(db, this.sessionId);
 	}
 
 	async commit(writes: Write[], _context: Context): Promise<CommitResult> {
@@ -76,7 +79,7 @@ export class SqliteStorage implements Storage {
 
 	getEntries(ids: string[], _context: Context): Promise<Map<string, Entry>> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
-		const rowsById = new Map(readEntryRows(this.db, ids).map((row) => [row.id, row]));
+		const rowsById = new Map(readEntryRows(this.db, this.sessionId, ids).map((row) => [row.id, row]));
 		const entries = new Map<string, Entry>();
 		for (const id of ids) {
 			const row = rowsById.get(id);
@@ -87,12 +90,12 @@ export class SqliteStorage implements Storage {
 
 	getValue<T>(address: Value<T>, _context: Context): Promise<StoredValue<T> | undefined> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
-		return Promise.resolve(readScalarValueRow(this.db, address));
+		return Promise.resolve(readScalarValueRow(this.db, this.sessionId, address));
 	}
 
 	scanValues<T>(prefix: Value<T>, _context: Context): Promise<StoredValue<T>[]> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
-		return Promise.resolve(scanScalarValueRows(this.db, prefix));
+		return Promise.resolve(scanScalarValueRows(this.db, this.sessionId, prefix));
 	}
 
 	async readList<T>(
@@ -101,32 +104,32 @@ export class SqliteStorage implements Storage {
 		_context: Context,
 	): Promise<ListElement<T>[]> {
 		if (this.state !== "open") throw new Error("SqliteStorage is closed");
-		return readListValueRows(this.db, address, options);
+		return readListValueRows(this.db, this.sessionId, address, options);
 	}
 
 	scanBranch(query: StorageBranchScan, _context: Context): Promise<Entry[]> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
-		return Promise.resolve().then(() => scanBranchEntries(this.db, query));
+		return Promise.resolve().then(() => scanBranchEntries(this.db, this.sessionId, query));
 	}
 
 	scanBranchStructure(query: StorageBranchScan, _context: Context): Promise<EntryStructure[]> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
-		return Promise.resolve().then(() => scanBranchEntryStructures(this.db, query));
+		return Promise.resolve().then(() => scanBranchEntryStructures(this.db, this.sessionId, query));
 	}
 
 	scanEntries(query: EntryScan, _context: Context): Promise<Entry[]> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
-		return Promise.resolve(scanEntryRows(this.db, query).map(decodeEntryRow));
+		return Promise.resolve(scanEntryRows(this.db, this.sessionId, query).map(decodeEntryRow));
 	}
 
 	scanUsage(query: UsageScan, _context: Context): Promise<UsageRow[]> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
-		return Promise.resolve(scanUsageLedgerRows(this.db, query).map(decodeUsageLedgerRow));
+		return Promise.resolve(scanUsageLedgerRows(this.db, this.sessionId, query).map(decodeUsageLedgerRow));
 	}
 
 	getStats(_context: Context): Promise<SessionStats> {
 		if (this.state !== "open") return Promise.reject(new Error("SqliteStorage is closed"));
-		return Promise.resolve(readSessionStats(this.db));
+		return Promise.resolve(readSessionStats(this.db, this.sessionId));
 	}
 
 	snapshot(options: ForkOptions | undefined, _context: Context): Promise<SqliteStorageSnapshot> {
@@ -141,7 +144,7 @@ export class SqliteStorage implements Storage {
 	}
 
 	private readSnapshot(options: ForkOptions): SqliteStorageSnapshot {
-		const scalarValues = readAllScalarValueRows(this.db);
+		const scalarValues = readAllScalarValueRows(this.db, this.sessionId);
 		return {
 			entries: this.readSnapshotEntries(options, scalarValues),
 			scalarValues,
@@ -150,54 +153,56 @@ export class SqliteStorage implements Storage {
 	}
 
 	private readSnapshotEntries(options: ForkOptions, scalarValues: readonly StoredValue<unknown>[]): Entry[] {
-		if (options.scope === "tree") return readAllEntryRows(this.db).map(decodeEntryRow);
+		if (options.scope === "tree") return readAllEntryRows(this.db, this.sessionId).map(decodeEntryRow);
 		const mainAddress = laneLeaf("main");
 		const mainLeaf = scalarValues.find(
 			(stored) => stored.address.namespace === mainAddress.namespace && stored.address.key === mainAddress.key,
 		) as StoredValue<string | null> | undefined;
 		if (mainLeaf === undefined) throw new Error("Source session is missing main lane");
 		const requested = options.entryId ?? mainLeaf.value;
-		return requested === null ? [] : scanBranchEntries(this.db, { start: requested, order: "oldestFirst" });
+		return requested === null
+			? []
+			: scanBranchEntries(this.db, this.sessionId, { start: requested, order: "oldestFirst" });
 	}
 
 	private applyCommit(writes: Write[]): CommitResult {
 		this.beforeCommit();
 		return this.db.transaction(() => {
-			const firstSeq = readNextSeq(this.db);
+			const firstSeq = readNextSeq(this.db, this.sessionId);
 			const prepared = prepareStorageCommit(writes, firstSeq, this.now());
 			for (const write of prepared.writes) {
 				switch (write.kind) {
 					case "entry": {
 						const { kind: _kind, ...entry } = write;
 						this.entryWriter.insert(entry);
-						appendEntryToBranchIndex(this.db, entry);
-						if (entry.type === "message") incrementMessageCount(this.db);
+						appendEntryToBranchIndex(this.db, this.sessionId, entry);
+						if (entry.type === "message") incrementMessageCount(this.db, this.sessionId);
 						break;
 					}
 					case "usage": {
 						const { kind: _kind, ...row } = write;
 						this.usageWriter.insert(row);
-						addUsageToSessionStats(this.db, row.usage);
+						addUsageToSessionStats(this.db, this.sessionId, row.usage);
 						break;
 					}
 					case "value":
 						if (write.op === "delete") {
-							deleteScalarValueRow(this.db, write.namespace, write.key);
+							deleteScalarValueRow(this.db, this.sessionId, write.namespace, write.key);
 						} else {
-							setScalarValueRow(this.db, write.namespace, write.key, write.seq, write.value);
+							setScalarValueRow(this.db, this.sessionId, write.namespace, write.key, write.seq, write.value);
 						}
 						break;
 					case "list":
 						if (write.op === "delete") {
-							deleteListValueRows(this.db, write.namespace, write.key);
+							deleteListValueRows(this.db, this.sessionId, write.namespace, write.key);
 						} else {
-							appendListValueRow(this.db, write.namespace, write.key, write.seq, write.value);
+							appendListValueRow(this.db, this.sessionId, write.namespace, write.key, write.seq, write.value);
 						}
 						break;
 				}
 			}
-			advanceNextSeq(this.db, firstSeq + prepared.writes.length);
-			return { ...prepared.result, stats: readSessionStats(this.db) };
+			advanceNextSeq(this.db, this.sessionId, firstSeq + prepared.writes.length);
+			return { ...prepared.result, stats: readSessionStats(this.db, this.sessionId) };
 		});
 	}
 
