@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
-import { type OpenClientRuntimeOptions, openClientRuntime, waitForRemoteState } from "./client-runtime.ts";
+import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runtime.ts";
 import type { SessionAttachmentState } from "./services/connection.ts";
 import type { Models } from "./services/models.ts";
 import type { SessionDirectory, SessionDirectoryEvent, SessionManagement } from "./services/sessions.ts";
@@ -211,8 +211,6 @@ export class ExperimentalClientTui implements Component {
 				await this.#selectedServer.management.detach(BACKGROUND_CONTEXT);
 			}
 			await action.server.management.attach(summary.sessionId, BACKGROUND_CONTEXT);
-			await waitForAttachment(action.server.attachment, summary.sessionId);
-			await waitForRemoteState(action.server.models.state);
 			this.#selectedServer = action.server;
 			this.#removeModelsListener?.();
 			this.#removeModelsListener = action.server.models.state.subscribe(() => this.#rebuild());
@@ -263,20 +261,4 @@ function findSession(server: ClientTuiServer, sessionId: string): SessionSummary
 	const session = server.directory.state.value?.sessions.find((candidate) => candidate.sessionId === sessionId);
 	if (session === undefined) throw new Error(`Unknown Session: ${sessionId}`);
 	return session;
-}
-
-function waitForAttachment(state: ReplicatedState<SessionAttachmentState>, sessionId: string): Promise<void> {
-	if (state.value?.status === "attached" && state.value.sessionId === sessionId) return Promise.resolve();
-	return new Promise((resolve, reject) => {
-		let unsubscribe: (() => void) | undefined;
-		unsubscribe = state.subscribe((attachment) => {
-			if (attachment.status === "degraded" && attachment.sessionId === sessionId) {
-				queueMicrotask(() => unsubscribe?.());
-				reject(new Error(`Session ${sessionId} is unavailable`));
-			} else if (attachment.status === "attached" && attachment.sessionId === sessionId) {
-				queueMicrotask(() => unsubscribe?.());
-				resolve();
-			}
-		});
-	});
 }

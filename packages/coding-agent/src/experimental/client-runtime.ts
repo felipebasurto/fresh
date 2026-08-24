@@ -103,10 +103,26 @@ export async function openClientRuntime(
 			const session = createBuiltinSessionServiceNamespace(client);
 			namespaces.push(server, session);
 			const sessionDirectory = server.use(SessionDirectory);
-			const management = server.use(SessionManagement);
+			const remoteManagement = server.use(SessionManagement);
+			const management: SessionManagement = {
+				create: (options, context) => remoteManagement.create(options, context),
+				async remove(sessionId, context) {
+					const removesCurrentAttachment = client.attachment?.sessionId === sessionId;
+					await remoteManagement.remove(sessionId, context);
+					if (removesCurrentAttachment) await session.whenDetached(context);
+				},
+				async attach(sessionId, context) {
+					await remoteManagement.attach(sessionId, context);
+					await session.whenAttached(sessionId, context);
+				},
+				async detach(context) {
+					await remoteManagement.detach(context);
+					await session.whenDetached(context);
+				},
+			};
 			const models = session.use(Models);
 			const chat = session.use(Chat);
-			await waitForRemoteState(sessionDirectory.state);
+			await Promise.all([server.ready(BACKGROUND_CONTEXT), session.ready(BACKGROUND_CONTEXT)]);
 			servers.push({ route, client, server, session, directory: sessionDirectory, management, models, chat });
 		}
 		return { servers, dispose };
@@ -118,20 +134,6 @@ export async function openClientRuntime(
 		}
 		throw error;
 	}
-}
-
-export function waitForRemoteState<T>(state: {
-	readonly value: T | undefined;
-	subscribe(listener: (value: T) => void): () => void;
-}): Promise<T> {
-	if (state.value !== undefined) return Promise.resolve(state.value);
-	return new Promise((resolve) => {
-		let unsubscribe: (() => void) | undefined;
-		unsubscribe = state.subscribe((value) => {
-			queueMicrotask(() => unsubscribe?.());
-			resolve(value);
-		});
-	});
 }
 
 function routeFromExplicitPath(path: string): UnixServerRoute {

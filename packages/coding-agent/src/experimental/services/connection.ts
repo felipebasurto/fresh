@@ -4,6 +4,7 @@ import {
 	type ServiceProviderUpdate as CoreServiceProviderUpdate,
 	freshDeliveryContext,
 	isJsonValue,
+	type MutableReplicatedState,
 	type RemoteServiceConnection,
 	RemoteServiceNamespace,
 	type RemoteServiceNamespaceApi,
@@ -11,7 +12,7 @@ import {
 	remoteState,
 } from "@earendil-works/pi-agent-core";
 import type { Client } from "@earendil-works/pi-client";
-import type { ProtocolRpcCall, RpcTarget, ServiceProviderUpdate } from "@earendil-works/pi-protocol";
+import type { ProtocolRpcCall, RpcTarget, ServiceProviderUpdate, SessionTarget } from "@earendil-works/pi-protocol";
 import { BUILTIN_SERVER_SERVICES, BUILTIN_SESSION_SERVICES } from "./builtins.ts";
 
 export type ServerConnectionState =
@@ -29,6 +30,10 @@ export interface ServerServices extends RemoteServiceNamespaceApi {
 
 export interface SessionServices extends RemoteServiceNamespaceApi {
 	readonly attachment: ReplicatedState<SessionAttachmentState>;
+	/** Wait for the exact current attachment generation to finish hydrating. */
+	whenAttached(sessionId: string, context: Context): Promise<void>;
+	/** Wait for the detached namespace to finish releasing its prior binding. */
+	whenDetached(context: Context): Promise<void>;
 }
 
 export interface ServiceNamespaceOptions {
@@ -65,6 +70,15 @@ class ServerServiceNamespace extends RemoteServiceNamespace implements ServerSer
 		});
 	}
 
+	override async ready(context: Context): Promise<void> {
+		while (true) {
+			const transition = this.#transition;
+			await transition;
+			await super.ready(context);
+			if (transition === this.#transition) return;
+		}
+	}
+
 	override async dispose(context: Context): Promise<void> {
 		this.#removeConnectionListener();
 		await this.#transition;
@@ -74,9 +88,12 @@ class ServerServiceNamespace extends RemoteServiceNamespace implements ServerSer
 
 class SessionServiceNamespace extends RemoteServiceNamespace implements SessionServices {
 	readonly attachment: ReplicatedState<SessionAttachmentState>;
+	readonly #client: Client;
+	readonly #attachmentState: MutableReplicatedState<SessionAttachmentState>;
 	readonly #removeAttachmentListener: () => void;
 	readonly #onError: ((error: Error) => void) | undefined;
-	#transition = Promise.resolve();
+	readonly #transitions = new Set<Promise<void>>();
+	#attachmentRevision = 0;
 
 	constructor(client: Client, connection: RemoteServiceConnection, options: ServiceNamespaceOptions) {
 		super({
@@ -85,36 +102,103 @@ class SessionServiceNamespace extends RemoteServiceNamespace implements SessionS
 			bound: client.attachment !== undefined,
 			...(options.onError === undefined ? {} : { onError: options.onError }),
 		});
+		this.#client = client;
 		this.#onError = options.onError;
-		const attachmentState = remoteState<SessionAttachmentState>(toSessionAttachmentState(client));
-		this.attachment = attachmentState;
+		this.#attachmentState = remoteState<SessionAttachmentState>(
+			client.attachment === undefined
+				? { status: "detached" }
+				: { status: "attaching", sessionId: client.attachment.sessionId },
+		);
+		this.attachment = this.#attachmentState;
 		this.#removeAttachmentListener = client.onAttachmentChange((attachment) => {
+			const revision = ++this.#attachmentRevision;
+			const transition = this.rebind(attachment !== undefined, BACKGROUND_CONTEXT);
+			this.#transitions.add(transition);
 			if (attachment !== undefined) {
-				attachmentState.set({ status: "attaching", sessionId: attachment.sessionId }, BACKGROUND_CONTEXT);
+				this.#attachmentState.set({ status: "attaching", sessionId: attachment.sessionId }, BACKGROUND_CONTEXT);
 			}
-			this.#transition = this.#transition
-				.then(async () => {
-					await this.rebind(attachment !== undefined, BACKGROUND_CONTEXT);
-					attachmentState.set(
+			void transition.then(
+				() => {
+					this.#transitions.delete(transition);
+					if (this.#attachmentRevision !== revision || !sameAttachment(this.#client.attachment, attachment))
+						return;
+					this.#attachmentState.set(
 						attachment === undefined
 							? { status: "detached" }
 							: { status: "attached", sessionId: attachment.sessionId },
 						BACKGROUND_CONTEXT,
 					);
-				})
-				.catch((error: unknown) => {
-					if (attachment !== undefined) {
-						attachmentState.set({ status: "degraded", sessionId: attachment.sessionId }, BACKGROUND_CONTEXT);
+				},
+				(error: unknown) => {
+					this.#transitions.delete(transition);
+					if (this.#attachmentRevision !== revision || !sameAttachment(this.#client.attachment, attachment))
+						return;
+					if (attachment === undefined) {
+						this.#attachmentState.set({ status: "detached" }, BACKGROUND_CONTEXT);
+					} else {
+						this.#attachmentState.set(
+							{ status: "degraded", sessionId: attachment.sessionId },
+							BACKGROUND_CONTEXT,
+						);
 					}
 					this.#onError?.(toError(error));
-				});
+				},
+			);
 		});
+	}
+
+	override async ready(context: Context): Promise<void> {
+		const attachment = this.#client.attachment;
+		const revision = this.#attachmentRevision;
+		if (attachment === undefined) await this.#whenDetached(revision, context);
+		else await this.#whenAttached(attachment, revision, context);
+	}
+
+	async whenAttached(sessionId: string, context: Context): Promise<void> {
+		const attachment = this.#client.attachment;
+		if (attachment === undefined || attachment.sessionId !== sessionId) {
+			throw new Error(`Session ${sessionId} is not the current attachment`);
+		}
+		await this.#whenAttached(attachment, this.#attachmentRevision, context);
+	}
+
+	async whenDetached(context: Context): Promise<void> {
+		if (this.#client.attachment !== undefined) throw new Error("A Session is still attached");
+		await this.#whenDetached(this.#attachmentRevision, context);
 	}
 
 	override async dispose(context: Context): Promise<void> {
 		this.#removeAttachmentListener();
-		await this.#transition;
+		await Promise.allSettled(this.#transitions);
 		await super.dispose(context);
+	}
+
+	async #whenAttached(attachment: SessionTarget, revision: number, context: Context): Promise<void> {
+		try {
+			await super.ready(context);
+		} catch (error) {
+			if (this.#attachmentRevision === revision && sameAttachment(this.#client.attachment, attachment)) {
+				this.#attachmentState.set({ status: "degraded", sessionId: attachment.sessionId }, context);
+			}
+			throw error;
+		}
+		if (this.#attachmentRevision !== revision || !sameAttachment(this.#client.attachment, attachment)) {
+			throw new Error(`Session ${attachment.sessionId} was replaced while attaching`);
+		}
+		const state = this.#attachmentState.value;
+		if (state.status !== "attached" || state.sessionId !== attachment.sessionId) {
+			this.#attachmentState.set({ status: "attached", sessionId: attachment.sessionId }, context);
+		}
+	}
+
+	async #whenDetached(revision: number, context: Context): Promise<void> {
+		await super.ready(context);
+		if (this.#attachmentRevision !== revision || this.#client.attachment !== undefined) {
+			throw new Error("The Session attachment changed while detaching");
+		}
+		if (this.#attachmentState.value.status !== "detached") {
+			this.#attachmentState.set({ status: "detached" }, context);
+		}
 	}
 }
 
@@ -198,9 +282,11 @@ function toServerConnectionState(client: Client, attempt: number, error?: Error)
 	}
 }
 
-function toSessionAttachmentState(client: Client): SessionAttachmentState {
-	const attachment = client.attachment;
-	return attachment === undefined ? { status: "detached" } : { status: "attached", sessionId: attachment.sessionId };
+function sameAttachment(left: SessionTarget | undefined, right: SessionTarget | undefined): boolean {
+	if (left === undefined || right === undefined) return left === right;
+	return (
+		left.serverId === right.serverId && left.sessionId === right.sessionId && left.attachmentId === right.attachmentId
+	);
 }
 
 function toError(error: unknown): Error {

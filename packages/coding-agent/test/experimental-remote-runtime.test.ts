@@ -5,11 +5,13 @@ import { Client } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { runClient } from "../src/experimental/client.ts";
+import { openClientRuntime } from "../src/experimental/client-runtime.ts";
 import * as processRuntime from "../src/experimental/process.ts";
 import { activateServer, type RunningServer, startServer } from "../src/experimental/server.ts";
 import {
 	createServerServiceNamespace,
 	createSessionServiceNamespace,
+	type SessionAttachmentState,
 } from "../src/experimental/services/connection.ts";
 import { Models } from "../src/experimental/services/models.ts";
 import {
@@ -318,10 +320,9 @@ describe("experimental durable server composition", () => {
 		const removeFirstEvents = firstDirectory.events.subscribe((event) => firstEvents.push(event));
 		const removeSecondEvents = secondDirectory.events.subscribe((event) => secondEvents.push(event));
 
-		await vi.waitFor(() => {
-			expect(firstDirectory.state.value?.sessions.map(({ sessionId }) => sessionId)).toEqual(["demo-1", "demo-2"]);
-			expect(secondDirectory.state.value).toEqual(firstDirectory.state.value);
-		});
+		await Promise.all([firstServices.ready(BACKGROUND_CONTEXT), secondServices.ready(BACKGROUND_CONTEXT)]);
+		expect(firstDirectory.state.value?.sessions.map(({ sessionId }) => sessionId)).toEqual(["demo-1", "demo-2"]);
+		expect(secondDirectory.state.value).toEqual(firstDirectory.state.value);
 		await firstManagement.create({ id: "demo-3" }, BACKGROUND_CONTEXT);
 		await vi.waitFor(() => {
 			expect(firstDirectory.state.value?.sessions.map(({ sessionId }) => sessionId)).toContain("demo-3");
@@ -390,21 +391,22 @@ describe("experimental durable server composition", () => {
 			services: [Models],
 			onError: (error) => errors.push(error),
 		});
-		expect(firstServices.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });
-		expect(secondServices.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });
+		expect(firstServices.attachment.value).toEqual({ status: "attaching", sessionId: "demo-1" });
+		expect(secondServices.attachment.value).toEqual({ status: "attaching", sessionId: "demo-1" });
 		const firstModels = firstServices.use(Models);
 		const secondModels = secondServices.use(Models);
 
-		await vi.waitFor(() => {
-			expect(firstModels.state.value?.configuration.model).toEqual({
-				provider: "anthropic",
-				modelId: "claude-sonnet-4-5",
-			});
-			expect(firstModels.state.value?.catalog.availableModels).toContainEqual(
-				expect.objectContaining({ provider: "anthropic", modelId: "claude-sonnet-4-5" }),
-			);
-			expect(secondModels.state.value).toEqual(firstModels.state.value);
+		await Promise.all([firstServices.ready(BACKGROUND_CONTEXT), secondServices.ready(BACKGROUND_CONTEXT)]);
+		expect(firstServices.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });
+		expect(secondServices.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });
+		expect(firstModels.state.value?.configuration.model).toEqual({
+			provider: "anthropic",
+			modelId: "claude-sonnet-4-5",
 		});
+		expect(firstModels.state.value?.catalog.availableModels).toContainEqual(
+			expect.objectContaining({ provider: "anthropic", modelId: "claude-sonnet-4-5" }),
+		);
+		expect(secondModels.state.value).toEqual(firstModels.state.value);
 		const previousThinking = firstModels.state.value!.configuration.thinkingLevel;
 		await firstModels.cycleThinking(BACKGROUND_CONTEXT);
 		await vi.waitFor(() => {
@@ -414,6 +416,82 @@ describe("experimental durable server composition", () => {
 		expect(errors).toEqual([]);
 
 		await Promise.all([firstServices.dispose(BACKGROUND_CONTEXT), secondServices.dispose(BACKGROUND_CONTEXT)]);
+	});
+
+	test("composes management attachment with Session service hydration", async () => {
+		const { runtime } = await makeServer();
+		const clientRuntime = await openClientRuntime({
+			command: "client",
+			connect: { transport: "unix", path: runtime.socketPath },
+		});
+		try {
+			const server = clientRuntime.servers[0]!;
+			await server.management.attach("demo-1", BACKGROUND_CONTEXT);
+
+			expect(server.session.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });
+			expect(server.models.state.value?.configuration.model).toEqual({
+				provider: "anthropic",
+				modelId: "claude-sonnet-4-5",
+			});
+		} finally {
+			await clientRuntime.dispose();
+		}
+	});
+
+	test("fences superseded attachment hydration by attachment generation", async ({ onTestFinished }) => {
+		const { runtime } = await makeServer();
+		const client = await Client.connect({
+			serverId: runtime.serverId,
+			transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
+		});
+		clients.add(client);
+		const errors: Error[] = [];
+		const services = createSessionServiceNamespace(client, {
+			services: [Models],
+			onError: (error) => errors.push(error),
+		});
+		const models = services.use(Models);
+		await services.ready(BACKGROUND_CONTEXT);
+		const states: SessionAttachmentState[] = [];
+		const removeStateListener = services.attachment.subscribe((state) => states.push(state));
+		let releaseDelay!: () => void;
+		const delayed = new Promise<void>((resolve) => {
+			releaseDelay = resolve;
+		});
+		const subscribeService = client.subscribeService.bind(client);
+		const subscribe = vi
+			.spyOn(client, "subscribeService")
+			.mockImplementation(async (target, serviceId, mode, listener, signal) => {
+				if ("sessionId" in target && target.sessionId === "demo-2" && serviceId === Models.id) {
+					await delayed;
+				}
+				return subscribeService(target, serviceId, mode, listener, signal);
+			});
+		onTestFinished(() => subscribe.mockRestore());
+
+		try {
+			await client.attachSession("demo-2");
+			expect(services.attachment.value).toEqual({ status: "attaching", sessionId: "demo-2" });
+			await client.attachSession("demo-1");
+			await services.whenAttached("demo-1", BACKGROUND_CONTEXT);
+			expect(services.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });
+			expect(models.state.value?.configuration.model).toEqual({
+				provider: "anthropic",
+				modelId: "claude-sonnet-4-5",
+			});
+		} finally {
+			releaseDelay();
+			removeStateListener();
+			await services.dispose(BACKGROUND_CONTEXT);
+		}
+
+		const latestAttach = states
+			.map((state) => state.status === "attaching" && state.sessionId === "demo-1")
+			.lastIndexOf(true);
+		expect(latestAttach).toBeGreaterThanOrEqual(0);
+		expect(states.slice(latestAttach)).not.toContainEqual({ status: "attached", sessionId: "demo-2" });
+		expect(states.slice(latestAttach)).not.toContainEqual({ status: "degraded", sessionId: "demo-2" });
+		expect(errors).toEqual([]);
 	});
 
 	test("routes explicit later-slice errors across the framed service boundary", async () => {
@@ -454,7 +532,9 @@ describe("experimental durable server composition", () => {
 			observed.push({ service: instance.service, context, value: instance.service.state.value?.value });
 		});
 
-		await vi.waitFor(() => expect(observed).toHaveLength(1));
+		await services.ready(BACKGROUND_CONTEXT);
+		expect(services.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });
+		expect(observed).toHaveLength(1);
 		expect(observed[0]!.value).toBe("first");
 		const stale = observed[0]!.service;
 		const cancellable = withCancel(BACKGROUND_CONTEXT);
@@ -472,7 +552,8 @@ describe("experimental durable server composition", () => {
 
 		const replaced = observed[1]!.service;
 		await expect(client.attachSession("demo-2")).resolves.toMatchObject({ sessionId: "demo-2" });
-		await vi.waitFor(() => expect(observed).toHaveLength(3));
+		await services.whenAttached("demo-2", BACKGROUND_CONTEXT);
+		expect(observed).toHaveLength(3);
 		expect(services.attachment.value).toEqual({ status: "attached", sessionId: "demo-2" });
 		expect(observed[1]!.context.abortSignal?.aborted).toBe(true);
 		expect(observed[2]!.value).toBe("first");
