@@ -4,6 +4,7 @@ import { isAbsolute } from "node:path";
 import {
 	AgentHarness,
 	type AgentHarness as AgentHarnessInstance,
+	type AgentLane,
 	BACKGROUND_CONTEXT,
 	type Context,
 	createBashTool,
@@ -573,14 +574,17 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 	const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot: sessionDir });
 	let session: Session<JsonlSessionMetadata> | undefined;
 	let harness: AgentHarnessInstance | undefined;
+	let lane: AgentLane | undefined;
 	let services: SessionWorkerServices | undefined;
 	try {
 		session = await repo.open(metadata, TODO_CONTEXT);
 		const created = await createHarness(session, options, executionEnv);
 		const runtime: SessionWorkerRuntime = "harness" in created ? created : { harness: created };
 		harness = runtime.harness;
+		lane = runtime.lane ?? (await harness.lane("main", TODO_CONTEXT));
 		services = await createSessionWorkerServices({
 			harness,
+			lane,
 			modelRuntime: runtime.modelRuntime,
 			facets: runtime.facets ?? [],
 			publish: (scope, subscriptionId, update) =>
@@ -604,7 +608,7 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 
 	const laneWatches = new Map<
 		string,
-		{ readonly scope: WorkerOperationScope; readonly handle: Awaited<ReturnType<AgentHarnessInstance["watch"]>> }
+		{ readonly scope: WorkerOperationScope; readonly handle: Awaited<ReturnType<AgentLane["watch"]>> }
 	>();
 	const activeRequests = new Map<
 		string,
@@ -677,12 +681,12 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 			const args = toHarnessPromptArguments(prompt);
 			const result =
 				typeof args[0] === "string"
-					? await harness.prompt(args[0], args[1], context)
-					: await harness.prompt(args[0], context);
+					? await lane.prompt(args[0], args[1], context)
+					: await lane.prompt(args[0], context);
 			return toWireRunResult(result);
 		},
 		watch: async ({ scope, context }: WorkerOperationContext, ..._args: never[]) => {
-			const handle = await harness.watch(context);
+			const handle = await lane.watch(context);
 			const watchId = randomUUID();
 			laneWatches.set(watchId, { scope, handle });
 			return { watchId, snapshot: toWireLaneSnapshot(handle.snapshot) };
@@ -915,30 +919,31 @@ async function createCodingAgentHarness(
 		)
 	).harness;
 	try {
-		const currentActiveToolNames = await harness.getActiveTools(TODO_CONTEXT);
+		const lane = await harness.lane("main", TODO_CONTEXT);
+		const currentActiveToolNames = await lane.getActiveTools(TODO_CONTEXT);
 		if (
 			currentActiveToolNames.length !== activeToolNames.length ||
 			currentActiveToolNames.some((name, index) => name !== activeToolNames[index])
 		) {
-			await harness.setActiveTools(activeToolNames, TODO_CONTEXT);
+			await lane.setActiveTools(activeToolNames, TODO_CONTEXT);
 		}
 		if (options.model !== undefined) {
-			const currentModel = await harness.getModel(TODO_CONTEXT);
+			const currentModel = await lane.getModel(TODO_CONTEXT);
 			if (
 				!currentModel ||
 				currentModel.provider !== resolved.model.provider ||
 				currentModel.id !== resolved.model.id
 			) {
-				await harness.setModel(resolved.model, TODO_CONTEXT);
+				await lane.setModel(resolved.model, TODO_CONTEXT);
 			}
 			if (
 				resolved.thinkingLevel !== undefined &&
-				(await harness.getThinkingLevel(TODO_CONTEXT)) !== resolved.thinkingLevel
+				(await lane.getThinkingLevel(TODO_CONTEXT)) !== resolved.thinkingLevel
 			) {
-				await harness.setThinkingLevel(resolved.thinkingLevel, TODO_CONTEXT);
+				await lane.setThinkingLevel(resolved.thinkingLevel, TODO_CONTEXT);
 			}
 		}
-		return { harness, modelRuntime };
+		return { harness, lane, modelRuntime };
 	} catch (error) {
 		try {
 			await harness.close(TODO_CONTEXT);

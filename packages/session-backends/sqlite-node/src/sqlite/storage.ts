@@ -17,7 +17,7 @@ import type {
 	ValueList,
 	Write,
 } from "@earendil-works/pi-agent-core";
-import { laneLeaf, prepareStorageCommit } from "@earendil-works/pi-agent-core";
+import { branchTip, prepareStorageCommit } from "@earendil-works/pi-agent-core";
 import { appendEntryToBranchIndex, scanBranchEntries, scanBranchEntryStructures } from "./session/branch-entries.ts";
 import { decodeEntryRow, EntryRowWriter, readAllEntryRows, readEntryRows, scanEntryRows } from "./session/entries.ts";
 import { advanceNextSeq, readNextSeq } from "./session/session-sequences.ts";
@@ -154,12 +154,12 @@ export class SqliteStorage implements Storage {
 
 	private readSnapshotEntries(options: ForkOptions, scalarValues: readonly StoredValue<unknown>[]): Entry[] {
 		if (options.scope === "tree") return readAllEntryRows(this.db, this.sessionId).map(decodeEntryRow);
-		const mainAddress = laneLeaf("main");
-		const mainLeaf = scalarValues.find(
+		const mainAddress = branchTip("main");
+		const mainTip = scalarValues.find(
 			(stored) => stored.address.namespace === mainAddress.namespace && stored.address.key === mainAddress.key,
 		) as StoredValue<string | null> | undefined;
-		if (mainLeaf === undefined) throw new Error("Source session is missing main lane");
-		const requested = options.entryId ?? mainLeaf.value;
+		if (mainTip === undefined) throw new Error("Source session is missing main branch");
+		const requested = options.entryId ?? mainTip.value;
 		return requested === null
 			? []
 			: scanBranchEntries(this.db, this.sessionId, { start: requested, order: "oldestFirst" });

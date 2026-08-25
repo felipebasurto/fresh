@@ -52,8 +52,10 @@ export async function readExperimentalSessionState(
 		const matches = (await repo.list(undefined, BACKGROUND_CONTEXT)).filter((metadata) => metadata.id === sessionId);
 		if (matches.length !== 1) throw new Error(`Expected one Session ${sessionId}, found ${matches.length}`);
 		session = await repo.open(matches[0]!, BACKGROUND_CONTEXT);
+		const main = await session.branch("main", BACKGROUND_CONTEXT);
+		if (main === undefined) throw new Error("Expected Session main Branch");
 		const [branch, configuration] = await Promise.all([
-			session.findEntriesOnBranch({ order: "oldestFirst" }, BACKGROUND_CONTEXT),
+			main.findEntries({ order: "oldestFirst" }, BACKGROUND_CONTEXT),
 			session.getValue(laneConfig("main"), BACKGROUND_CONTEXT),
 		]);
 		return { branch, model: configuration?.value.model, activeTools: configuration?.value.activeToolNames ?? [] };

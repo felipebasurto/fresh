@@ -156,11 +156,11 @@ describe("Client service operations", () => {
 			type: "response",
 			id: "request-4",
 			ok: true,
-			result: { ok: true, value: { kind: "completed", runId: "run-1", leafId: "leaf-1" } },
+			result: { ok: true, value: { kind: "completed", runId: "run-1", tipId: "leaf-1" } },
 		});
 		await expect(prompting).resolves.toEqual({
 			ok: true,
-			value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+			value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
 		});
 		await client.dispose();
 	});
@@ -246,7 +246,7 @@ describe("Client service operations", () => {
 				snapshot: {
 					lane: "main",
 					transcript: [],
-					leafId: null,
+					tipId: null,
 					operation: null,
 					queues: { steer: [], followUp: [], nextRun: [] },
 					pendingWrites: [],

@@ -169,32 +169,32 @@ const OperationErrorSchema = StrictObject({
 	details: Type.Optional(JsonValueSchema),
 });
 const RunValueSchema = Type.Union([
-	StrictObject({ kind: Type.Literal("completed"), runId: IdSchema, leafId: IdSchema }),
+	StrictObject({ kind: Type.Literal("completed"), runId: IdSchema, tipId: IdSchema }),
 	StrictObject({
 		kind: Type.Literal("completed"),
 		runId: IdSchema,
-		leafId: IdSchema,
+		tipId: IdSchema,
 		finalEntryId: IdSchema,
 		finalMessage: AssistantMessageSchema,
 	}),
-	StrictObject({ kind: Type.Literal("aborted"), runId: IdSchema, leafId: IdSchema }),
+	StrictObject({ kind: Type.Literal("aborted"), runId: IdSchema, tipId: IdSchema }),
 	StrictObject({
 		kind: Type.Literal("aborted"),
 		runId: IdSchema,
-		leafId: IdSchema,
+		tipId: IdSchema,
 		finalEntryId: IdSchema,
 		finalMessage: AssistantMessageSchema,
 	}),
 	StrictObject({
 		kind: Type.Literal("failed"),
 		runId: IdSchema,
-		leafId: IdSchema,
+		tipId: IdSchema,
 		error: OperationErrorSchema,
 	}),
 	StrictObject({
 		kind: Type.Literal("failed"),
 		runId: IdSchema,
-		leafId: IdSchema,
+		tipId: IdSchema,
 		error: OperationErrorSchema,
 		finalEntryId: IdSchema,
 		finalMessage: AssistantMessageSchema,
@@ -203,7 +203,7 @@ const RunValueSchema = Type.Union([
 		kind: Type.Literal("suspended"),
 		reason: Type.Literal("deferred"),
 		runId: IdSchema,
-		leafId: IdSchema,
+		tipId: IdSchema,
 		finalEntryId: IdSchema,
 		deferred: DeferredHandleSchema,
 	}),
@@ -379,7 +379,7 @@ const LaneOperationSchema = StrictObject({
 export const LaneSnapshotSchema = StrictObject({
 	lane: Type.String(),
 	transcript: Type.Array(LaneEntrySchema),
-	leafId: Type.Union([IdSchema, Type.Null()]),
+	tipId: Type.Union([IdSchema, Type.Null()]),
 	operation: Type.Union([LaneOperationSchema, Type.Null()]),
 	queues: StrictObject({
 		steer: Type.Array(QueuedItemSchema),
@@ -411,7 +411,7 @@ const LaneEventBase = {
 const RunEndBase = {
 	type: Type.Literal("run_end"),
 	runId: IdSchema,
-	leafId: Type.Union([IdSchema, Type.Null()]),
+	tipId: Type.Union([IdSchema, Type.Null()]),
 	...LaneEventBase,
 };
 export const LaneEventSchema = Type.Union([

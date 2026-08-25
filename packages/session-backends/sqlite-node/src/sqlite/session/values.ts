@@ -1,11 +1,8 @@
 import {
 	type ListElement,
 	type ListReadOptions,
-	laneLeaf,
-	laneState,
 	resolveListReadOptions,
 	type StoredValue,
-	setValue,
 	type Value,
 	type ValueList,
 	value,
@@ -23,17 +20,6 @@ export interface ScalarValueRow {
 export interface ListValueRow {
 	seq: number;
 	value: string;
-}
-
-export function insertInitialMainLaneValues(db: SqliteDatabase, sessionId: string): void {
-	const writes = [
-		setValue(laneLeaf("main"), null),
-		setValue(laneState("main"), { currentOperationId: null, pendingNextRun: [] }),
-	];
-	for (const [index, write] of writes.entries()) {
-		if (write.op !== "set") throw new Error("Expected initial scalar value write");
-		setScalarValueRow(db, sessionId, write.namespace, write.key, index + 1, write.value);
-	}
 }
 
 export function setScalarValueRow(

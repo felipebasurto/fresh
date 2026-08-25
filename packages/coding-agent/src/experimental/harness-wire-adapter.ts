@@ -251,21 +251,21 @@ function toWireRunValue(value: Extract<HarnessRunResult, { ok: true }>["value"])
 	switch (value.kind) {
 		case "completed":
 			return value.finalEntryId === undefined
-				? { kind: "completed", runId: value.runId, leafId: value.leafId }
+				? { kind: "completed", runId: value.runId, tipId: value.tipId }
 				: {
 						kind: "completed",
 						runId: value.runId,
-						leafId: value.leafId,
+						tipId: value.tipId,
 						finalEntryId: value.finalEntryId,
 						finalMessage: toWireAssistantMessage(value.finalMessage),
 					};
 		case "aborted":
 			return value.finalEntryId === undefined
-				? { kind: "aborted", runId: value.runId, leafId: value.leafId }
+				? { kind: "aborted", runId: value.runId, tipId: value.tipId }
 				: {
 						kind: "aborted",
 						runId: value.runId,
-						leafId: value.leafId,
+						tipId: value.tipId,
 						finalEntryId: value.finalEntryId,
 						finalMessage: toWireAssistantMessage(value.finalMessage),
 					};
@@ -278,11 +278,11 @@ function toWireRunValue(value: Extract<HarnessRunResult, { ok: true }>["value"])
 					: { details: toWireJsonValue(value.error.details, "operation error details") }),
 			};
 			return value.finalEntryId === undefined
-				? { kind: "failed", runId: value.runId, leafId: value.leafId, error }
+				? { kind: "failed", runId: value.runId, tipId: value.tipId, error }
 				: {
 						kind: "failed",
 						runId: value.runId,
-						leafId: value.leafId,
+						tipId: value.tipId,
 						error,
 						finalEntryId: value.finalEntryId,
 						finalMessage: toWireAssistantMessage(value.finalMessage),
@@ -293,7 +293,7 @@ function toWireRunValue(value: Extract<HarnessRunResult, { ok: true }>["value"])
 				kind: "suspended",
 				reason: "deferred",
 				runId: value.runId,
-				leafId: value.leafId,
+				tipId: value.tipId,
 				finalEntryId: value.finalEntryId,
 				deferred: toWireDeferred(value.deferred),
 			};
@@ -630,7 +630,7 @@ export function toWireLaneSnapshot(snapshot: HarnessLaneSnapshot): LaneSnapshot 
 	return {
 		lane: snapshot.lane,
 		transcript: snapshot.transcript.map(toWireEntry),
-		leafId: snapshot.leafId,
+		tipId: snapshot.tipId,
 		operation:
 			snapshot.operation === null
 				? null

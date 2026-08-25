@@ -131,7 +131,7 @@ describe("Session protocol", () => {
 					attachClient: async () => ({
 						prompt: async () => ({
 							ok: true,
-							value: { kind: "completed" as const, runId: "run-1", leafId: "leaf-1" },
+							value: { kind: "completed" as const, runId: "run-1", tipId: "leaf-1" },
 						}),
 						release: () => {},
 					}),
@@ -423,7 +423,7 @@ describe("Session protocol", () => {
 			type: "response",
 			id: "request-3",
 			ok: true,
-			result: { ok: true, value: { kind: "completed", runId: "run-1", leafId: "leaf-1" } },
+			result: { ok: true, value: { kind: "completed", runId: "run-1", tipId: "leaf-1" } },
 		});
 		expect(host.latestHarness("session-1").promptCalls).toEqual([["Hello"]]);
 	});
@@ -660,7 +660,7 @@ describe("routed Session acquisition failures", () => {
 					return {
 						prompt: async () => ({
 							ok: true,
-							value: { kind: "completed" as const, runId: "run-1", leafId: "leaf-1" },
+							value: { kind: "completed" as const, runId: "run-1", tipId: "leaf-1" },
 						}),
 						release: () => {
 							releaseCount += 1;

@@ -192,7 +192,7 @@ describe("Session worker operations", () => {
 							scope,
 							result: {
 								ok: true,
-								value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+								value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
 							},
 						},
 					},
@@ -202,7 +202,7 @@ describe("Session worker operations", () => {
 
 		await expect(attachment.prompt(["Hello"], BACKGROUND_CONTEXT)).resolves.toEqual({
 			ok: true,
-			value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+			value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
 		});
 		const operation = coordinator.sent
 			.map(({ payload }) => asObject(payload))
@@ -233,7 +233,7 @@ describe("Session worker operations", () => {
 							scope: payload.scope,
 							result: {
 								ok: true,
-								value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+								value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
 							},
 						},
 					},
@@ -264,7 +264,7 @@ describe("Session worker operations", () => {
 							scope: null,
 							result: {
 								ok: true,
-								value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+								value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
 							},
 						},
 					},

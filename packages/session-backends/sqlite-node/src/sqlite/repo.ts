@@ -1,7 +1,7 @@
 import { access, mkdir, open as openFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context, Entry, ForkOptions, SessionCreateOptions, StoredValue } from "@earendil-works/pi-agent-core";
-import { createForkSnapshot, laneLeaf, StorageBackedSession } from "@earendil-works/pi-agent-core";
+import { branchTip, createForkSnapshot, StorageBackedSession } from "@earendil-works/pi-agent-core";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { applyInitialSchema } from "./migrations.ts";
 import { appendEntryToBranchIndex, scanBranchEntries } from "./session/branch-entries.ts";
@@ -15,7 +15,7 @@ import {
 	readSessionRow,
 	type SqliteSessionMetadata,
 } from "./session/session-row.ts";
-import { insertInitialMainLaneValues, readAllScalarValueRows, setScalarValueRow } from "./session/values.ts";
+import { readAllScalarValueRows, setScalarValueRow } from "./session/values.ts";
 import {
 	claimWriterLease,
 	readWriterLease,
@@ -33,7 +33,7 @@ export const SQLITE_SESSION_EXTENSION = ".sqlite";
 
 const DEFAULT_WRITER_LEASE_MS = 30_000;
 const WRITER_LEASE_RENEW_INTERVAL_MS = DEFAULT_WRITER_LEASE_MS / 2;
-const FIRST_AVAILABLE_COMMIT_SEQ = 3;
+const FIRST_AVAILABLE_COMMIT_SEQ = 1;
 
 export type SqliteSessionCreateOptions = SessionCreateOptions;
 
@@ -98,12 +98,12 @@ function readForkSourceEntries(
 	options: ForkOptions,
 ): Entry[] {
 	if (options.scope === "tree") return readSourceEntries(db, sessionId);
-	const mainAddress = laneLeaf("main");
-	const mainLeaf = scalarValues.find(
+	const mainAddress = branchTip("main");
+	const mainTip = scalarValues.find(
 		(stored) => stored.address.namespace === mainAddress.namespace && stored.address.key === mainAddress.key,
 	) as StoredValue<string | null> | undefined;
-	if (mainLeaf === undefined) throw new Error("Source session is missing main lane");
-	const requested = options.entryId ?? mainLeaf.value;
+	if (mainTip === undefined) throw new Error("Source session is missing main branch");
+	const requested = options.entryId ?? mainTip.value;
 	return requested === null ? [] : scanBranchEntries(db, sessionId, { start: requested, order: "oldestFirst" });
 }
 
@@ -188,7 +188,6 @@ export class SqliteSessionRepo {
 			lease = activeDb.transaction(() => {
 				if (hasSessionRow(activeDb, id)) throw new Error(`SQLite session already exists: ${id}`);
 				insertSessionRow(activeDb, metadata, SQLITE_STORAGE_VERSION, FIRST_AVAILABLE_COMMIT_SEQ);
-				insertInitialMainLaneValues(activeDb, id);
 				return claimWriterLease(activeDb, id, uuidv7(this.now()), this.now(), DEFAULT_WRITER_LEASE_MS);
 			});
 			initialized = true;

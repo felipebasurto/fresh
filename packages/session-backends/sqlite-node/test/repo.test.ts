@@ -27,7 +27,7 @@ async function withDb<T>(path: string, run: (db: SqliteDatabase) => Promise<T> |
 }
 
 describe("SqliteSessionRepo", () => {
-	it("creates one initialized session file with main lane values", async () => {
+	it("creates one branchless initialized session file", async () => {
 		await withTempDir(async (directory) => {
 			const repo = new SqliteSessionRepo({
 				directory,
@@ -58,26 +58,13 @@ describe("SqliteSessionRepo", () => {
 						totalTokens: 0,
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 					}),
-					next_seq: 3,
+					next_seq: 1,
 				});
 				expect(
 					sql`SELECT namespace, key, seq, value FROM scalar_values WHERE session_id = ${"session"} ORDER BY seq`.all(
 						db,
 					),
-				).toEqual([
-					{
-						namespace: storedValues.laneLeaf("main").namespace,
-						key: "main",
-						seq: 1,
-						value: "null",
-					},
-					{
-						namespace: storedValues.laneState("main").namespace,
-						key: "main",
-						seq: 2,
-						value: JSON.stringify({ currentOperationId: null, pendingNextRun: [] }),
-					},
-				]);
+				).toEqual([]);
 				expect(sql`SELECT COUNT(*) AS count FROM list_values WHERE session_id = ${"session"}`.get(db)).toEqual({
 					count: 0,
 				});
@@ -95,7 +82,6 @@ describe("SqliteSessionRepo", () => {
 			});
 			const session = await repo.create({ id: "session" }, BACKGROUND_CONTEXT);
 			await session.mutate(
-				"main",
 				(mutator) =>
 					mutator.commit(
 						[
@@ -124,7 +110,7 @@ describe("SqliteSessionRepo", () => {
 				now: () => 1_700_000_000_000,
 			});
 			const session = await repo.create({ id: "session" }, BACKGROUND_CONTEXT);
-			const mutation = await session.beginMutation("main", BACKGROUND_CONTEXT);
+			const mutation = await session.beginMutation(BACKGROUND_CONTEXT);
 			const result = await mutation.commit(
 				[storedValues.setValue(storedValues.sessionName, "explicit")],
 				BACKGROUND_CONTEXT,
@@ -303,7 +289,6 @@ describe("SqliteSessionRepo", () => {
 			expect(left.metadata.path).toBe(databasePath);
 			expect(right.metadata.path).toBe(databasePath);
 			await left.mutate(
-				"main",
 				(mutator) =>
 					mutator.commit(
 						[
@@ -315,7 +300,6 @@ describe("SqliteSessionRepo", () => {
 				BACKGROUND_CONTEXT,
 			);
 			await right.mutate(
-				"main",
 				(mutator) =>
 					mutator.commit(
 						[
@@ -358,7 +342,6 @@ describe("SqliteSessionRepo", () => {
 			});
 			const source = await repo.create({ id: "source" }, BACKGROUND_CONTEXT);
 			await source.mutate(
-				"main",
 				(mutator) =>
 					mutator.commit(
 						[
@@ -369,7 +352,7 @@ describe("SqliteSessionRepo", () => {
 								type: "message",
 								message: { role: "user", content: "child", timestamp: 1 },
 							}),
-							storedValues.setValue(storedValues.laneLeaf("main"), "child"),
+							storedValues.setValue(storedValues.branchTip("main"), "child"),
 							sessionWrites.insertUsage({
 								id: "usage",
 								adjustment: false,

@@ -1,5 +1,6 @@
 import {
 	type AgentHarness,
+	type AgentLane,
 	BACKGROUND_CONTEXT,
 	Closed,
 	type RunResult as HarnessRunResult,
@@ -39,7 +40,7 @@ describe("Chat service", () => {
 				operation: "run" as const,
 				kind: "completed" as const,
 				runId: "operation-1",
-				leafId: "entry-1",
+				tipId: "entry-1",
 			},
 		}));
 		const requestAbort = vi.fn(async () => ({
@@ -51,10 +52,10 @@ describe("Chat service", () => {
 				followUp: [],
 			},
 		}));
-		const harness = { prompt, requestAbort } as unknown as AgentHarness;
+		const lane = { prompt, requestAbort } as unknown as AgentLane;
 		const generation = await assembleFacetServices<SessionFacetAttributes>({
 			facets: [chatServiceFacet],
-			attributes: { harness, modelRuntime: undefined },
+			attributes: { harness: {} as unknown as AgentHarness, lane, modelRuntime: undefined },
 		});
 		try {
 			await expect(
@@ -86,7 +87,7 @@ describe("Chat service", () => {
 		expect(
 			toChatPromptResponse({
 				ok: true,
-				value: { operation: "run", kind: "completed", runId: "operation-1", leafId: "entry-1" },
+				value: { operation: "run", kind: "completed", runId: "operation-1", tipId: "entry-1" },
 			}),
 		).toEqual({ accepted: true, operationId: "operation-1", error: null });
 		expect(
@@ -96,7 +97,7 @@ describe("Chat service", () => {
 					operation: "run",
 					kind: "failed",
 					runId: "operation-2",
-					leafId: "entry-1",
+					tipId: "entry-1",
 					error: { code: "provider", message: "failed", details: { status: 500 } },
 				},
 			}),

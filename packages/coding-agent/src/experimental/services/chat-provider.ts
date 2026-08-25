@@ -1,5 +1,5 @@
 import {
-	type AgentHarness,
+	type AgentLane,
 	type RunResult as HarnessRunResult,
 	ServiceSliceNotImplemented,
 } from "@earendil-works/pi-agent-core";
@@ -9,18 +9,18 @@ import { toHarnessPromptArguments } from "../harness-wire-adapter.ts";
 import { Chat, type ChatPromptRequest, type ChatPromptResponse, type Chat as ChatService } from "./chat.ts";
 import type { SessionFacetAttributes } from "./session-facet.ts";
 
-export function createChatService(harness: AgentHarness): ChatService {
+export function createChatService(lane: AgentLane): ChatService {
 	return {
 		async prompt(request, context) {
 			const prompt = toHarnessPromptArguments(toPromptArguments(request));
 			const result =
 				typeof prompt[0] === "string"
-					? await harness.prompt(prompt[0], prompt[1], context)
-					: await harness.prompt(prompt[0], context);
+					? await lane.prompt(prompt[0], prompt[1], context)
+					: await lane.prompt(prompt[0], context);
 			return toChatPromptResponse(result);
 		},
 		async requestAbort(operationId, context) {
-			const result = await harness.requestAbort(operationId, context);
+			const result = await lane.requestAbort(operationId, context);
 			if (!result.ok) throw new Error(result.error.message);
 		},
 		async steer() {
@@ -50,7 +50,7 @@ export function createChatService(harness: AgentHarness): ChatService {
 export const chatServiceFacet = defineFacet<SessionFacetAttributes>({
 	id: "@pi/chat",
 	setup(env) {
-		env.provide(Chat, createChatService(env.harness));
+		env.provide(Chat, createChatService(env.lane));
 	},
 });
 

@@ -54,7 +54,7 @@ const summary = {
 const laneSnapshot = {
 	lane: "main",
 	transcript: [],
-	leafId: null,
+	tipId: null,
 	operation: null,
 	queues: { steer: [], followUp: [], nextRun: [] },
 	pendingWrites: [],
@@ -63,7 +63,7 @@ const laneSnapshot = {
 
 const completedRunResult = {
 	ok: true,
-	value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+	value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
 } as const satisfies RunResult;
 
 describe("RPC manifest", () => {
@@ -444,7 +444,7 @@ describe("protocol validation", () => {
 					type: "run_end",
 					lane: "main",
 					runId: "run-1",
-					leafId: "leaf-1",
+					tipId: "leaf-1",
 					outcome: "completed",
 					finalEntryId: "entry-1",
 				},
@@ -470,14 +470,14 @@ describe("protocol validation", () => {
 	});
 
 	test.each([
-		{ ok: true, value: { kind: "completed", runId: "run-1", leafId: "leaf-1" } },
-		{ ok: true, value: { kind: "aborted", runId: "run-1", leafId: "leaf-1" } },
+		{ ok: true, value: { kind: "completed", runId: "run-1", tipId: "leaf-1" } },
+		{ ok: true, value: { kind: "aborted", runId: "run-1", tipId: "leaf-1" } },
 		{
 			ok: true,
 			value: {
 				kind: "failed",
 				runId: "run-1",
-				leafId: "leaf-1",
+				tipId: "leaf-1",
 				error: { code: "provider", message: "provider failed" },
 			},
 		},
@@ -506,8 +506,8 @@ describe("protocol validation", () => {
 				action: { kind: "confirm", description: "Confirm" },
 			},
 		},
-		{ ok: true, value: { kind: "failed", runId: "run-1", leafId: "leaf-1" } },
-		{ ok: true, value: { kind: "completed", runId: "run-1", leafId: "leaf-1", finalEntryId: "entry-1" } },
+		{ ok: true, value: { kind: "failed", runId: "run-1", tipId: "leaf-1" } },
+		{ ok: true, value: { kind: "completed", runId: "run-1", tipId: "leaf-1", finalEntryId: "entry-1" } },
 		{ ok: false, error: { _tag: "Closed", message: "closed", extra: true } },
 	] as const)("rejects malformed structural Harness RunResult", (result) => {
 		expect(Check(RunResultSchema, result)).toBe(false);
@@ -524,7 +524,7 @@ describe("protocol validation", () => {
 				value: {
 					kind: "failed",
 					runId: "run-1",
-					leafId: "leaf-1",
+					tipId: "leaf-1",
 					error: { code: "provider", message: "failed", details },
 				},
 			}),

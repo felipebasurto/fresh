@@ -1,5 +1,6 @@
 import type {
 	AgentHarness,
+	AgentLane,
 	Context,
 	ServiceProviderUpdate as CoreServiceProviderUpdate,
 	ServiceProviderSubscription,
@@ -29,6 +30,7 @@ export type ServiceOperationResult = Static<typeof ServiceOperationResultSchema>
 
 export interface SessionWorkerRuntime {
 	readonly harness: AgentHarness;
+	readonly lane?: AgentLane;
 	readonly modelRuntime?: ModelRuntime;
 	readonly facets?: readonly SessionFacet[];
 }
@@ -58,13 +60,14 @@ const BUILTIN_SESSION_FACETS = [
 
 export async function createSessionWorkerServices(options: {
 	readonly harness: AgentHarness;
+	readonly lane: AgentLane;
 	readonly modelRuntime: ModelRuntime | undefined;
 	readonly facets: readonly SessionFacet[];
 	publish(scope: WorkerServiceScope, subscriptionId: string, update: ProtocolServiceProviderUpdate): Promise<void>;
 }): Promise<SessionWorkerServices> {
 	const facetServices = await assembleFacetServices<SessionFacetAttributes>({
 		facets: [...BUILTIN_SESSION_FACETS, ...options.facets],
-		attributes: { harness: options.harness, modelRuntime: options.modelRuntime },
+		attributes: { harness: options.harness, lane: options.lane, modelRuntime: options.modelRuntime },
 	});
 	const provider = facetServices.provider;
 

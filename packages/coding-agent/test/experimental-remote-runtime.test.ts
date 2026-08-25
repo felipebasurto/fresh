@@ -644,7 +644,7 @@ describe("experimental durable server composition", () => {
 			ok: true,
 			value: {
 				kind: "completed",
-				leafId: expect.any(String),
+				tipId: expect.any(String),
 				finalEntryId: expect.any(String),
 				finalMessage: {
 					role: "assistant",

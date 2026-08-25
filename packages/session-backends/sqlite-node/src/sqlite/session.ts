@@ -1,18 +1,14 @@
 import type {
-	AgentMessage,
-	BranchScan,
+	Branch,
 	Context,
 	Entry,
 	EntryQuery,
-	JsonValue,
-	LaneConfiguration,
 	ListElement,
 	ListReadOptions,
 	Session,
 	SessionMutation,
-	SessionMutator,
+	SessionMutationCallback,
 	SessionStats,
-	SessionTree,
 	StorageBranchScan,
 	StoredValue,
 	Value,
@@ -60,20 +56,63 @@ export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 		this.renewalTimer.unref?.();
 	}
 
-	beginMutation(lane: string, context: Context): Promise<SessionMutation> {
-		return this.admit(() => this.session.beginMutation(lane, context));
+	async beginMutation(context: Context): Promise<SessionMutation> {
+		let resolveFinished!: () => void;
+		const finished = new Promise<void>((resolve) => {
+			resolveFinished = resolve;
+		});
+		this.admitted.add(finished);
+		let source: SessionMutation;
+		try {
+			source = await this.admit(() => this.session.beginMutation(context));
+		} catch (error) {
+			this.admitted.delete(finished);
+			resolveFinished();
+			throw error;
+		}
+		if (this.state !== "open") {
+			await source.end(context);
+			this.admitted.delete(finished);
+			resolveFinished();
+			throw this.closedError;
+		}
+		let ended = false;
+		return {
+			commit: (writes, commitContext) => source.commit(writes, commitContext),
+			end: async (endContext) => {
+				try {
+					await source.end(endContext);
+				} finally {
+					if (!ended) {
+						ended = true;
+						this.admitted.delete(finished);
+						resolveFinished();
+					}
+				}
+			},
+			getEntries: (ids, readContext) => source.getEntries(ids, readContext),
+			getValue: (address, readContext) => source.getValue(address, readContext),
+			scanValues: (prefix, readContext) => source.scanValues(prefix, readContext),
+			readList: (address, options, readContext) => source.readList(address, options, readContext),
+			scanBranch: (query, readContext) => source.scanBranch(query, readContext),
+		};
 	}
 
-	mutate<T>(
-		lane: string,
-		mutation: (mutator: SessionMutator, context: Context) => T | Promise<T>,
-		context: Context,
-	): Promise<T> {
-		return this.admit(() => this.session.mutate(lane, mutation, context));
+	mutate<T>(mutation: SessionMutationCallback<T>, context: Context): Promise<T> {
+		return this.admit(() =>
+			this.session.mutate((mutator, mutationContext) => {
+				if (this.state !== "open") throw this.closedError;
+				return mutation(mutator, mutationContext);
+			}, context),
+		);
 	}
 
 	getEntries(ids: string[], context: Context): Promise<Map<string, Entry>> {
 		return this.admit(() => this.session.getEntries(ids, context));
+	}
+
+	getEntry(id: string, context: Context): Promise<Entry | undefined> {
+		return this.admit(() => this.session.getEntry(id, context));
 	}
 
 	getValue<T>(address: Value<T>, context: Context): Promise<StoredValue<T> | undefined> {
@@ -96,56 +135,33 @@ export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 		return this.admit(() => this.session.scanBranch(query, context));
 	}
 
-	view(lane: string): SessionTree {
-		const view = this.session.view(lane);
-		return {
-			getLeafId: (context) => this.admit(() => view.getLeafId(context)),
-			getEntry: (id, context) => this.admit(() => view.getEntry(id, context)),
-			getStats: (context) => this.admit(() => view.getStats(context)),
-			getValue: (address, context) => this.admit(() => view.getValue(address, context)),
-			scanValues: (prefix, context) => this.admit(() => view.scanValues(prefix, context)),
-			readList: (address, options, context) => this.admit(() => view.readList(address, options, context)),
-			setValue: (address, next, context) => this.admit(() => view.setValue(address, next, context)),
-			deleteValue: (address, context) => this.admit(() => view.deleteValue(address, context)),
-			appendList: (address, element, context) => this.admit(() => view.appendList(address, element, context)),
-			deleteList: (address, context) => this.admit(() => view.deleteList(address, context)),
-			getName: (context) => this.admit(() => view.getName(context)),
-			setName: (name, context) => this.admit(() => view.setName(name, context)),
-			getLabel: (targetId, context) => this.admit(() => view.getLabel(targetId, context)),
-			setLabel: (targetId, label, context) => this.admit(() => view.setLabel(targetId, label, context)),
-			findEntries: (query, context) => this.admit(() => view.findEntries(query, context)),
-			findEntry: (query, context) => this.admit(() => view.findEntry(query, context)),
-			findEntriesOnBranch: (query, context) => this.admit(() => view.findEntriesOnBranch(query, context)),
-			findEntryOnBranch: (query, context) => this.admit(() => view.findEntryOnBranch(query, context)),
-			appendMessage: (message, context) => this.admit(() => view.appendMessage(message, context)),
-			appendCustomEntry: (customType, data, context) =>
-				this.admit(() => view.appendCustomEntry(customType, data, context)),
-		};
-	}
-
-	createLane(
-		name: string,
-		at: string | null,
-		configuration: LaneConfiguration,
-		onCommitted: ((context: Context) => void | Promise<void>) | undefined,
-		context: Context,
-	): Promise<SessionTree> {
-		return this.admit(async () => {
-			await this.session.createLane(name, at, configuration, onCommitted, context);
-			return this.view(name);
-		});
-	}
-
-	getLeafId(context: Context): Promise<string | null> {
-		return this.admit(() => this.session.getLeafId(context));
-	}
-
-	getEntry(id: string, context: Context): Promise<Entry | undefined> {
-		return this.admit(() => this.session.getEntry(id, context));
-	}
-
 	getStats(context: Context): Promise<SessionStats> {
 		return this.admit(() => this.session.getStats(context));
+	}
+
+	getName(context: Context): Promise<string | undefined> {
+		return this.admit(() => this.session.getName(context));
+	}
+
+	getLabel(targetId: string, context: Context): Promise<string | undefined> {
+		return this.admit(() => this.session.getLabel(targetId, context));
+	}
+
+	findEntries(query: EntryQuery | undefined, context: Context): Promise<Entry[]> {
+		return this.admit(() => this.session.findEntries(query, context));
+	}
+
+	findEntry(query: EntryQuery | undefined, context: Context): Promise<Entry | undefined> {
+		return this.admit(() => this.session.findEntry(query, context));
+	}
+
+	async branch(name: string, context: Context): Promise<Branch | undefined> {
+		const branch = await this.admit(() => this.session.branch(name, context));
+		return branch === undefined ? undefined : this.wrapBranch(branch);
+	}
+
+	async createBranch(name: string, at: string | null, context: Context): Promise<Branch> {
+		return this.wrapBranch(await this.admit(() => this.session.createBranch(name, at, context)));
 	}
 
 	setValue<T>(address: Value<T>, next: NoInfer<T>, context: Context): Promise<void> {
@@ -164,44 +180,12 @@ export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 		return this.admit(() => this.session.deleteList(address, context));
 	}
 
-	getName(context: Context): Promise<string | undefined> {
-		return this.admit(() => this.session.getName(context));
-	}
-
 	setName(name: string | undefined, context: Context): Promise<void> {
 		return this.admit(() => this.session.setName(name, context));
 	}
 
-	getLabel(targetId: string, context: Context): Promise<string | undefined> {
-		return this.admit(() => this.session.getLabel(targetId, context));
-	}
-
 	setLabel(targetId: string, label: string | undefined, context: Context): Promise<void> {
 		return this.admit(() => this.session.setLabel(targetId, label, context));
-	}
-
-	findEntries(query: EntryQuery | undefined, context: Context): Promise<Entry[]> {
-		return this.admit(() => this.session.findEntries(query, context));
-	}
-
-	findEntry(query: EntryQuery | undefined, context: Context): Promise<Entry | undefined> {
-		return this.admit(() => this.session.findEntry(query, context));
-	}
-
-	findEntriesOnBranch(query: BranchScan | undefined, context: Context): Promise<Entry[]> {
-		return this.admit(() => this.session.findEntriesOnBranch(query, context));
-	}
-
-	findEntryOnBranch(query: BranchScan | undefined, context: Context): Promise<Entry | undefined> {
-		return this.admit(() => this.session.findEntryOnBranch(query, context));
-	}
-
-	appendMessage(message: AgentMessage, context: Context): Promise<string> {
-		return this.admit(() => this.session.appendMessage(message, context));
-	}
-
-	appendCustomEntry(customType: string, data: JsonValue | undefined, context: Context): Promise<string> {
-		return this.admit(() => this.session.appendCustomEntry(customType, data, context));
 	}
 
 	close(context: Context): Promise<void> {
@@ -219,6 +203,18 @@ export class SqliteOpenSession implements Session<SqliteSessionMetadata> {
 				}
 			});
 		return this.closePromise;
+	}
+
+	private wrapBranch(branch: Branch): Branch {
+		return {
+			name: branch.name,
+			getTipId: (context) => this.admit(() => branch.getTipId(context)),
+			findEntries: (query, context) => this.admit(() => branch.findEntries(query, context)),
+			findEntry: (query, context) => this.admit(() => branch.findEntry(query, context)),
+			appendMessage: (message, context) => this.admit(() => branch.appendMessage(message, context)),
+			appendCustomEntry: (customType, data, context) =>
+				this.admit(() => branch.appendCustomEntry(customType, data, context)),
+		};
 	}
 
 	private admit<T>(operation: () => Promise<T>): Promise<T> {

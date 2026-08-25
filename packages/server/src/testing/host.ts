@@ -26,7 +26,7 @@ interface OpenGate {
 const emptyLaneSnapshot: LaneSnapshot = {
 	lane: "main",
 	transcript: [],
-	leafId: null,
+	tipId: null,
 	operation: null,
 	queues: { steer: [], followUp: [], nextRun: [] },
 	pendingWrites: [],
@@ -149,7 +149,7 @@ export class TestHarness {
 		}
 		const result = this.nextPromptResult ?? {
 			ok: true,
-			value: { kind: "completed", runId: "run-1", leafId: "leaf-1" },
+			value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
 		};
 		this.nextPromptResult = undefined;
 		return result;
