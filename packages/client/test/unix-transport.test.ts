@@ -87,7 +87,7 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 		try {
 			await expect(client.connect()).resolves.toMatchObject({ serverId });
 			await expect(client.listSessions()).resolves.toEqual([]);
-			expect(receivedMembers).toEqual(["session-directory.list"]);
+			expect(receivedMembers).toEqual(["pi.session-directory.list"]);
 		} finally {
 			await client.dispose();
 		}
