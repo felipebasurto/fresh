@@ -1,5 +1,4 @@
 import {
-	type AgentHarness,
 	type AgentLane,
 	BACKGROUND_CONTEXT,
 	Closed,
@@ -11,9 +10,9 @@ import {
 	UnknownTemplate,
 } from "@earendil-works/pi-agent-core";
 import { describe, expect, test, vi } from "vitest";
-import { assembleFacetServices } from "../src/experimental/facets.ts";
+import { bindService, createFacetHost } from "../src/experimental/facets.ts";
 import { chatServiceFacet, toChatPromptResponse } from "../src/experimental/services/chat-provider.ts";
-import type { SessionFacetAttributes } from "../src/experimental/services/session-facet.ts";
+import { Lane } from "../src/experimental/services/harness.ts";
 
 const admissionErrors = [
 	[
@@ -56,19 +55,19 @@ describe("Chat service", () => {
 			},
 		}));
 		const lane = { prompt, requestAbort } as unknown as AgentLane;
-		const generation = await assembleFacetServices<SessionFacetAttributes>({
+		const host = await createFacetHost({
 			facets: [chatServiceFacet],
-			attributes: { harness: {} as unknown as AgentHarness, lane, modelRuntime: undefined },
+			bindings: [bindService(Lane, lane)],
 		});
 		try {
 			await expect(
-				generation.provider.invoke(
+				host.services.invoke(
 					{ serviceId: "pi.chat", member: "prompt", args: [{ message: "hello", images: null }] },
 					BACKGROUND_CONTEXT,
 				),
 			).resolves.toEqual({ accepted: true, operationId: "operation-1", error: null });
 			await expect(
-				generation.provider.invoke(
+				host.services.invoke(
 					{ serviceId: "pi.chat", member: "requestAbort", args: ["operation-1"] },
 					BACKGROUND_CONTEXT,
 				),
@@ -76,13 +75,13 @@ describe("Chat service", () => {
 			expect(prompt).toHaveBeenCalledWith("hello", undefined, BACKGROUND_CONTEXT);
 			expect(requestAbort).toHaveBeenCalledWith("operation-1", BACKGROUND_CONTEXT);
 			await expect(
-				generation.provider.invoke(
+				host.services.invoke(
 					{ serviceId: "pi.chat", member: "steer", args: [{ message: "later", images: null }] },
 					BACKGROUND_CONTEXT,
 				),
 			).rejects.toBeInstanceOf(ServiceSliceNotImplemented);
 		} finally {
-			await generation.dispose();
+			await host.dispose();
 		}
 	});
 

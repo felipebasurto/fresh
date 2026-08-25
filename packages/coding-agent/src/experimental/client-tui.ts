@@ -1,4 +1,4 @@
-import { BACKGROUND_CONTEXT, type Context, type ReplicatedState } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, type Context, defineService, type ReplicatedState } from "@earendil-works/pi-agent-core";
 import type { SessionSummary } from "@earendil-works/pi-protocol";
 import {
 	type Component,
@@ -12,7 +12,7 @@ import {
 import chalk from "chalk";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runtime.ts";
-import { activateRemoteFacets, defineFacet, type FacetGeneration } from "./facets.ts";
+import { activateRemoteFacets, bindService, defineFacet, type RemoteFacetActivation } from "./facets.ts";
 import type { ServerServices, SessionAttachmentState, SessionServices } from "./services/connection.ts";
 import { Models, type Models as ModelsService } from "./services/models.ts";
 import {
@@ -39,21 +39,17 @@ interface ModelSelectionFeature {
 	readonly models: ModelsService;
 }
 
-interface SessionPickerFacetAttributes {
-	readonly serverId: string;
+interface Tui {
 	readonly attachment: ReplicatedState<SessionAttachmentState>;
 	whenAttached(sessionId: string, context: Context): Promise<void>;
 	whenDetached(context: Context): Promise<void>;
-	register(feature: SessionPickerFeature): () => void;
+	registerSessionPicker(feature: Omit<SessionPickerFeature, "serverId">): () => void;
+	registerModelSelection(feature: Omit<ModelSelectionFeature, "serverId">): () => void;
 	refresh(): void;
 	setStatus(status: string): void;
 }
 
-interface ModelSelectionFacetAttributes {
-	readonly serverId: string;
-	register(feature: ModelSelectionFeature): () => void;
-	refresh(): void;
-}
+const Tui = defineService<Tui>("pi.local.tui");
 
 type ClientTuiAction =
 	| { readonly kind: "attach"; readonly feature: SessionPickerFeature; readonly sessionId: string }
@@ -70,46 +66,48 @@ const selectTheme = {
 	noMatch: (text: string) => chalk.yellow(text),
 };
 
-export const sessionPickerTuiFacet = defineFacet<SessionPickerFacetAttributes>({
+export const sessionPickerTuiFacet = defineFacet({
 	id: "@pi/session-picker",
 	setup(env) {
+		const tui = env.use(Tui);
 		const directory = env.use(SessionDirectory);
 		const remoteManagement = env.use(SessionManagement);
 		const management: SessionPickerFeature["management"] = {
 			create: (options, context) => remoteManagement.create(options, context),
 			async attach(sessionId, context) {
 				await remoteManagement.attach(sessionId, context);
-				await env.whenAttached(sessionId, context);
+				await tui.whenAttached(sessionId, context);
 			},
 			async detach(context) {
 				await remoteManagement.detach(context);
-				await env.whenDetached(context);
+				await tui.whenDetached(context);
 			},
 		};
 		env.onActivate(() => {
-			env.own(env.register({ serverId: env.serverId, directory, management, attachment: env.attachment }));
-			env.own(directory.state.subscribe(env.refresh));
+			env.own(tui.registerSessionPicker({ directory, management, attachment: tui.attachment }));
+			env.own(directory.state.subscribe(tui.refresh));
 			env.own(
 				directory.events.subscribe((event) => {
-					env.setStatus(
+					tui.setStatus(
 						event.type === "deleted"
 							? `Session removed: ${event.sessionId}`
 							: `Session ${event.type}: ${event.session.sessionId}`,
 					);
 				}),
 			);
-			env.own(env.attachment.subscribe(env.refresh));
+			env.own(tui.attachment.subscribe(tui.refresh));
 		});
 	},
 });
 
-export const modelSelectionTuiFacet = defineFacet<ModelSelectionFacetAttributes>({
+export const modelSelectionTuiFacet = defineFacet({
 	id: "@pi/model-selection",
 	setup(env) {
+		const tui = env.use(Tui);
 		const models = env.use(Models);
 		env.onActivate(() => {
-			env.own(env.register({ serverId: env.serverId, models }));
-			env.own(models.state.subscribe(env.refresh));
+			env.own(tui.registerModelSelection({ models }));
+			env.own(models.state.subscribe(tui.refresh));
 		});
 	},
 });
@@ -119,7 +117,7 @@ export class ExperimentalClientTui implements Component {
 	readonly #requestRender: () => void;
 	readonly #finish: () => void;
 	readonly #container = new Container();
-	readonly #facetGenerations: FacetGeneration[] = [];
+	readonly #remoteFacetActivations: RemoteFacetActivation[] = [];
 	readonly #sessionPickers = new Map<string, SessionPickerFeature>();
 	readonly #modelSelections = new Map<string, ModelSelectionFeature>();
 	readonly #actions = new Map<string, ClientTuiAction>();
@@ -171,41 +169,42 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	close(): Promise<void> {
-		this.#closePromise ??= disposeFacetGenerations(this.#facetGenerations.splice(0).reverse());
+		this.#closePromise ??= disposeRemoteFacetActivations(this.#remoteFacetActivations.splice(0).reverse());
 		return this.#closePromise;
 	}
 
 	async #start(servers: readonly ClientTuiServer[]): Promise<void> {
 		for (const server of servers) {
-			const serverGeneration = await activateRemoteFacets<SessionPickerFacetAttributes>({
-				facets: [sessionPickerTuiFacet],
-				attributes: {
-					serverId: server.serverId,
+			const bindings = [
+				bindService(Tui, {
 					attachment: server.session.attachment,
 					whenAttached: (sessionId, context) => server.session.whenAttached(sessionId, context),
 					whenDetached: (context) => server.session.whenDetached(context),
-					register: (feature) => this.#register(this.#sessionPickers, "Session picker", feature),
+					registerSessionPicker: (feature) =>
+						this.#register(this.#sessionPickers, "Session picker", { ...feature, serverId: server.serverId }),
+					registerModelSelection: (feature) =>
+						this.#register(this.#modelSelections, "Model selection", { ...feature, serverId: server.serverId }),
 					refresh: () => this.#rebuild(),
 					setStatus: (status) => {
 						this.#status = status;
 						this.#rebuild();
 					},
-				},
+				}),
+			];
+			const serverActivation = await activateRemoteFacets({
+				facets: [sessionPickerTuiFacet],
+				bindings,
 				source: server.server,
 				connect: () => server.server.activate(BACKGROUND_CONTEXT),
 			});
-			this.#facetGenerations.push(serverGeneration);
-			const sessionGeneration = await activateRemoteFacets<ModelSelectionFacetAttributes>({
+			this.#remoteFacetActivations.push(serverActivation);
+			const sessionActivation = await activateRemoteFacets({
 				facets: [modelSelectionTuiFacet],
-				attributes: {
-					serverId: server.serverId,
-					register: (feature) => this.#register(this.#modelSelections, "Model selection", feature),
-					refresh: () => this.#rebuild(),
-				},
+				bindings,
 				source: server.session,
 				connect: () => server.session.activate(BACKGROUND_CONTEXT),
 			});
-			this.#facetGenerations.push(sessionGeneration);
+			this.#remoteFacetActivations.push(sessionActivation);
 		}
 		this.#rebuild();
 	}
@@ -386,8 +385,8 @@ export async function runClientTui(command: ClientCommand, options: OpenClientRu
 	}
 }
 
-async function disposeFacetGenerations(generations: readonly FacetGeneration[]): Promise<void> {
-	const results = await Promise.allSettled(generations.map((generation) => generation.dispose()));
+async function disposeRemoteFacetActivations(activations: readonly RemoteFacetActivation[]): Promise<void> {
+	const results = await Promise.allSettled(activations.map((activation) => activation.dispose()));
 	const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
 	if (errors.length === 1) throw errors[0];
 	if (errors.length > 1) throw new AggregateError(errors, "Failed to dispose experimental TUI facets");

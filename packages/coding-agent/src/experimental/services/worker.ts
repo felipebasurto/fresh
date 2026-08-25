@@ -16,10 +16,10 @@ import {
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import type { ModelRuntime } from "../../core/model-runtime.ts";
-import { assembleFacetServices } from "../facets.ts";
+import { bindService, createFacetHost, type Facet } from "../facets.ts";
 import { chatServiceFacet } from "./chat-provider.ts";
-import { modelsServiceFacet } from "./models-provider.ts";
-import type { SessionFacet, SessionFacetAttributes } from "./session-facet.ts";
+import { Harness, Lane } from "./harness.ts";
+import { createModelsRuntime, ModelsRuntime, modelsServiceFacet } from "./models-provider.ts";
 import { accountsServiceFacet, transcriptServiceFacet } from "./stubs-provider.ts";
 
 export const ServiceOperationResultSchema = Type.Object(
@@ -32,7 +32,7 @@ export interface SessionWorkerRuntime {
 	readonly harness: AgentHarness;
 	readonly lane?: AgentLane;
 	readonly modelRuntime?: ModelRuntime;
-	readonly facets?: readonly SessionFacet[];
+	readonly facets?: readonly Facet[];
 }
 
 export interface WorkerServiceScope {
@@ -56,20 +56,24 @@ const BUILTIN_SESSION_FACETS = [
 	modelsServiceFacet,
 	accountsServiceFacet,
 	transcriptServiceFacet,
-] satisfies readonly SessionFacet[];
+] satisfies readonly Facet[];
 
 export async function createSessionWorkerServices(options: {
 	readonly harness: AgentHarness;
 	readonly lane: AgentLane;
 	readonly modelRuntime: ModelRuntime | undefined;
-	readonly facets: readonly SessionFacet[];
+	readonly facets: readonly Facet[];
 	publish(scope: WorkerServiceScope, subscriptionId: string, update: ProtocolServiceProviderUpdate): Promise<void>;
 }): Promise<SessionWorkerServices> {
-	const facetServices = await assembleFacetServices<SessionFacetAttributes>({
+	const facetHost = await createFacetHost({
 		facets: [...BUILTIN_SESSION_FACETS, ...options.facets],
-		attributes: { harness: options.harness, lane: options.lane, modelRuntime: options.modelRuntime },
+		bindings: [
+			bindService(Harness, options.harness),
+			bindService(Lane, options.lane),
+			bindService(ModelsRuntime, createModelsRuntime(options.modelRuntime)),
+		],
 	});
-	const provider = facetServices.provider;
+	const provider = facetHost.services;
 
 	const subscriptions = new Map<string, WorkerServiceSubscription>();
 	const removeSubscriptions = (matches: (scope: WorkerServiceScope) => boolean): void => {
@@ -106,7 +110,7 @@ export async function createSessionWorkerServices(options: {
 		removeSubscriptions,
 		async dispose() {
 			removeSubscriptions(() => true);
-			await facetServices.dispose();
+			await facetHost.dispose();
 		},
 	};
 }

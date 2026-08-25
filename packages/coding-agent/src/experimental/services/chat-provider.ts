@@ -7,7 +7,7 @@ import type { PromptArguments } from "@earendil-works/pi-protocol";
 import { defineFacet } from "../facets.ts";
 import { toHarnessPromptArguments } from "../harness-wire-adapter.ts";
 import { Chat, type ChatPromptRequest, type ChatPromptResponse, type Chat as ChatService } from "./chat.ts";
-import type { SessionFacetAttributes } from "./session-facet.ts";
+import { Lane } from "./harness.ts";
 
 export function createChatService(lane: AgentLane): ChatService {
 	return {
@@ -47,10 +47,10 @@ export function createChatService(lane: AgentLane): ChatService {
 	};
 }
 
-export const chatServiceFacet = defineFacet<SessionFacetAttributes>({
+export const chatServiceFacet = defineFacet({
 	id: "@pi/chat",
 	setup(env) {
-		env.provide(Chat, createChatService(env.lane));
+		env.provide(Chat, createChatService(env.use(Lane)));
 	},
 });
 
