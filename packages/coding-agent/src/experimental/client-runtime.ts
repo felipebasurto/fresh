@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { BACKGROUND_CONTEXT, type RemoteServiceNamespaceApi } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import { Client } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
 import { isServerId } from "@earendil-works/pi-protocol";
@@ -7,10 +7,10 @@ import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
 import { Chat } from "./services/chat.ts";
 import {
-	createBuiltinServerServiceNamespace,
-	createBuiltinSessionServiceNamespace,
-	type ServerServices,
-	type SessionServices,
+	createServerServiceConnection,
+	createSessionServiceConnection,
+	type ServerServiceConnection,
+	type SessionServiceConnection,
 } from "./services/connection.ts";
 import { Models } from "./services/models.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
@@ -18,8 +18,8 @@ import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
 export interface ClientRuntimeServer {
 	readonly route: UnixServerRoute;
 	readonly client: Client;
-	readonly server: ServerServices;
-	readonly session: SessionServices;
+	readonly server: ServerServiceConnection;
+	readonly session: SessionServiceConnection;
 }
 
 export interface ActivatedClientRuntimeServer extends ClientRuntimeServer {
@@ -75,17 +75,17 @@ export async function openClientRuntime(
 	}
 
 	const clients: Client[] = [];
-	const namespaces: RemoteServiceNamespaceApi[] = [];
+	const serviceConnections: Array<ServerServiceConnection | SessionServiceConnection> = [];
 	const servers: ClientRuntimeServer[] = [];
 	let disposed = false;
 	const dispose = async (): Promise<void> => {
 		if (disposed) return;
 		disposed = true;
-		const namespaceResults = await Promise.allSettled(
-			namespaces.map((services) => services.dispose(BACKGROUND_CONTEXT)),
+		const connectionResults = await Promise.allSettled(
+			serviceConnections.map((connection) => connection.dispose(BACKGROUND_CONTEXT)),
 		);
 		const clientResults = await Promise.allSettled(clients.map((client) => client.dispose()));
-		const errors = [...namespaceResults, ...clientResults].flatMap((result) =>
+		const errors = [...connectionResults, ...clientResults].flatMap((result) =>
 			result.status === "rejected" ? [result.reason] : [],
 		);
 		if (errors.length === 1) throw errors[0];
@@ -102,9 +102,9 @@ export async function openClientRuntime(
 				}));
 			activatedClient = undefined;
 			clients.push(client);
-			const server = createBuiltinServerServiceNamespace(client, { deferred: true });
-			const session = createBuiltinSessionServiceNamespace(client, { deferred: true });
-			namespaces.push(server, session);
+			const server = createServerServiceConnection(client);
+			const session = createSessionServiceConnection(client);
+			serviceConnections.push(server, session);
 			servers.push({ route, client, server, session });
 		}
 		return { servers, dispose };
@@ -122,8 +122,18 @@ export async function openClientRuntime(
 export async function activateBuiltinClientServices(
 	server: ClientRuntimeServer,
 ): Promise<ActivatedClientRuntimeServer> {
-	const directory = server.server.use(SessionDirectory);
-	const remoteManagement = server.server.use(SessionManagement);
+	const serverServices = server.server.open({
+		services: [SessionDirectory, SessionManagement],
+		assertAccess() {},
+		onError() {},
+	});
+	const sessionServices = server.session.open({
+		services: [Models, Chat],
+		assertAccess() {},
+		onError() {},
+	});
+	const directory = serverServices.use(SessionDirectory);
+	const remoteManagement = serverServices.use(SessionManagement);
 	const management: SessionManagement = {
 		create: (options, context) => remoteManagement.create(options, context),
 		async remove(sessionId, context) {
@@ -140,9 +150,9 @@ export async function activateBuiltinClientServices(
 			await server.session.whenDetached(context);
 		},
 	};
-	const models = server.session.use(Models);
-	const chat = server.session.use(Chat);
-	await Promise.all([server.server.activate(BACKGROUND_CONTEXT), server.session.activate(BACKGROUND_CONTEXT)]);
+	const models = sessionServices.use(Models);
+	const chat = sessionServices.use(Chat);
+	await Promise.all([serverServices.activate(BACKGROUND_CONTEXT), sessionServices.activate(BACKGROUND_CONTEXT)]);
 	return { ...server, directory, management, models, chat };
 }
 

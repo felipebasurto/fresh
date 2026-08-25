@@ -1,6 +1,7 @@
 import {
 	type AttachmentEnvelope,
 	createRpcClient,
+	createServiceCatalogueCall,
 	createServiceSubscribeCall,
 	createServiceUnsubscribeCall,
 	encodeClientMessage,
@@ -12,11 +13,13 @@ import {
 	type PromptMessage,
 	type ProtocolRpcCall,
 	ProtocolValidationError,
+	parseServiceCatalogue,
 	parseServiceSubscriptionSnapshot,
 	type ResponseEnvelope,
 	type RpcTarget,
 	type ServerEventEnvelope,
 	type ServerHello,
+	type ServiceCatalogueEntry,
 	type ServiceMode,
 	type ServiceProviderUpdate,
 	ServiceRpc,
@@ -218,6 +221,19 @@ export class Client {
 		}
 		if (Array.isArray(message)) return this.#rpc.prompt([message]);
 		return this.#rpc.prompt([message]);
+	}
+
+	async serviceCatalogue(target: RpcTarget, signal?: AbortSignal): Promise<readonly ServiceCatalogueEntry[]> {
+		const result = await this.#request(target, createServiceCatalogueCall(), signal);
+		try {
+			return parseServiceCatalogue(result);
+		} catch (error) {
+			const validationError = new ProtocolValidationError(
+				error instanceof Error ? error.message : "Invalid service catalogue",
+			);
+			this.#connection.fail(validationError);
+			throw validationError;
+		}
 	}
 
 	async subscribeService(

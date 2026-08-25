@@ -1,20 +1,9 @@
 import { BACKGROUND_CONTEXT, ServiceSliceNotImplemented } from "@earendil-works/pi-agent-core";
 import { describe, expect, test } from "vitest";
 import { createFacetHost } from "../src/experimental/facets.ts";
-import { BUILTIN_SERVER_SERVICES, BUILTIN_SESSION_SERVICES } from "../src/experimental/services/builtins.ts";
 import { accountsServiceFacet, transcriptServiceFacet } from "../src/experimental/services/stubs-provider.ts";
 
 describe("experimental built-in service surface", () => {
-	test("inventories every built-in server and Session service", () => {
-		expect(BUILTIN_SERVER_SERVICES.map(({ id }) => id)).toEqual(["pi.session-directory", "pi.session-management"]);
-		expect(BUILTIN_SESSION_SERVICES.map(({ id }) => id)).toEqual([
-			"pi.accounts",
-			"pi.chat",
-			"pi.models",
-			"pi.transcript",
-		]);
-	});
-
 	test("exposes later singleton slices as explicit unimplemented providers", async () => {
 		const host = await createFacetHost({ facets: [accountsServiceFacet, transcriptServiceFacet] });
 		try {

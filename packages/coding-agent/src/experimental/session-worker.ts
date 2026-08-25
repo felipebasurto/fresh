@@ -590,7 +590,7 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 			harness,
 			lane,
 			modelRuntime: runtime.modelRuntime,
-			facets: runtime.facets ?? [],
+			facetLoader: runtime.facetLoader,
 			publish: (scope, subscriptionId, update) =>
 				control.send({
 					type: "service_event",

@@ -6,6 +6,7 @@ import {
 	ClientMessageDecoder,
 	createRpcClient,
 	createRpcDispatcher,
+	createServiceCatalogueCall,
 	createServiceSubscribeCall,
 	createServiceUnsubscribeCall,
 	decodeCbor,
@@ -27,6 +28,7 @@ import {
 	ProtocolValidationError,
 	parseClientMessage,
 	parseServerMessage,
+	parseServiceCatalogue,
 	parseServiceSubscriptionSnapshot,
 	type RunResult,
 	RunResultSchema,
@@ -245,6 +247,16 @@ describe("protocol validation", () => {
 	});
 
 	test("encodes service control and keyed instance addresses", () => {
+		expect(decodeServiceControlCall(createServiceCatalogueCall())).toEqual({ type: "catalogue" });
+		expect(
+			parseServiceCatalogue([
+				{ serviceId: "pi.models", mode: "singleton" },
+				{ serviceId: "pi.dialogs", mode: "keyed" },
+			]),
+		).toEqual([
+			{ serviceId: "pi.models", mode: "singleton" },
+			{ serviceId: "pi.dialogs", mode: "keyed" },
+		]);
 		const subscribe = createServiceSubscribeCall("subscription-1", "pi.models", "singleton");
 		expect(decodeServiceControlCall(subscribe)).toEqual({
 			type: "subscribe",

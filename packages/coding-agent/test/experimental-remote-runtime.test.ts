@@ -6,10 +6,12 @@ import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { runClient } from "../src/experimental/client.ts";
 import { activateBuiltinClientServices, openClientRuntime } from "../src/experimental/client-runtime.ts";
+import { createFacetHost, defineFacet } from "../src/experimental/facets.ts";
 import * as processRuntime from "../src/experimental/process.ts";
 import { activateServer, type RunningServer, startServer } from "../src/experimental/server.ts";
 import {
 	createServerServiceNamespace,
+	createSessionServiceConnection,
 	createSessionServiceNamespace,
 	type SessionAttachmentState,
 } from "../src/experimental/services/connection.ts";
@@ -311,6 +313,10 @@ describe("experimental durable server composition", () => {
 		});
 		expect(firstServices.connection.value).toMatchObject({ status: "connected" });
 		expect(secondServices.connection.value).toMatchObject({ status: "connected" });
+		await expect(firstServices.catalogue(BACKGROUND_CONTEXT)).resolves.toEqual([
+			{ serviceId: SessionDirectory.id, mode: "singleton" },
+			{ serviceId: SessionManagement.id, mode: "singleton" },
+		]);
 		const firstDirectory = firstServices.use(SessionDirectory);
 		const secondDirectory = secondServices.use(SessionDirectory);
 		const firstManagement = firstServices.use(SessionManagement);
@@ -523,18 +529,26 @@ describe("experimental durable server composition", () => {
 		const { runtime } = await makeServer();
 		const client = await attachClient(runtime, "demo-1");
 		const errors: Error[] = [];
-		const services = createSessionServiceNamespace(client, {
-			services: [KeyedProbe],
+		const services = createSessionServiceConnection(client, {
 			onError: (error) => errors.push(error),
 		});
-		const observed: { service: KeyedProbe; context: Context; value: string | undefined }[] = [];
-		const stop = services.observe(KeyedProbe, (instance, context) => {
-			observed.push({ service: instance.service, context, value: instance.service.state.value?.value });
+		await expect(services.catalogue(BACKGROUND_CONTEXT)).resolves.toContainEqual({
+			serviceId: KeyedProbe.id,
+			mode: "keyed",
 		});
+		const observed: { service: KeyedProbe; context: Context; value: string | undefined }[] = [];
+		const consumer = defineFacet({
+			id: "@test/keyed-probe-consumer",
+			setup(env) {
+				env.observe(KeyedProbe, (instance, context) => {
+					observed.push({ service: instance.service, context, value: instance.service.state.value?.value });
+				});
+			},
+		});
+		const facetHost = await createFacetHost({ facets: [consumer], connections: [services] });
 
-		await services.ready(BACKGROUND_CONTEXT);
 		expect(services.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });
-		expect(observed).toHaveLength(1);
+		await vi.waitFor(() => expect(observed).toHaveLength(1));
 		expect(observed[0]!.value).toBe("first");
 		const stale = observed[0]!.service;
 		const cancellable = withCancel(BACKGROUND_CONTEXT);
@@ -562,7 +576,7 @@ describe("experimental durable server composition", () => {
 		});
 		expect(errors).toEqual([]);
 
-		stop();
+		await facetHost.dispose();
 		await expect(services.dispose(BACKGROUND_CONTEXT)).resolves.toBeUndefined();
 	});
 

@@ -7,13 +7,19 @@ import {
 	type MutableReplicatedState,
 	type RemoteServiceConnection,
 	RemoteServiceNamespace,
-	type RemoteServiceNamespaceApi,
+	type RemoteServices,
 	type ReplicatedState,
 	remoteState,
 } from "@earendil-works/pi-agent-core";
 import type { Client } from "@earendil-works/pi-client";
-import type { ProtocolRpcCall, RpcTarget, ServiceProviderUpdate, SessionTarget } from "@earendil-works/pi-protocol";
-import { BUILTIN_SERVER_SERVICES, BUILTIN_SESSION_SERVICES } from "./builtins.ts";
+import type {
+	ProtocolRpcCall,
+	RpcTarget,
+	ServiceCatalogueEntry,
+	ServiceProviderUpdate,
+	SessionTarget,
+} from "@earendil-works/pi-protocol";
+import type { FacetConnection } from "../facets.ts";
 
 export type ServerConnectionState =
 	| { status: "connecting"; attempt: number }
@@ -24,44 +30,90 @@ export type SessionAttachmentState =
 	| { status: "detached" }
 	| { status: "attaching" | "attached" | "degraded"; sessionId: string };
 
-export interface ServerServices extends RemoteServiceNamespaceApi {
+export interface ServerServiceConnection extends FacetConnection {
 	readonly connection: ReplicatedState<ServerConnectionState>;
-	activate(context: Context): Promise<void>;
+	dispose(context: Context): Promise<void>;
 }
 
-export interface SessionServices extends RemoteServiceNamespaceApi {
+export interface SessionServiceConnection extends FacetConnection {
 	readonly attachment: ReplicatedState<SessionAttachmentState>;
-	activate(context: Context): Promise<void>;
 	/** Wait for the exact current attachment generation to finish hydrating. */
 	whenAttached(sessionId: string, context: Context): Promise<void>;
-	/** Wait for the detached namespace to finish releasing its prior binding. */
+	/** Wait for every binding to finish releasing the previous attachment. */
 	whenDetached(context: Context): Promise<void>;
+	dispose(context: Context): Promise<void>;
 }
 
-export interface ServiceNamespaceOptions {
-	readonly services: readonly { readonly id: string }[];
+export interface ServiceConnectionOptions {
 	readonly onError?: (error: Error) => void;
-	readonly deferred?: boolean;
 }
 
-class ServerServiceNamespace extends RemoteServiceNamespace implements ServerServices {
-	readonly connection: ReplicatedState<ServerConnectionState>;
-	readonly #removeConnectionListener: () => void;
-	readonly #onError: ((error: Error) => void) | undefined;
-	#transition = Promise.resolve();
-	#connectionAttempt: number;
-	#enabled: boolean;
+export interface ServiceNamespaceOptions extends ServiceConnectionOptions {
+	readonly services: readonly { readonly id: string }[];
+}
 
-	constructor(client: Client, connection: RemoteServiceConnection, options: ServiceNamespaceOptions) {
-		const enabled = options.deferred !== true;
+class RoutedServiceBinding extends RemoteServiceNamespace {
+	readonly #getBound: () => boolean;
+	readonly #onActivate: (context: Context) => Promise<void>;
+	readonly #remove: () => void;
+	#activated = false;
+
+	constructor(options: {
+		readonly services: readonly { readonly id: string }[];
+		readonly connection: RemoteServiceConnection;
+		readonly getBound: () => boolean;
+		readonly assertAccess: () => void;
+		readonly onError: (error: Error) => void;
+		readonly onActivate?: (context: Context) => Promise<void>;
+		readonly remove: () => void;
+	}) {
 		super({
 			services: options.services,
-			connection,
-			bound: enabled && client.connected,
-			...(options.onError === undefined ? {} : { onError: options.onError }),
+			connection: options.connection,
+			bound: false,
+			assertAccess: options.assertAccess,
+			onError: options.onError,
 		});
-		this.#onError = options.onError;
-		this.#enabled = enabled;
+		this.#getBound = options.getBound;
+		this.#onActivate = options.onActivate ?? (() => Promise.resolve());
+		this.#remove = options.remove;
+	}
+
+	override async activate(context: Context): Promise<void> {
+		if (!this.#activated) {
+			this.#activated = true;
+			await this.rebind(this.#getBound(), context);
+		}
+		await this.ready(context);
+		await this.#onActivate(context);
+	}
+
+	updateBound(bound: boolean, context: Context): Promise<void> {
+		return this.#activated ? this.rebind(bound, context) : Promise.resolve();
+	}
+
+	override async dispose(context: Context): Promise<void> {
+		this.#remove();
+		await super.dispose(context);
+	}
+}
+
+class ServerServiceConnectionImpl implements ServerServiceConnection {
+	readonly acceptsUnavailableServices = false;
+	readonly connection: ReplicatedState<ServerConnectionState>;
+	readonly #client: Client;
+	readonly #remoteConnection: RemoteServiceConnection;
+	readonly #bindings = new Set<RoutedServiceBinding>();
+	readonly #removeConnectionListener: () => void;
+	readonly #onError: (error: Error) => void;
+	#transition = Promise.resolve();
+	#connectionAttempt: number;
+	#disposed = false;
+
+	constructor(client: Client, options: ServiceConnectionOptions) {
+		this.#client = client;
+		this.#remoteConnection = createRemoteServiceConnection(client, () => ({ serverId: client.serverId }));
+		this.#onError = options.onError ?? (() => {});
 		this.#connectionAttempt = client.connectionState === "connecting" ? 1 : 0;
 		const connectionState = remoteState<ServerConnectionState>(
 			toServerConnectionState(client, this.#connectionAttempt),
@@ -70,60 +122,76 @@ class ServerServiceNamespace extends RemoteServiceNamespace implements ServerSer
 		this.#removeConnectionListener = client.onConnectionStateChange(({ state, error }) => {
 			if (state === "connecting") this.#connectionAttempt += 1;
 			connectionState.set(toServerConnectionState(client, this.#connectionAttempt, error), BACKGROUND_CONTEXT);
-			if (!this.#enabled) return;
 			this.#transition = this.#transition
-				.then(() => this.rebind(state === "connected", BACKGROUND_CONTEXT))
-				.catch((transitionError: unknown) => this.#onError?.(toError(transitionError)));
+				.then(async () => {
+					const results = await Promise.allSettled(
+						[...this.#bindings].map((binding) => binding.updateBound(state === "connected", BACKGROUND_CONTEXT)),
+					);
+					const failures = results.filter(
+						(result): result is PromiseRejectedResult => result.status === "rejected",
+					);
+					if (failures.length > 0) throw new AggregateError(failures.map(({ reason }) => reason));
+				})
+				.catch((transitionError: unknown) => this.#onError(toError(transitionError)));
 		});
 	}
 
-	async activate(context: Context): Promise<void> {
-		if (!this.#enabled) {
-			this.#enabled = true;
-			this.#transition = this.#transition.then(() =>
-				this.rebind(this.connection.value?.status === "connected", context),
-			);
-		}
-		await this.ready(context);
+	catalogue(context: Context) {
+		return this.#client.serviceCatalogue({ serverId: this.#client.serverId }, context.abortSignal);
 	}
 
-	override async ready(context: Context): Promise<void> {
-		while (true) {
-			const transition = this.#transition;
-			await transition;
-			await super.ready(context);
-			if (transition === this.#transition) return;
-		}
+	open(options: {
+		readonly services: readonly { readonly id: string }[];
+		assertAccess(): void;
+		onError(error: Error): void;
+	}): RemoteServices {
+		if (this.#disposed) throw new Error("Server service connection is disposed");
+		let binding!: RoutedServiceBinding;
+		binding = new RoutedServiceBinding({
+			services: options.services,
+			connection: this.#remoteConnection,
+			getBound: () => this.#client.connected,
+			assertAccess: options.assertAccess,
+			onError: options.onError,
+			remove: () => this.#bindings.delete(binding),
+		});
+		this.#bindings.add(binding);
+		return binding;
 	}
 
-	override async dispose(context: Context): Promise<void> {
+	async dispose(context: Context): Promise<void> {
+		if (this.#disposed) return;
+		this.#disposed = true;
 		this.#removeConnectionListener();
 		await this.#transition;
-		await super.dispose(context);
+		const bindings = [...this.#bindings];
+		this.#bindings.clear();
+		const results = await Promise.allSettled(bindings.map((binding) => binding.dispose(context)));
+		throwFailures(results, "Failed to dispose server service connection");
 	}
 }
 
-class SessionServiceNamespace extends RemoteServiceNamespace implements SessionServices {
+class SessionServiceConnectionImpl implements SessionServiceConnection {
 	readonly attachment: ReplicatedState<SessionAttachmentState>;
 	readonly #client: Client;
+	readonly #remoteConnection: RemoteServiceConnection;
 	readonly #attachmentState: MutableReplicatedState<SessionAttachmentState>;
+	readonly #bindings = new Set<RoutedServiceBinding>();
 	readonly #removeAttachmentListener: () => void;
-	readonly #onError: ((error: Error) => void) | undefined;
+	readonly #onError: (error: Error) => void;
 	readonly #transitions = new Set<Promise<void>>();
+	#catalogue: readonly ServiceCatalogueEntry[] | undefined;
 	#attachmentRevision = 0;
-	#enabled: boolean;
+	#disposed = false;
 
-	constructor(client: Client, connection: RemoteServiceConnection, options: ServiceNamespaceOptions) {
-		const enabled = options.deferred !== true;
-		super({
-			services: options.services,
-			connection,
-			bound: enabled && client.attachment !== undefined,
-			...(options.onError === undefined ? {} : { onError: options.onError }),
-		});
+	get acceptsUnavailableServices(): boolean {
+		return this.#client.attachment === undefined && this.#catalogue === undefined;
+	}
+
+	constructor(client: Client, options: ServiceConnectionOptions) {
 		this.#client = client;
-		this.#onError = options.onError;
-		this.#enabled = enabled;
+		this.#remoteConnection = createRemoteServiceConnection(client, () => client.attachment);
+		this.#onError = options.onError ?? (() => {});
 		this.#attachmentState = remoteState<SessionAttachmentState>(
 			client.attachment === undefined
 				? { status: "detached" }
@@ -134,11 +202,16 @@ class SessionServiceNamespace extends RemoteServiceNamespace implements SessionS
 			const revision = ++this.#attachmentRevision;
 			if (attachment !== undefined) {
 				this.#attachmentState.set({ status: "attaching", sessionId: attachment.sessionId }, BACKGROUND_CONTEXT);
-			} else if (!this.#enabled) {
-				this.#attachmentState.set({ status: "detached" }, BACKGROUND_CONTEXT);
+				void this.#client.serviceCatalogue(attachment).then(
+					(catalogue) => {
+						if (this.#attachmentRevision === revision && sameAttachment(this.#client.attachment, attachment)) {
+							this.#catalogue = catalogue;
+						}
+					},
+					(error: unknown) => this.#onError(toError(error)),
+				);
 			}
-			if (!this.#enabled) return;
-			const transition = this.rebind(attachment !== undefined, BACKGROUND_CONTEXT);
+			const transition = this.#rebind(attachment !== undefined, BACKGROUND_CONTEXT);
 			this.#transitions.add(transition);
 			void transition.then(
 				() => {
@@ -156,35 +229,48 @@ class SessionServiceNamespace extends RemoteServiceNamespace implements SessionS
 					this.#transitions.delete(transition);
 					if (this.#attachmentRevision !== revision || !sameAttachment(this.#client.attachment, attachment))
 						return;
-					if (attachment === undefined) {
-						this.#attachmentState.set({ status: "detached" }, BACKGROUND_CONTEXT);
-					} else {
-						this.#attachmentState.set(
-							{ status: "degraded", sessionId: attachment.sessionId },
-							BACKGROUND_CONTEXT,
-						);
-					}
-					this.#onError?.(toError(error));
+					this.#attachmentState.set(
+						attachment === undefined
+							? { status: "detached" }
+							: { status: "degraded", sessionId: attachment.sessionId },
+						BACKGROUND_CONTEXT,
+					);
+					this.#onError(toError(error));
 				},
 			);
 		});
 	}
 
-	async activate(context: Context): Promise<void> {
-		if (!this.#enabled) {
-			this.#enabled = true;
-			const transition = this.rebind(this.#client.attachment !== undefined, context);
-			this.#transitions.add(transition);
-			await transition.finally(() => this.#transitions.delete(transition));
-		}
-		await this.ready(context);
+	async catalogue(context: Context): Promise<readonly ServiceCatalogueEntry[]> {
+		const target = this.#client.attachment;
+		if (target === undefined) return this.#catalogue ?? [];
+		const catalogue = await this.#client.serviceCatalogue(target, context.abortSignal);
+		this.#catalogue = catalogue;
+		return catalogue;
 	}
 
-	override async ready(context: Context): Promise<void> {
-		const attachment = this.#client.attachment;
-		const revision = this.#attachmentRevision;
-		if (attachment === undefined) await this.#whenDetached(revision, context);
-		else await this.#whenAttached(attachment, revision, context);
+	open(options: {
+		readonly services: readonly { readonly id: string }[];
+		assertAccess(): void;
+		onError(error: Error): void;
+	}): RemoteServices {
+		if (this.#disposed) throw new Error("Session service connection is disposed");
+		let binding!: RoutedServiceBinding;
+		binding = new RoutedServiceBinding({
+			services: options.services,
+			connection: this.#remoteConnection,
+			getBound: () => this.#client.attachment !== undefined,
+			onActivate: async (context) => {
+				const attachment = this.#client.attachment;
+				if (attachment === undefined) await this.#whenDetached(this.#attachmentRevision, context);
+				else await this.#whenAttached(attachment, this.#attachmentRevision, context);
+			},
+			assertAccess: options.assertAccess,
+			onError: options.onError,
+			remove: () => this.#bindings.delete(binding),
+		});
+		this.#bindings.add(binding);
+		return binding;
 	}
 
 	async whenAttached(sessionId: string, context: Context): Promise<void> {
@@ -200,15 +286,27 @@ class SessionServiceNamespace extends RemoteServiceNamespace implements SessionS
 		await this.#whenDetached(this.#attachmentRevision, context);
 	}
 
-	override async dispose(context: Context): Promise<void> {
+	async dispose(context: Context): Promise<void> {
+		if (this.#disposed) return;
+		this.#disposed = true;
 		this.#removeAttachmentListener();
 		await Promise.allSettled(this.#transitions);
-		await super.dispose(context);
+		const bindings = [...this.#bindings];
+		this.#bindings.clear();
+		const results = await Promise.allSettled(bindings.map((binding) => binding.dispose(context)));
+		throwFailures(results, "Failed to dispose Session service connection");
+	}
+
+	async #rebind(bound: boolean, context: Context): Promise<void> {
+		const results = await Promise.allSettled(
+			[...this.#bindings].map((binding) => binding.updateBound(bound, context)),
+		);
+		throwFailures(results, "Failed to rebind Session services");
 	}
 
 	async #whenAttached(attachment: SessionTarget, revision: number, context: Context): Promise<void> {
 		try {
-			await super.ready(context);
+			await Promise.all([...this.#bindings].map((binding) => binding.ready(context)));
 		} catch (error) {
 			if (this.#attachmentRevision === revision && sameAttachment(this.#client.attachment, attachment)) {
 				this.#attachmentState.set({ status: "degraded", sessionId: attachment.sessionId }, context);
@@ -225,7 +323,7 @@ class SessionServiceNamespace extends RemoteServiceNamespace implements SessionS
 	}
 
 	async #whenDetached(revision: number, context: Context): Promise<void> {
-		await super.ready(context);
+		await Promise.all([...this.#bindings].map((binding) => binding.ready(context)));
 		if (this.#attachmentRevision !== revision || this.#client.attachment !== undefined) {
 			throw new Error("The Session attachment changed while detaching");
 		}
@@ -235,39 +333,104 @@ class SessionServiceNamespace extends RemoteServiceNamespace implements SessionS
 	}
 }
 
-/** Bind plugin service facades to the connected server route. */
-export function createServerServiceNamespace(client: Client, options: ServiceNamespaceOptions): ServerServices {
-	const connection = createServiceConnection(client, () => ({ serverId: client.serverId }));
-	return new ServerServiceNamespace(client, connection, options);
-}
-
-/** Bind every built-in server service expected by the presentation host. */
-export function createBuiltinServerServiceNamespace(
+/** Create an explicitly bound server-service namespace outside a facet host. */
+export function createServerServiceNamespace(
 	client: Client,
-	options: Omit<ServiceNamespaceOptions, "services"> = {},
-): ServerServices {
-	return createServerServiceNamespace(client, { ...options, services: BUILTIN_SERVER_SERVICES });
+	options: ServiceNamespaceOptions,
+): ServerServiceConnection & RemoteServices {
+	const connection = createServerServiceConnection(client, options);
+	const services = connection.open({
+		services: options.services,
+		assertAccess() {},
+		onError: options.onError ?? (() => {}),
+	});
+	const activation = services.activate(BACKGROUND_CONTEXT);
+	void activation.catch(options.onError ?? (() => {}));
+	const ready = async (context: Context): Promise<void> => {
+		await activation;
+		await services.ready(context);
+	};
+	return {
+		acceptsUnavailableServices: connection.acceptsUnavailableServices,
+		connection: connection.connection,
+		catalogue: (context) => connection.catalogue(context),
+		open: (openOptions) => connection.open(openOptions),
+		use: (service) => services.use(service),
+		observe: (service, handler) => services.observe(service, handler),
+		activate: ready,
+		ready,
+		setAccessGuard: (assertAccess) => services.setAccessGuard(assertAccess),
+		async dispose(context) {
+			const results = await Promise.allSettled([services.dispose(context), connection.dispose(context)]);
+			throwFailures(results, "Failed to dispose server service namespace");
+		},
+	};
 }
 
-/** Bind plugin service facades to the client's selected Session route. */
-export function createSessionServiceNamespace(client: Client, options: ServiceNamespaceOptions): SessionServices {
-	const connection = createServiceConnection(client, () => client.attachment);
-	return new SessionServiceNamespace(client, connection, options);
-}
-
-/** Bind every built-in Session service expected by the presentation host. */
-export function createBuiltinSessionServiceNamespace(
+/** Create an explicitly bound selected-Session namespace outside a facet host. */
+export function createSessionServiceNamespace(
 	client: Client,
-	options: Omit<ServiceNamespaceOptions, "services"> = {},
-): SessionServices {
-	return createSessionServiceNamespace(client, { ...options, services: BUILTIN_SESSION_SERVICES });
+	options: ServiceNamespaceOptions,
+): SessionServiceConnection & RemoteServices {
+	const connection = createSessionServiceConnection(client, options);
+	const services = connection.open({
+		services: options.services,
+		assertAccess() {},
+		onError: options.onError ?? (() => {}),
+	});
+	const activation = services.activate(BACKGROUND_CONTEXT);
+	void activation.catch(options.onError ?? (() => {}));
+	const ready = async (context: Context): Promise<void> => {
+		await activation;
+		const attachment = connection.attachment.value;
+		if (attachment?.status === "detached") await connection.whenDetached(context);
+		else if (attachment !== undefined) await connection.whenAttached(attachment.sessionId, context);
+	};
+	return {
+		get acceptsUnavailableServices() {
+			return connection.acceptsUnavailableServices;
+		},
+		attachment: connection.attachment,
+		catalogue: (context) => connection.catalogue(context),
+		open: (openOptions) => connection.open(openOptions),
+		use: (service) => services.use(service),
+		observe: (service, handler) => services.observe(service, handler),
+		activate: ready,
+		ready,
+		setAccessGuard: (assertAccess) => services.setAccessGuard(assertAccess),
+		whenAttached: (sessionId, context) => connection.whenAttached(sessionId, context),
+		whenDetached: (context) => connection.whenDetached(context),
+		async dispose(context) {
+			const results = await Promise.allSettled([services.dispose(context), connection.dispose(context)]);
+			throwFailures(results, "Failed to dispose Session service namespace");
+		},
+	};
 }
 
-function createServiceConnection(client: Client, getTarget: () => RpcTarget | undefined): RemoteServiceConnection {
+/** Create the server-scoped service connection for one presentation client. */
+export function createServerServiceConnection(
+	client: Client,
+	options: ServiceConnectionOptions = {},
+): ServerServiceConnection {
+	return new ServerServiceConnectionImpl(client, options);
+}
+
+/** Create the selected-Session service connection for one presentation client. */
+export function createSessionServiceConnection(
+	client: Client,
+	options: ServiceConnectionOptions = {},
+): SessionServiceConnection {
+	return new SessionServiceConnectionImpl(client, options);
+}
+
+function createRemoteServiceConnection(
+	client: Client,
+	getTarget: () => RpcTarget | undefined,
+): RemoteServiceConnection {
 	return {
 		invoke: async (call, context) => {
 			const target = getTarget();
-			if (target === undefined) throw new Error("Service namespace is not routed");
+			if (target === undefined) throw new Error("Service connection is not routed");
 			const wireCall: ProtocolRpcCall = {
 				serviceId: call.serviceId,
 				...(call.instance === undefined ? {} : { instance: call.instance }),
@@ -280,7 +443,7 @@ function createServiceConnection(client: Client, getTarget: () => RpcTarget | un
 		},
 		subscribe: async (serviceId, mode, listener, context) => {
 			const target = getTarget();
-			if (target === undefined) throw new Error("Service namespace is not routed");
+			if (target === undefined) throw new Error("Service connection is not routed");
 			const subscription = await client.subscribeService(
 				target,
 				serviceId,
@@ -320,6 +483,12 @@ function sameAttachment(left: SessionTarget | undefined, right: SessionTarget | 
 	return (
 		left.serverId === right.serverId && left.sessionId === right.sessionId && left.attachmentId === right.attachmentId
 	);
+}
+
+function throwFailures(results: readonly PromiseSettledResult<unknown>[], message: string): void {
+	const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+	if (errors.length === 1) throw errors[0];
+	if (errors.length > 1) throw new AggregateError(errors, message);
 }
 
 function toError(error: unknown): Error {

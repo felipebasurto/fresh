@@ -3,6 +3,7 @@ import type {
 	AgentLane,
 	Context,
 	ServiceProviderUpdate as CoreServiceProviderUpdate,
+	ServiceCatalogueEntry,
 	ServiceProviderSubscription,
 } from "@earendil-works/pi-agent-core";
 import {
@@ -16,7 +17,8 @@ import {
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import type { ModelRuntime } from "../../core/model-runtime.ts";
-import { bindService, createFacetHost, type Facet } from "../facets.ts";
+import { combineFacetLoaders, createStaticFacetLoader, type FacetLoader } from "../facet-loader.ts";
+import { createFacetHost, defineFacet, type Facet, type FacetHost } from "../facets.ts";
 import { chatServiceFacet } from "./chat-provider.ts";
 import { Harness, Lane } from "./harness.ts";
 import { createModelsRuntime, ModelsRuntime, modelsServiceFacet } from "./models-provider.ts";
@@ -32,7 +34,7 @@ export interface SessionWorkerRuntime {
 	readonly harness: AgentHarness;
 	readonly lane?: AgentLane;
 	readonly modelRuntime?: ModelRuntime;
-	readonly facets?: readonly Facet[];
+	readonly facetLoader?: FacetLoader;
 }
 
 export interface WorkerServiceScope {
@@ -46,33 +48,51 @@ interface WorkerServiceSubscription {
 }
 
 export interface SessionWorkerServices {
+	readonly catalogue: readonly ServiceCatalogueEntry[];
 	invoke(call: ProtocolRpcCall, scope: WorkerServiceScope, context: Context): Promise<JsonValue | undefined>;
 	removeSubscriptions(matches: (scope: WorkerServiceScope) => boolean): void;
 	dispose(): Promise<void>;
 }
 
-const BUILTIN_SESSION_FACETS = [
+const BUILTIN_SESSION_FACET_LOADER = createStaticFacetLoader([
 	chatServiceFacet,
 	modelsServiceFacet,
 	accountsServiceFacet,
 	transcriptServiceFacet,
-] satisfies readonly Facet[];
+] satisfies readonly Facet[]);
 
 export async function createSessionWorkerServices(options: {
 	readonly harness: AgentHarness;
 	readonly lane: AgentLane;
 	readonly modelRuntime: ModelRuntime | undefined;
-	readonly facets: readonly Facet[];
+	readonly facetLoader?: FacetLoader;
 	publish(scope: WorkerServiceScope, subscriptionId: string, update: ProtocolServiceProviderUpdate): Promise<void>;
 }): Promise<SessionWorkerServices> {
-	const facetHost = await createFacetHost({
-		facets: [...BUILTIN_SESSION_FACETS, ...options.facets],
-		bindings: [
-			bindService(Harness, options.harness),
-			bindService(Lane, options.lane),
-			bindService(ModelsRuntime, createModelsRuntime(options.modelRuntime)),
-		],
+	const sessionRuntimeFacet = defineFacet({
+		id: "@pi/session-runtime",
+		setup(env) {
+			env.provide(Harness, options.harness);
+			env.provide(Lane, options.lane);
+			env.provide(ModelsRuntime, createModelsRuntime(options.modelRuntime));
+		},
 	});
+	const loader = combineFacetLoaders([
+		createStaticFacetLoader([sessionRuntimeFacet]),
+		BUILTIN_SESSION_FACET_LOADER,
+		...(options.facetLoader === undefined ? [] : [options.facetLoader]),
+	]);
+	const loaded = await loader.load();
+	let facetHost: FacetHost;
+	try {
+		facetHost = await createFacetHost({ facets: loaded.facets });
+	} catch (error) {
+		try {
+			await loaded.dispose();
+		} catch (cleanupError) {
+			throw new AggregateError([error, cleanupError], "Session facets failed to start and clean up");
+		}
+		throw error;
+	}
 	const provider = facetHost.services;
 
 	const subscriptions = new Map<string, WorkerServiceSubscription>();
@@ -85,8 +105,10 @@ export async function createSessionWorkerServices(options: {
 	};
 
 	return {
+		catalogue: provider.catalogue,
 		async invoke(call, scope, context) {
 			const controlCall = decodeServiceControlCall(call);
+			if (controlCall?.type === "catalogue") return toProtocolJson(provider.catalogue);
 			if (controlCall?.type === "subscribe") {
 				const key = scopedSubscriptionKey(scope, controlCall.subscriptionId);
 				if (subscriptions.has(key)) throw new Error("Service subscription ID is already active");
@@ -110,7 +132,19 @@ export async function createSessionWorkerServices(options: {
 		removeSubscriptions,
 		async dispose() {
 			removeSubscriptions(() => true);
-			await facetHost.dispose();
+			const errors: unknown[] = [];
+			try {
+				await facetHost.dispose();
+			} catch (error) {
+				errors.push(error);
+			}
+			try {
+				await loaded.dispose();
+			} catch (error) {
+				errors.push(error);
+			}
+			if (errors.length === 1) throw errors[0];
+			if (errors.length > 1) throw new AggregateError(errors, "Failed to dispose Session facets");
 		},
 	};
 }

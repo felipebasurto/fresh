@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentHarness, BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { createStaticFacetLoader } from "../../src/experimental/facet-loader.ts";
 import { defineFacet } from "../../src/experimental/facets.ts";
 import { consumeInternalProcessRole } from "../../src/experimental/process.ts";
 import { runSessionWorkerWithHarness } from "../../src/experimental/session-worker.ts";
@@ -56,7 +57,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
 				env.onActivate(() => spawn("first"));
 			},
 		});
-		return { harness, facets: [keyedProbeFacet] };
+		return { harness, facetLoader: createStaticFacetLoader([keyedProbeFacet]) };
 	}).catch((error: unknown) => {
 		console.error(error);
 		process.exit(1);

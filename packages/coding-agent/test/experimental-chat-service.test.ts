@@ -10,7 +10,7 @@ import {
 	UnknownTemplate,
 } from "@earendil-works/pi-agent-core";
 import { describe, expect, test, vi } from "vitest";
-import { bindService, createFacetHost } from "../src/experimental/facets.ts";
+import { createFacetHost, defineFacet } from "../src/experimental/facets.ts";
 import { chatServiceFacet, toChatPromptResponse } from "../src/experimental/services/chat-provider.ts";
 import { Lane } from "../src/experimental/services/harness.ts";
 
@@ -55,10 +55,13 @@ describe("Chat service", () => {
 			},
 		}));
 		const lane = { prompt, requestAbort } as unknown as AgentLane;
-		const host = await createFacetHost({
-			facets: [chatServiceFacet],
-			bindings: [bindService(Lane, lane)],
+		const laneFacet = defineFacet({
+			id: "test-lane",
+			setup(env) {
+				env.provide(Lane, lane);
+			},
 		});
+		const host = await createFacetHost({ facets: [laneFacet, chatServiceFacet] });
 		try {
 			await expect(
 				host.services.invoke(

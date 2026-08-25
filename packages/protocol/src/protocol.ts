@@ -91,6 +91,20 @@ export const ServiceRpcResultSchema = Type.Unsafe<ServiceRpcResultUnion>(createR
 export const ServiceModeSchema = Type.Union([Type.Literal("singleton"), Type.Literal("keyed")]);
 export type ServiceMode = Static<typeof ServiceModeSchema>;
 
+export const ServiceCatalogueEntrySchema = StrictObject({
+	serviceId: IdSchema,
+	mode: ServiceModeSchema,
+});
+export const ServiceCatalogueSchema = Type.Array(ServiceCatalogueEntrySchema);
+export type ServiceCatalogueEntry = Static<typeof ServiceCatalogueEntrySchema>;
+
+export function parseServiceCatalogue(value: unknown): readonly ServiceCatalogueEntry[] {
+	if (!Check(ServiceCatalogueSchema, value)) throw new TypeError("Invalid service catalogue");
+	const ids = value.map(({ serviceId }) => serviceId);
+	if (new Set(ids).size !== ids.length) throw new TypeError("Service catalogue contains duplicate IDs");
+	return value;
+}
+
 export const ServiceInstanceAddressSchema = StrictObject({
 	key: IdSchema,
 	generation: Type.Integer({ minimum: 1 }),
@@ -166,10 +180,12 @@ export const ServiceProviderUpdateSchema = Type.Union([
 export type ServiceProviderUpdate = Static<typeof ServiceProviderUpdateSchema>;
 
 export const SERVICE_CONTROL_ID = "$pi.service";
+export const SERVICE_CATALOGUE_MEMBER = "catalogue";
 export const SERVICE_SUBSCRIBE_MEMBER = "subscribe";
 export const SERVICE_UNSUBSCRIBE_MEMBER = "unsubscribe";
 
 export type ServiceControlCall =
+	| { readonly type: "catalogue" }
 	| {
 			readonly type: "subscribe";
 			readonly subscriptionId: string;
@@ -177,6 +193,10 @@ export type ServiceControlCall =
 			readonly mode: ServiceMode;
 	  }
 	| { readonly type: "unsubscribe"; readonly subscriptionId: string };
+
+export function createServiceCatalogueCall(): ProtocolRpcCall {
+	return { serviceId: SERVICE_CONTROL_ID, member: SERVICE_CATALOGUE_MEMBER, args: [] };
+}
 
 export function createServiceSubscribeCall(
 	subscriptionId: string,
@@ -192,6 +212,7 @@ export function createServiceUnsubscribeCall(subscriptionId: string): ProtocolRp
 
 export function decodeServiceControlCall(call: ProtocolRpcCall): ServiceControlCall | undefined {
 	if (call.serviceId !== SERVICE_CONTROL_ID || call.instance !== undefined) return undefined;
+	if (call.member === SERVICE_CATALOGUE_MEMBER && call.args.length === 0) return { type: "catalogue" };
 	if (
 		call.member === SERVICE_SUBSCRIBE_MEMBER &&
 		call.args.length === 3 &&

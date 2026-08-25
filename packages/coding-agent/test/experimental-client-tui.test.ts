@@ -9,11 +9,13 @@ import {
 import type { SessionSummary } from "@earendil-works/pi-protocol";
 import { describe, expect, test, vi } from "vitest";
 import { type ClientTuiServer, ExperimentalClientTui } from "../src/experimental/client-tui.ts";
+import type { FacetLoader } from "../src/experimental/facet-loader.ts";
+import { defineFacet } from "../src/experimental/facets.ts";
 import type {
 	ServerConnectionState,
-	ServerServices,
+	ServerServiceConnection,
 	SessionAttachmentState,
-	SessionServices,
+	SessionServiceConnection,
 } from "../src/experimental/services/connection.ts";
 import { Models, type ModelsState } from "../src/experimental/services/models.ts";
 import {
@@ -83,8 +85,15 @@ describe("experimental client TUI", () => {
 			connection: createLoopbackServiceConnection(serverProvider),
 			bound: false,
 		});
-		const serverServices: ServerServices = Object.assign(serverNamespace, {
+		const serverServices: ServerServiceConnection = Object.assign(serverNamespace, {
+			acceptsUnavailableServices: false,
 			connection: remoteState<ServerConnectionState>({ status: "connected", since: "now" }),
+			async catalogue() {
+				return serverProvider.catalogue;
+			},
+			open() {
+				return serverNamespace;
+			},
 			async activate() {
 				await serverNamespace.rebind(true, BACKGROUND_CONTEXT);
 				await serverNamespace.ready(BACKGROUND_CONTEXT);
@@ -95,8 +104,15 @@ describe("experimental client TUI", () => {
 			connection: createLoopbackServiceConnection(sessionProvider),
 			bound: false,
 		});
-		const sessionServices: SessionServices = Object.assign(sessionNamespace, {
+		const sessionServices: SessionServiceConnection = Object.assign(sessionNamespace, {
+			acceptsUnavailableServices: true,
 			attachment,
+			async catalogue() {
+				return [];
+			},
+			open() {
+				return sessionNamespace;
+			},
 			async activate() {
 				await sessionNamespace.ready(BACKGROUND_CONTEXT);
 			},
@@ -113,8 +129,18 @@ describe("experimental client TUI", () => {
 		const server: ClientTuiServer = { serverId, server: serverServices, session: sessionServices };
 		let finished = false;
 		const requestRender = vi.fn();
+		const disposeLoadedFacets = vi.fn(async () => {});
+		const facetLoader: FacetLoader = {
+			async load() {
+				return {
+					facets: [defineFacet({ id: "test-tui-facet", setup() {} })],
+					dispose: disposeLoadedFacets,
+				};
+			},
+		};
 		const component = await ExperimentalClientTui.create({
 			servers: [server],
+			facetLoader,
 			requestRender,
 			finish() {
 				finished = true;
@@ -144,6 +170,7 @@ describe("experimental client TUI", () => {
 			expect(finished).toBe(true);
 
 			await component.close();
+			expect(disposeLoadedFacets).toHaveBeenCalledOnce();
 			const rendersAfterClose = requestRender.mock.calls.length;
 			directoryState.set({ revision: 3, sessions: [] }, BACKGROUND_CONTEXT);
 			directoryEvents.emit({ type: "deleted", sessionId: "two" }, BACKGROUND_CONTEXT);

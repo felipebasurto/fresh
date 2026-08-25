@@ -19,7 +19,6 @@ import {
 } from "@earendil-works/pi-protocol";
 import type { RoutedServerServiceAttachment, RoutedServerServiceHost } from "@earendil-works/pi-server";
 import { Check } from "typebox/value";
-import { BUILTIN_SERVER_SERVICES } from "./server-builtins.ts";
 import {
 	SessionDirectory,
 	type SessionDirectoryEvent,
@@ -66,7 +65,10 @@ export async function createExperimentalServerServices(options: {
 	return {
 		host: {
 			attachClient(presentation) {
-				const provider = new RemoteServiceProvider(BUILTIN_SERVER_SERVICES);
+				const provider = new RemoteServiceProvider([
+					{ service: SessionDirectory, mode: "singleton" },
+					{ service: SessionManagement, mode: "singleton" },
+				]);
 				provider.provide(SessionDirectory, { state: directory, events: directoryEvents });
 				provider.provide(SessionManagement, {
 					create: (createOptions, context) =>
@@ -141,6 +143,7 @@ function createProviderAttachment(
 		async invokeService(call, publish, context) {
 			if (released) throw new Error("Server service attachment is released");
 			const control = decodeServiceControlCall(call);
+			if (control?.type === "catalogue") return toProtocolJson(provider.catalogue);
 			if (control?.type === "subscribe") {
 				if (subscriptions.has(control.subscriptionId)) {
 					throw new Error("Service subscription ID is already active");

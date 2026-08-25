@@ -12,25 +12,30 @@ import {
 import chalk from "chalk";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runtime.ts";
-import { activateRemoteFacets, bindService, defineFacet, type RemoteFacetActivation } from "./facets.ts";
-import type { ServerServices, SessionAttachmentState, SessionServices } from "./services/connection.ts";
+import { combineFacetLoaders, createStaticFacetLoader, type FacetLoader, type LoadedFacets } from "./facet-loader.ts";
+import { createFacetHost, defineFacet, type FacetHost } from "./facets.ts";
+import type {
+	ServerServiceConnection,
+	SessionAttachmentState,
+	SessionServiceConnection,
+} from "./services/connection.ts";
 import { Models, type Models as ModelsService } from "./services/models.ts";
-import {
-	SessionDirectory,
-	SessionManagement,
-	type SessionManagement as SessionManagementService,
-} from "./services/sessions.ts";
+import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
+
+export interface RunClientTuiOptions extends OpenClientRuntimeOptions {
+	readonly facetLoader?: FacetLoader;
+}
 
 export interface ClientTuiServer {
 	readonly serverId: string;
-	readonly server: ServerServices;
-	readonly session: SessionServices;
+	readonly server: ServerServiceConnection;
+	readonly session: SessionServiceConnection;
 }
 
 interface SessionPickerFeature {
 	readonly serverId: string;
 	readonly directory: SessionDirectory;
-	readonly management: Pick<SessionManagementService, "create" | "attach" | "detach">;
+	readonly management: SessionManagement;
 	readonly attachment: ReplicatedState<SessionAttachmentState>;
 }
 
@@ -49,7 +54,7 @@ interface Tui {
 	setStatus(status: string): void;
 }
 
-const Tui = defineService<Tui>("pi.local.tui");
+const Tui = defineService<Tui>("pi.local.tui", { rpc: false });
 
 type ClientTuiAction =
 	| { readonly kind: "attach"; readonly feature: SessionPickerFeature; readonly sessionId: string }
@@ -72,8 +77,9 @@ export const sessionPickerTuiFacet = defineFacet({
 		const tui = env.use(Tui);
 		const directory = env.use(SessionDirectory);
 		const remoteManagement = env.use(SessionManagement);
-		const management: SessionPickerFeature["management"] = {
+		const management: SessionManagement = {
 			create: (options, context) => remoteManagement.create(options, context),
+			remove: (sessionId, context) => remoteManagement.remove(sessionId, context),
 			async attach(sessionId, context) {
 				await remoteManagement.attach(sessionId, context);
 				await tui.whenAttached(sessionId, context);
@@ -112,12 +118,15 @@ export const modelSelectionTuiFacet = defineFacet({
 	},
 });
 
+const BUILTIN_TUI_FACET_LOADER = createStaticFacetLoader([sessionPickerTuiFacet, modelSelectionTuiFacet]);
+
 /** Minimal service-only presentation used before Harness execution is available. */
 export class ExperimentalClientTui implements Component {
 	readonly #requestRender: () => void;
 	readonly #finish: () => void;
 	readonly #container = new Container();
-	readonly #remoteFacetActivations: RemoteFacetActivation[] = [];
+	readonly #facetLoader: FacetLoader;
+	readonly #facetHosts: FacetHost[] = [];
 	readonly #sessionPickers = new Map<string, SessionPickerFeature>();
 	readonly #modelSelections = new Map<string, ModelSelectionFeature>();
 	readonly #actions = new Map<string, ClientTuiAction>();
@@ -126,19 +135,26 @@ export class ExperimentalClientTui implements Component {
 	#selectedServerId: string | undefined;
 	#status = "Select a Session or create one.";
 	#busy = false;
+	#loadedFacets: LoadedFacets | undefined;
 	#closePromise: Promise<void> | undefined;
 
-	private constructor(requestRender: () => void, finish: () => void) {
+	private constructor(requestRender: () => void, finish: () => void, facetLoader: FacetLoader) {
 		this.#requestRender = requestRender;
 		this.#finish = finish;
+		this.#facetLoader = facetLoader;
 	}
 
 	static async create(options: {
 		readonly servers: readonly ClientTuiServer[];
+		readonly facetLoader?: FacetLoader;
 		requestRender(): void;
 		finish(): void;
 	}): Promise<ExperimentalClientTui> {
-		const component = new ExperimentalClientTui(options.requestRender, options.finish);
+		const facetLoader = combineFacetLoaders([
+			BUILTIN_TUI_FACET_LOADER,
+			...(options.facetLoader === undefined ? [] : [options.facetLoader]),
+		]);
+		const component = new ExperimentalClientTui(options.requestRender, options.finish, facetLoader);
 		try {
 			await component.#start(options.servers);
 			return component;
@@ -169,44 +185,67 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	close(): Promise<void> {
-		this.#closePromise ??= disposeRemoteFacetActivations(this.#remoteFacetActivations.splice(0).reverse());
+		this.#closePromise ??= this.#close();
 		return this.#closePromise;
 	}
 
 	async #start(servers: readonly ClientTuiServer[]): Promise<void> {
+		const loaded = await this.#facetLoader.load();
+		this.#loadedFacets = loaded;
 		for (const server of servers) {
-			const bindings = [
-				bindService(Tui, {
-					attachment: server.session.attachment,
-					whenAttached: (sessionId, context) => server.session.whenAttached(sessionId, context),
-					whenDetached: (context) => server.session.whenDetached(context),
-					registerSessionPicker: (feature) =>
-						this.#register(this.#sessionPickers, "Session picker", { ...feature, serverId: server.serverId }),
-					registerModelSelection: (feature) =>
-						this.#register(this.#modelSelections, "Model selection", { ...feature, serverId: server.serverId }),
-					refresh: () => this.#rebuild(),
-					setStatus: (status) => {
-						this.#status = status;
-						this.#rebuild();
-					},
-				}),
-			];
-			const serverActivation = await activateRemoteFacets({
-				facets: [sessionPickerTuiFacet],
-				bindings,
-				source: server.server,
-				connect: () => server.server.activate(BACKGROUND_CONTEXT),
+			const tuiRuntimeFacet = defineFacet({
+				id: "@pi/tui-runtime",
+				setup: (env) => {
+					env.provide(Tui, {
+						attachment: server.session.attachment,
+						whenAttached: (sessionId, context) => server.session.whenAttached(sessionId, context),
+						whenDetached: (context) => server.session.whenDetached(context),
+						registerSessionPicker: (feature) =>
+							this.#register(this.#sessionPickers, "Session picker", {
+								...feature,
+								serverId: server.serverId,
+							}),
+						registerModelSelection: (feature) =>
+							this.#register(this.#modelSelections, "Model selection", {
+								...feature,
+								serverId: server.serverId,
+							}),
+						refresh: () => this.#rebuild(),
+						setStatus: (status) => {
+							this.#status = status;
+							this.#rebuild();
+						},
+					});
+				},
 			});
-			this.#remoteFacetActivations.push(serverActivation);
-			const sessionActivation = await activateRemoteFacets({
-				facets: [modelSelectionTuiFacet],
-				bindings,
-				source: server.session,
-				connect: () => server.session.activate(BACKGROUND_CONTEXT),
+			const facetHost = await createFacetHost({
+				facets: [tuiRuntimeFacet, ...loaded.facets],
+				connections: [server.server, server.session],
 			});
-			this.#remoteFacetActivations.push(sessionActivation);
+			this.#facetHosts.push(facetHost);
 		}
 		this.#rebuild();
+	}
+
+	async #close(): Promise<void> {
+		const results = await Promise.allSettled(
+			this.#facetHosts
+				.splice(0)
+				.reverse()
+				.map((host) => host.dispose()),
+		);
+		const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+		const loaded = this.#loadedFacets;
+		this.#loadedFacets = undefined;
+		if (loaded !== undefined) {
+			try {
+				await loaded.dispose();
+			} catch (error) {
+				errors.push(error);
+			}
+		}
+		if (errors.length === 1) throw errors[0];
+		if (errors.length > 1) throw new AggregateError(errors, "Failed to dispose experimental TUI facets");
 	}
 
 	#register<T extends { readonly serverId: string }>(features: Map<string, T>, label: string, feature: T): () => void {
@@ -353,7 +392,7 @@ export class ExperimentalClientTui implements Component {
 	}
 }
 
-export async function runClientTui(command: ClientCommand, options: OpenClientRuntimeOptions = {}): Promise<void> {
+export async function runClientTui(command: ClientCommand, options: RunClientTuiOptions = {}): Promise<void> {
 	const runtime = await openClientRuntime(command, options);
 	const terminal = new ProcessTerminal();
 	const tui = new TuiMainScreen(terminal);
@@ -372,6 +411,7 @@ export async function runClientTui(command: ClientCommand, options: OpenClientRu
 				server: server.server,
 				session: server.session,
 			})),
+			facetLoader: options.facetLoader,
 			requestRender: () => tui.requestRender(),
 			finish,
 		});
@@ -383,13 +423,6 @@ export async function runClientTui(command: ClientCommand, options: OpenClientRu
 		await component?.close();
 		await runtime.dispose();
 	}
-}
-
-async function disposeRemoteFacetActivations(activations: readonly RemoteFacetActivation[]): Promise<void> {
-	const results = await Promise.allSettled(activations.map((activation) => activation.dispose()));
-	const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
-	if (errors.length === 1) throw errors[0];
-	if (errors.length > 1) throw new AggregateError(errors, "Failed to dispose experimental TUI facets");
 }
 
 function findSession(feature: SessionPickerFeature, sessionId: string): SessionSummary {
