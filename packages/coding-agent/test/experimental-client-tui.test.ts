@@ -24,6 +24,7 @@ import {
 	type SessionDirectoryState,
 	SessionManagement,
 } from "../src/experimental/services/sessions.ts";
+import { Tui } from "../src/experimental/services/tui.ts";
 
 const serverId = "00000000-0000-4000-8000-000000000001";
 
@@ -133,7 +134,15 @@ describe("experimental client TUI", () => {
 		const facetLoader: FacetLoader = {
 			async load() {
 				return {
-					facets: [defineFacet({ id: "test-tui-facet", setup() {} })],
+					facets: [
+						defineFacet({
+							id: "test-tui-facet",
+							setup(env) {
+								const tui = env.use(Tui);
+								env.onActivate(() => tui.setStatus("Loaded test TUI facet"));
+							},
+						}),
+					],
 					dispose: disposeLoadedFacets,
 				};
 			},
@@ -148,6 +157,7 @@ describe("experimental client TUI", () => {
 		});
 		try {
 			expect(component.render(80).join("\n")).toContain("one");
+			expect(component.render(80).join("\n")).toContain("Loaded test TUI facet");
 			directoryEvents.emit({ type: "deleted", sessionId: "removed" }, BACKGROUND_CONTEXT);
 			expect(component.render(80).join("\n")).toContain("Session removed: removed");
 

@@ -1,4 +1,4 @@
-import { BACKGROUND_CONTEXT, type Context, defineService, type ReplicatedState } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import type { SessionSummary } from "@earendil-works/pi-protocol";
 import {
 	type Component,
@@ -14,13 +14,10 @@ import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runtime.ts";
 import { combineFacetLoaders, createStaticFacetLoader, type FacetLoader, type LoadedFacets } from "./facet-loader.ts";
 import { createFacetHost, defineFacet, type FacetHost } from "./facets.ts";
-import type {
-	ServerServiceConnection,
-	SessionAttachmentState,
-	SessionServiceConnection,
-} from "./services/connection.ts";
-import { Models, type Models as ModelsService } from "./services/models.ts";
+import type { ServerServiceConnection, SessionServiceConnection } from "./services/connection.ts";
+import { Models } from "./services/models.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
+import { Tui } from "./services/tui.ts";
 
 export interface RunClientTuiOptions extends OpenClientRuntimeOptions {
 	readonly facetLoader?: FacetLoader;
@@ -36,25 +33,13 @@ interface SessionPickerFeature {
 	readonly serverId: string;
 	readonly directory: SessionDirectory;
 	readonly management: SessionManagement;
-	readonly attachment: ReplicatedState<SessionAttachmentState>;
+	readonly session: SessionServiceConnection;
 }
 
 interface ModelSelectionFeature {
 	readonly serverId: string;
-	readonly models: ModelsService;
+	readonly models: Models;
 }
-
-interface Tui {
-	readonly attachment: ReplicatedState<SessionAttachmentState>;
-	whenAttached(sessionId: string, context: Context): Promise<void>;
-	whenDetached(context: Context): Promise<void>;
-	registerSessionPicker(feature: Omit<SessionPickerFeature, "serverId">): () => void;
-	registerModelSelection(feature: Omit<ModelSelectionFeature, "serverId">): () => void;
-	refresh(): void;
-	setStatus(status: string): void;
-}
-
-const Tui = defineService<Tui>("pi.local.tui", { rpc: false });
 
 type ClientTuiAction =
 	| { readonly kind: "attach"; readonly feature: SessionPickerFeature; readonly sessionId: string }
@@ -76,21 +61,9 @@ export const sessionPickerTuiFacet = defineFacet({
 	setup(env) {
 		const tui = env.use(Tui);
 		const directory = env.use(SessionDirectory);
-		const remoteManagement = env.use(SessionManagement);
-		const management: SessionManagement = {
-			create: (options, context) => remoteManagement.create(options, context),
-			remove: (sessionId, context) => remoteManagement.remove(sessionId, context),
-			async attach(sessionId, context) {
-				await remoteManagement.attach(sessionId, context);
-				await tui.whenAttached(sessionId, context);
-			},
-			async detach(context) {
-				await remoteManagement.detach(context);
-				await tui.whenDetached(context);
-			},
-		};
+		const management = env.use(SessionManagement);
 		env.onActivate(() => {
-			env.own(tui.registerSessionPicker({ directory, management, attachment: tui.attachment }));
+			env.own(tui.registerSessionPicker(directory, management));
 			env.own(directory.state.subscribe(tui.refresh));
 			env.own(
 				directory.events.subscribe((event) => {
@@ -101,7 +74,6 @@ export const sessionPickerTuiFacet = defineFacet({
 					);
 				}),
 			);
-			env.own(tui.attachment.subscribe(tui.refresh));
 		});
 	},
 });
@@ -112,7 +84,7 @@ export const modelSelectionTuiFacet = defineFacet({
 		const tui = env.use(Tui);
 		const models = env.use(Models);
 		env.onActivate(() => {
-			env.own(tui.registerModelSelection({ models }));
+			env.own(tui.registerModelSelection(models));
 			env.own(models.state.subscribe(tui.refresh));
 		});
 	},
@@ -125,7 +97,7 @@ export class ExperimentalClientTui implements Component {
 	readonly #requestRender: () => void;
 	readonly #finish: () => void;
 	readonly #container = new Container();
-	readonly #facetLoader: FacetLoader;
+	readonly #loadedFacets: LoadedFacets;
 	readonly #facetHosts: FacetHost[] = [];
 	readonly #sessionPickers = new Map<string, SessionPickerFeature>();
 	readonly #modelSelections = new Map<string, ModelSelectionFeature>();
@@ -135,13 +107,12 @@ export class ExperimentalClientTui implements Component {
 	#selectedServerId: string | undefined;
 	#status = "Select a Session or create one.";
 	#busy = false;
-	#loadedFacets: LoadedFacets | undefined;
 	#closePromise: Promise<void> | undefined;
 
-	private constructor(requestRender: () => void, finish: () => void, facetLoader: FacetLoader) {
+	private constructor(requestRender: () => void, finish: () => void, loadedFacets: LoadedFacets) {
 		this.#requestRender = requestRender;
 		this.#finish = finish;
-		this.#facetLoader = facetLoader;
+		this.#loadedFacets = loadedFacets;
 	}
 
 	static async create(options: {
@@ -150,11 +121,11 @@ export class ExperimentalClientTui implements Component {
 		requestRender(): void;
 		finish(): void;
 	}): Promise<ExperimentalClientTui> {
-		const facetLoader = combineFacetLoaders([
+		const loadedFacets = await combineFacetLoaders([
 			BUILTIN_TUI_FACET_LOADER,
 			...(options.facetLoader === undefined ? [] : [options.facetLoader]),
-		]);
-		const component = new ExperimentalClientTui(options.requestRender, options.finish, facetLoader);
+		]).load();
+		const component = new ExperimentalClientTui(options.requestRender, options.finish, loadedFacets);
 		try {
 			await component.#start(options.servers);
 			return component;
@@ -190,25 +161,28 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	async #start(servers: readonly ClientTuiServer[]): Promise<void> {
-		const loaded = await this.#facetLoader.load();
-		this.#loadedFacets = loaded;
 		for (const server of servers) {
 			const tuiRuntimeFacet = defineFacet({
 				id: "@pi/tui-runtime",
 				setup: (env) => {
 					env.provide(Tui, {
-						attachment: server.session.attachment,
-						whenAttached: (sessionId, context) => server.session.whenAttached(sessionId, context),
-						whenDetached: (context) => server.session.whenDetached(context),
-						registerSessionPicker: (feature) =>
-							this.#register(this.#sessionPickers, "Session picker", {
-								...feature,
+						registerSessionPicker: (directory, management) => {
+							const unregister = this.#register(this.#sessionPickers, "Session picker", {
 								serverId: server.serverId,
-							}),
-						registerModelSelection: (feature) =>
+								directory,
+								management,
+								session: server.session,
+							});
+							const unsubscribe = server.session.attachment.subscribe(() => this.#rebuild());
+							return () => {
+								unsubscribe();
+								unregister();
+							};
+						},
+						registerModelSelection: (models) =>
 							this.#register(this.#modelSelections, "Model selection", {
-								...feature,
 								serverId: server.serverId,
+								models,
 							}),
 						refresh: () => this.#rebuild(),
 						setStatus: (status) => {
@@ -219,7 +193,7 @@ export class ExperimentalClientTui implements Component {
 				},
 			});
 			const facetHost = await createFacetHost({
-				facets: [tuiRuntimeFacet, ...loaded.facets],
+				facets: [tuiRuntimeFacet, ...this.#loadedFacets.facets],
 				connections: [server.server, server.session],
 			});
 			this.#facetHosts.push(facetHost);
@@ -235,14 +209,10 @@ export class ExperimentalClientTui implements Component {
 				.map((host) => host.dispose()),
 		);
 		const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
-		const loaded = this.#loadedFacets;
-		this.#loadedFacets = undefined;
-		if (loaded !== undefined) {
-			try {
-				await loaded.dispose();
-			} catch (error) {
-				errors.push(error);
-			}
+		try {
+			await this.#loadedFacets.dispose();
+		} catch (error) {
+			errors.push(error);
 		}
 		if (errors.length === 1) throw errors[0];
 		if (errors.length > 1) throw new AggregateError(errors, "Failed to dispose experimental TUI facets");
@@ -306,7 +276,7 @@ export class ExperimentalClientTui implements Component {
 			items.push({ value: createKey, label: "+ New Session", description: feature.serverId });
 			for (const session of feature.directory.state.value?.sessions ?? []) {
 				const key = `session:${feature.serverId}:${session.sessionId}`;
-				const attachment = feature.attachment.value;
+				const attachment = feature.session.attachment.value;
 				const attached = attachment?.status === "attached" && attachment.sessionId === session.sessionId;
 				this.#actions.set(key, { kind: "attach", feature, sessionId: session.sessionId });
 				items.push({
@@ -378,8 +348,10 @@ export class ExperimentalClientTui implements Component {
 				this.#selectedServerId === undefined ? undefined : this.#sessionPickers.get(this.#selectedServerId);
 			if (selectedFeature !== undefined && selectedFeature !== action.feature) {
 				await selectedFeature.management.detach(BACKGROUND_CONTEXT);
+				await selectedFeature.session.whenDetached(BACKGROUND_CONTEXT);
 			}
 			await action.feature.management.attach(summary.sessionId, BACKGROUND_CONTEXT);
+			await action.feature.session.whenAttached(summary.sessionId, BACKGROUND_CONTEXT);
 			this.#selectedServerId = action.feature.serverId;
 			this.#screen = "models";
 			this.#status = `Attached ${summary.sessionId}. Select a model.`;
