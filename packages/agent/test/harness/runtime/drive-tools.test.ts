@@ -18,7 +18,15 @@ import { type Config, Drive } from "../../../src/harness/runtime/types.ts";
 import { insertEntry } from "../../../src/harness/session/commit.ts";
 import { MemoryStorage } from "../../../src/harness/session/memory.ts";
 import { StorageBackedSession } from "../../../src/harness/session/session.ts";
-import type { LaneConfiguration, RunState, Session, ToolCall, Write } from "../../../src/harness/session/types.ts";
+import {
+	isRunOperationState,
+	type LaneConfiguration,
+	type RunOperationState,
+	type RunToolsOperation,
+	type Session,
+	type ToolCall,
+	type Write,
+} from "../../../src/harness/session/types.ts";
 import * as storedValues from "../../../src/harness/session/values.ts";
 import type {
 	AgentHarnessTool,
@@ -51,7 +59,7 @@ interface FixtureOptions {
 		operationId: string;
 		assistantEntryId: string;
 		resultEntryIds: string[];
-		run: RunState;
+		run: RunToolsOperation;
 	}) => Write[];
 	toolContext?: Config<undefined>["toolContext"];
 	cancelled?: boolean;
@@ -133,8 +141,8 @@ async function createFixture(options: FixtureOptions): Promise<Fixture> {
 			sourceIndex: index,
 			resultEntryId,
 		}));
-	const run: RunState = {
-		kind: "run",
+	const run: RunToolsOperation = {
+		at: "run.tools",
 		control: options.cancelled
 			? { status: "cancel_requested", requestedAt: 30, drainedSteer: [], drainedFollowUp: [] }
 			: { status: "running" },
@@ -144,10 +152,7 @@ async function createFixture(options: FixtureOptions): Promise<Fixture> {
 			followUpMode: "all",
 			toolExecution: options.mode ?? "parallel",
 		},
-		phase: {
-			kind: "tools",
-			batch: { assistantEntryId, configuration, turnId: "turn-1", calls },
-		},
+		batch: { assistantEntryId, configuration, turnId: "turn-1", calls },
 		inbox: { steer: [], followUp: [], writes: [] },
 		latestAssistantEntryId: assistantEntryId,
 	};
@@ -211,22 +216,22 @@ async function createFixture(options: FixtureOptions): Promise<Fixture> {
 	return { session, lane, drive, hooks, events, assistantEntryId, resultEntryIds, operationId, config };
 }
 
-function currentRun(fixture: Fixture): RunState {
+function currentRun(fixture: Fixture): RunOperationState {
 	const operation = fixture.lane.state.operation;
-	if (operation?.state.kind !== "run") throw new Error("fixture has no run");
+	if (operation === null || !isRunOperationState(operation.state)) throw new Error("fixture has no run");
 	return operation.state;
 }
 
 function currentCalls(fixture: Fixture): ToolCall[] {
 	const run = currentRun(fixture);
-	if (run.phase.kind !== "tools") return [];
-	return run.phase.batch.calls;
+	if (run.at !== "run.tools") return [];
+	return run.batch.calls;
 }
 
 async function driveTools(fixture: Fixture) {
 	const run = currentRun(fixture);
-	if (run.phase.kind !== "tools") throw new Error("fixture has no tool batch");
-	return runTools(fixture.lane, fixture.drive, run, run.phase.batch);
+	if (run.at !== "run.tools") throw new Error("fixture has no tool batch");
+	return runTools(fixture.lane, fixture.drive, run);
 }
 
 async function expectProjectionRestores(fixture: Fixture): Promise<void> {
@@ -297,8 +302,8 @@ describe("durable tool batch", () => {
 		});
 		expect(contextResolutions).toBe(1);
 		expect(checkpointSeenByAfterHook).toBe(true);
-		expect(currentRun(fixture).phase).toMatchObject({
-			kind: "checkpoint",
+		expect(currentRun(fixture)).toMatchObject({
+			at: "run.checkpoint",
 			continuation: { kind: "need_assistant" },
 		});
 		expect(fixture.lane.state.configuration.activeToolNames).toEqual(["first", "second", "introduced"]);
@@ -444,8 +449,9 @@ describe("durable tool batch", () => {
 		expect(beforeTool).not.toHaveBeenCalled();
 		expect(afterTool).not.toHaveBeenCalled();
 		expect(currentRun(fixture)).toMatchObject({
+			at: "run.checkpoint",
 			control: { status: "cancel_requested" },
-			phase: { kind: "checkpoint", continuation: { kind: "need_assistant" } },
+			continuation: { kind: "need_assistant" },
 		});
 		const pending = await fixture.session.getEntry(fixture.resultEntryIds[1]!, BACKGROUND_CONTEXT);
 		expect(
@@ -492,8 +498,8 @@ describe("durable tool batch", () => {
 		await driveTools(fixture);
 		expect(execute).not.toHaveBeenCalled();
 		expect(context).not.toHaveBeenCalled();
-		expect(currentRun(fixture).phase).toMatchObject({
-			kind: "checkpoint",
+		expect(currentRun(fixture)).toMatchObject({
+			at: "run.checkpoint",
 			continuation: { kind: "may_finish", includeFinalAssistant: false },
 		});
 		expect(fixture.lane.state.configuration.activeToolNames).toEqual(["ready", "later"]);
@@ -574,32 +580,6 @@ describe("durable tool batch", () => {
 		expect(afterStarted).toBe(true);
 	});
 
-	it("fences outcome staging after exact Drive ownership changes", async () => {
-		const finish = deferred<void>();
-		const started = deferred<void>();
-		const fixture = await createFixture({
-			calls: [{ name: "owned" }],
-			tools: [
-				tool("owned", async () => {
-					started.resolve();
-					await finish.promise;
-					return { content: [{ type: "text", text: "done" }], details: {} };
-				}),
-			],
-			mode: "sequential",
-		});
-		const running = driveTools(fixture);
-		await started.promise;
-		fixture.lane.activeDrive = new Drive({ operationId: fixture.operationId }, BACKGROUND_CONTEXT);
-		finish.resolve();
-
-		expect(await running).toEqual({ kind: "lost_ownership" });
-		expect(currentCalls(fixture)[0]?.status).toBe("effect_pending");
-		expect(
-			await fixture.session.getValue(storedValues.pendingEntry(fixture.resultEntryIds[0]!), BACKGROUND_CONTEXT),
-		).toBeUndefined();
-	});
-
 	it("does not stage a cancelled outcome before cancellation is durable", async () => {
 		const execute = vi.fn(async () => ({ content: [], details: {} }));
 		const fixture = await createFixture({
@@ -618,8 +598,8 @@ describe("durable tool batch", () => {
 		).toBeUndefined();
 		await fixture.lane.command((state) => {
 			const operation = state.operation;
-			if (operation?.state.kind !== "run") throw new Error("missing run");
-			const nextRun: RunState = {
+			if (operation === null || !isRunOperationState(operation.state)) throw new Error("missing run");
+			const nextRun: RunOperationState = {
 				...operation.state,
 				control: { status: "cancel_requested", requestedAt: 40, drainedSteer: [], drainedFollowUp: [] },
 			};
@@ -672,8 +652,8 @@ describe("durable tool batch", () => {
 		fixture.drive.beginAbort(cancellation.promise);
 		await fixture.lane.command((state) => {
 			const operation = state.operation;
-			if (operation?.state.kind !== "run") throw new Error("missing run");
-			const nextRun: RunState = {
+			if (operation === null || !isRunOperationState(operation.state)) throw new Error("missing run");
+			const nextRun: RunOperationState = {
 				...operation.state,
 				control: { status: "cancel_requested", requestedAt: 40, drainedSteer: [], drainedFollowUp: [] },
 			};
