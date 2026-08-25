@@ -5,7 +5,7 @@ import { Client } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { runClient } from "../src/experimental/client.ts";
-import { openClientRuntime } from "../src/experimental/client-runtime.ts";
+import { activateBuiltinClientServices, openClientRuntime } from "../src/experimental/client-runtime.ts";
 import * as processRuntime from "../src/experimental/process.ts";
 import { activateServer, type RunningServer, startServer } from "../src/experimental/server.ts";
 import {
@@ -425,7 +425,7 @@ describe("experimental durable server composition", () => {
 			connect: { transport: "unix", path: runtime.socketPath },
 		});
 		try {
-			const server = clientRuntime.servers[0]!;
+			const server = await activateBuiltinClientServices(clientRuntime.servers[0]!);
 			await server.management.attach("demo-1", BACKGROUND_CONTEXT);
 
 			expect(server.session.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });

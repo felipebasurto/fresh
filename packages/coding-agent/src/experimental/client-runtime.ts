@@ -20,6 +20,9 @@ export interface ClientRuntimeServer {
 	readonly client: Client;
 	readonly server: ServerServices;
 	readonly session: SessionServices;
+}
+
+export interface ActivatedClientRuntimeServer extends ClientRuntimeServer {
 	readonly directory: SessionDirectory;
 	readonly management: SessionManagement;
 	readonly models: Models;
@@ -99,31 +102,10 @@ export async function openClientRuntime(
 				}));
 			activatedClient = undefined;
 			clients.push(client);
-			const server = createBuiltinServerServiceNamespace(client);
-			const session = createBuiltinSessionServiceNamespace(client);
+			const server = createBuiltinServerServiceNamespace(client, { deferred: true });
+			const session = createBuiltinSessionServiceNamespace(client, { deferred: true });
 			namespaces.push(server, session);
-			const sessionDirectory = server.use(SessionDirectory);
-			const remoteManagement = server.use(SessionManagement);
-			const management: SessionManagement = {
-				create: (options, context) => remoteManagement.create(options, context),
-				async remove(sessionId, context) {
-					const removesCurrentAttachment = client.attachment?.sessionId === sessionId;
-					await remoteManagement.remove(sessionId, context);
-					if (removesCurrentAttachment) await session.whenDetached(context);
-				},
-				async attach(sessionId, context) {
-					await remoteManagement.attach(sessionId, context);
-					await session.whenAttached(sessionId, context);
-				},
-				async detach(context) {
-					await remoteManagement.detach(context);
-					await session.whenDetached(context);
-				},
-			};
-			const models = session.use(Models);
-			const chat = session.use(Chat);
-			await Promise.all([server.ready(BACKGROUND_CONTEXT), session.ready(BACKGROUND_CONTEXT)]);
-			servers.push({ route, client, server, session, directory: sessionDirectory, management, models, chat });
+			servers.push({ route, client, server, session });
 		}
 		return { servers, dispose };
 	} catch (error) {
@@ -134,6 +116,34 @@ export async function openClientRuntime(
 		}
 		throw error;
 	}
+}
+
+/** Acquire and connect the built-in service facades used by the non-interactive client. */
+export async function activateBuiltinClientServices(
+	server: ClientRuntimeServer,
+): Promise<ActivatedClientRuntimeServer> {
+	const directory = server.server.use(SessionDirectory);
+	const remoteManagement = server.server.use(SessionManagement);
+	const management: SessionManagement = {
+		create: (options, context) => remoteManagement.create(options, context),
+		async remove(sessionId, context) {
+			const removesCurrentAttachment = server.client.attachment?.sessionId === sessionId;
+			await remoteManagement.remove(sessionId, context);
+			if (removesCurrentAttachment) await server.session.whenDetached(context);
+		},
+		async attach(sessionId, context) {
+			await remoteManagement.attach(sessionId, context);
+			await server.session.whenAttached(sessionId, context);
+		},
+		async detach(context) {
+			await remoteManagement.detach(context);
+			await server.session.whenDetached(context);
+		},
+	};
+	const models = server.session.use(Models);
+	const chat = server.session.use(Chat);
+	await Promise.all([server.server.activate(BACKGROUND_CONTEXT), server.session.activate(BACKGROUND_CONTEXT)]);
+	return { ...server, directory, management, models, chat };
 }
 
 function routeFromExplicitPath(path: string): UnixServerRoute {

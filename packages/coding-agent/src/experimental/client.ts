@@ -1,7 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import type { LaneEvent, PromptMessage, SessionAddress } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
-import { openClientRuntime } from "./client-runtime.ts";
+import { activateBuiltinClientServices, openClientRuntime } from "./client-runtime.ts";
 import type { ChatPromptResponse } from "./services/chat.ts";
 
 export type ClientResult =
@@ -23,7 +23,7 @@ export interface RunClientOptions {
 export async function runClient(command: ClientCommand, options: RunClientOptions = {}): Promise<ClientResult> {
 	const runtime = await openClientRuntime(command, { directory: options.directory });
 	try {
-		const discovered = runtime.servers;
+		const discovered = await Promise.all(runtime.servers.map(activateBuiltinClientServices));
 		let sessionId = command.sessionId;
 		if (sessionId === undefined && command.prompt === undefined) {
 			return {

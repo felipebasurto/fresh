@@ -5,14 +5,14 @@ import {
 	type RunResult as HarnessRunResult,
 	InvalidMessage,
 	LaneBusy,
-	RemoteServiceProvider,
 	ServiceSliceNotImplemented,
 	UnknownSkill,
 	UnknownTemplate,
 } from "@earendil-works/pi-agent-core";
 import { describe, expect, test, vi } from "vitest";
-import { Chat } from "../src/experimental/services/chat.ts";
-import { provideChatService, toChatPromptResponse } from "../src/experimental/services/chat-provider.ts";
+import { assembleFacetServices } from "../src/experimental/facets.ts";
+import { chatServiceFacet, toChatPromptResponse } from "../src/experimental/services/chat-provider.ts";
+import type { SessionFacetAttributes } from "../src/experimental/services/session-facet.ts";
 
 const admissionErrors = [
 	[
@@ -51,17 +51,20 @@ describe("Chat service", () => {
 				followUp: [],
 			},
 		}));
-		const provider = new RemoteServiceProvider([Chat]);
-		provideChatService(provider, { prompt, requestAbort } as unknown as AgentHarness);
+		const harness = { prompt, requestAbort } as unknown as AgentHarness;
+		const generation = await assembleFacetServices<SessionFacetAttributes>({
+			facets: [chatServiceFacet],
+			attributes: { harness, modelRuntime: undefined },
+		});
 		try {
 			await expect(
-				provider.invoke(
+				generation.provider.invoke(
 					{ serviceId: "pi.chat", member: "prompt", args: [{ message: "hello", images: null }] },
 					BACKGROUND_CONTEXT,
 				),
 			).resolves.toEqual({ accepted: true, operationId: "operation-1", error: null });
 			await expect(
-				provider.invoke(
+				generation.provider.invoke(
 					{ serviceId: "pi.chat", member: "requestAbort", args: ["operation-1"] },
 					BACKGROUND_CONTEXT,
 				),
@@ -69,13 +72,13 @@ describe("Chat service", () => {
 			expect(prompt).toHaveBeenCalledWith("hello", undefined, BACKGROUND_CONTEXT);
 			expect(requestAbort).toHaveBeenCalledWith("operation-1", BACKGROUND_CONTEXT);
 			await expect(
-				provider.invoke(
+				generation.provider.invoke(
 					{ serviceId: "pi.chat", member: "steer", args: [{ message: "later", images: null }] },
 					BACKGROUND_CONTEXT,
 				),
 			).rejects.toBeInstanceOf(ServiceSliceNotImplemented);
 		} finally {
-			provider.dispose();
+			await generation.dispose();
 		}
 	});
 

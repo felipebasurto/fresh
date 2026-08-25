@@ -1,9 +1,8 @@
-import {
-	type AgentHarness,
-	type Context,
-	type ServiceProviderUpdate as CoreServiceProviderUpdate,
-	RemoteServiceProvider,
-	type ServiceProviderSubscription,
+import type {
+	AgentHarness,
+	Context,
+	ServiceProviderUpdate as CoreServiceProviderUpdate,
+	ServiceProviderSubscription,
 } from "@earendil-works/pi-agent-core";
 import {
 	decodeServiceControlCall,
@@ -16,10 +15,11 @@ import {
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import type { ModelRuntime } from "../../core/model-runtime.ts";
-import { provideChatService } from "./chat-provider.ts";
-import { provideModelsService } from "./models-provider.ts";
-import { BUILTIN_SESSION_SERVICES } from "./session-builtins.ts";
-import { provideBuiltinServiceStubs } from "./stubs-provider.ts";
+import { assembleFacetServices } from "../facets.ts";
+import { chatServiceFacet } from "./chat-provider.ts";
+import { modelsServiceFacet } from "./models-provider.ts";
+import type { SessionFacet, SessionFacetAttributes } from "./session-facet.ts";
+import { accountsServiceFacet, transcriptServiceFacet } from "./stubs-provider.ts";
 
 export const ServiceOperationResultSchema = Type.Object(
 	{ result: Type.Optional(JsonValueSchema) },
@@ -30,8 +30,7 @@ export type ServiceOperationResult = Static<typeof ServiceOperationResultSchema>
 export interface SessionWorkerRuntime {
 	readonly harness: AgentHarness;
 	readonly modelRuntime?: ModelRuntime;
-	readonly serviceTokens?: readonly { readonly id: string }[];
-	configureServices?(provider: RemoteServiceProvider): void | Promise<void>;
+	readonly facets?: readonly SessionFacet[];
 }
 
 export interface WorkerServiceScope {
@@ -47,26 +46,27 @@ interface WorkerServiceSubscription {
 export interface SessionWorkerServices {
 	invoke(call: ProtocolRpcCall, scope: WorkerServiceScope, context: Context): Promise<JsonValue | undefined>;
 	removeSubscriptions(matches: (scope: WorkerServiceScope) => boolean): void;
-	dispose(): void;
+	dispose(): Promise<void>;
 }
+
+const BUILTIN_SESSION_FACETS = [
+	chatServiceFacet,
+	modelsServiceFacet,
+	accountsServiceFacet,
+	transcriptServiceFacet,
+] satisfies readonly SessionFacet[];
 
 export async function createSessionWorkerServices(options: {
 	readonly harness: AgentHarness;
 	readonly modelRuntime: ModelRuntime | undefined;
-	readonly serviceTokens: readonly { readonly id: string }[];
-	readonly configureServices: ((provider: RemoteServiceProvider) => void | Promise<void>) | undefined;
+	readonly facets: readonly SessionFacet[];
 	publish(scope: WorkerServiceScope, subscriptionId: string, update: ProtocolServiceProviderUpdate): Promise<void>;
 }): Promise<SessionWorkerServices> {
-	const provider = new RemoteServiceProvider([...BUILTIN_SESSION_SERVICES, ...options.serviceTokens]);
-	try {
-		provideChatService(provider, options.harness);
-		await provideModelsService(provider, options.harness, options.modelRuntime);
-		provideBuiltinServiceStubs(provider);
-		await options.configureServices?.(provider);
-	} catch (error) {
-		provider.dispose();
-		throw error;
-	}
+	const facetServices = await assembleFacetServices<SessionFacetAttributes>({
+		facets: [...BUILTIN_SESSION_FACETS, ...options.facets],
+		attributes: { harness: options.harness, modelRuntime: options.modelRuntime },
+	});
+	const provider = facetServices.provider;
 
 	const subscriptions = new Map<string, WorkerServiceSubscription>();
 	const removeSubscriptions = (matches: (scope: WorkerServiceScope) => boolean): void => {
@@ -101,9 +101,9 @@ export async function createSessionWorkerServices(options: {
 			return provider.invoke(call, context);
 		},
 		removeSubscriptions,
-		dispose() {
+		async dispose() {
 			removeSubscriptions(() => true);
-			provider.dispose();
+			await facetServices.dispose();
 		},
 	};
 }

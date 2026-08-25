@@ -521,7 +521,7 @@ async function closeResources(resources: {
 }): Promise<void> {
 	const errors: unknown[] = [];
 	try {
-		resources.services?.dispose();
+		await resources.services?.dispose();
 	} catch (error) {
 		errors.push(error);
 	}
@@ -578,14 +578,11 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 		session = await repo.open(metadata, TODO_CONTEXT);
 		const created = await createHarness(session, options, executionEnv);
 		const runtime: SessionWorkerRuntime = "harness" in created ? created : { harness: created };
-		const configureServices = runtime.configureServices;
 		harness = runtime.harness;
 		services = await createSessionWorkerServices({
 			harness,
 			modelRuntime: runtime.modelRuntime,
-			serviceTokens: runtime.serviceTokens ?? [],
-			configureServices:
-				configureServices === undefined ? undefined : (provider) => configureServices.call(runtime, provider),
+			facets: runtime.facets ?? [],
 			publish: (scope, subscriptionId, update) =>
 				control.send({
 					type: "service_event",

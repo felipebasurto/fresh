@@ -26,10 +26,12 @@ export type SessionAttachmentState =
 
 export interface ServerServices extends RemoteServiceNamespaceApi {
 	readonly connection: ReplicatedState<ServerConnectionState>;
+	activate(context: Context): Promise<void>;
 }
 
 export interface SessionServices extends RemoteServiceNamespaceApi {
 	readonly attachment: ReplicatedState<SessionAttachmentState>;
+	activate(context: Context): Promise<void>;
 	/** Wait for the exact current attachment generation to finish hydrating. */
 	whenAttached(sessionId: string, context: Context): Promise<void>;
 	/** Wait for the detached namespace to finish releasing its prior binding. */
@@ -39,6 +41,7 @@ export interface SessionServices extends RemoteServiceNamespaceApi {
 export interface ServiceNamespaceOptions {
 	readonly services: readonly { readonly id: string }[];
 	readonly onError?: (error: Error) => void;
+	readonly deferred?: boolean;
 }
 
 class ServerServiceNamespace extends RemoteServiceNamespace implements ServerServices {
@@ -47,15 +50,18 @@ class ServerServiceNamespace extends RemoteServiceNamespace implements ServerSer
 	readonly #onError: ((error: Error) => void) | undefined;
 	#transition = Promise.resolve();
 	#connectionAttempt: number;
+	#enabled: boolean;
 
 	constructor(client: Client, connection: RemoteServiceConnection, options: ServiceNamespaceOptions) {
+		const enabled = options.deferred !== true;
 		super({
 			services: options.services,
 			connection,
-			bound: client.connected,
+			bound: enabled && client.connected,
 			...(options.onError === undefined ? {} : { onError: options.onError }),
 		});
 		this.#onError = options.onError;
+		this.#enabled = enabled;
 		this.#connectionAttempt = client.connectionState === "connecting" ? 1 : 0;
 		const connectionState = remoteState<ServerConnectionState>(
 			toServerConnectionState(client, this.#connectionAttempt),
@@ -64,10 +70,21 @@ class ServerServiceNamespace extends RemoteServiceNamespace implements ServerSer
 		this.#removeConnectionListener = client.onConnectionStateChange(({ state, error }) => {
 			if (state === "connecting") this.#connectionAttempt += 1;
 			connectionState.set(toServerConnectionState(client, this.#connectionAttempt, error), BACKGROUND_CONTEXT);
+			if (!this.#enabled) return;
 			this.#transition = this.#transition
 				.then(() => this.rebind(state === "connected", BACKGROUND_CONTEXT))
 				.catch((transitionError: unknown) => this.#onError?.(toError(transitionError)));
 		});
+	}
+
+	async activate(context: Context): Promise<void> {
+		if (!this.#enabled) {
+			this.#enabled = true;
+			this.#transition = this.#transition.then(() =>
+				this.rebind(this.connection.value?.status === "connected", context),
+			);
+		}
+		await this.ready(context);
 	}
 
 	override async ready(context: Context): Promise<void> {
@@ -94,16 +111,19 @@ class SessionServiceNamespace extends RemoteServiceNamespace implements SessionS
 	readonly #onError: ((error: Error) => void) | undefined;
 	readonly #transitions = new Set<Promise<void>>();
 	#attachmentRevision = 0;
+	#enabled: boolean;
 
 	constructor(client: Client, connection: RemoteServiceConnection, options: ServiceNamespaceOptions) {
+		const enabled = options.deferred !== true;
 		super({
 			services: options.services,
 			connection,
-			bound: client.attachment !== undefined,
+			bound: enabled && client.attachment !== undefined,
 			...(options.onError === undefined ? {} : { onError: options.onError }),
 		});
 		this.#client = client;
 		this.#onError = options.onError;
+		this.#enabled = enabled;
 		this.#attachmentState = remoteState<SessionAttachmentState>(
 			client.attachment === undefined
 				? { status: "detached" }
@@ -112,11 +132,14 @@ class SessionServiceNamespace extends RemoteServiceNamespace implements SessionS
 		this.attachment = this.#attachmentState;
 		this.#removeAttachmentListener = client.onAttachmentChange((attachment) => {
 			const revision = ++this.#attachmentRevision;
-			const transition = this.rebind(attachment !== undefined, BACKGROUND_CONTEXT);
-			this.#transitions.add(transition);
 			if (attachment !== undefined) {
 				this.#attachmentState.set({ status: "attaching", sessionId: attachment.sessionId }, BACKGROUND_CONTEXT);
+			} else if (!this.#enabled) {
+				this.#attachmentState.set({ status: "detached" }, BACKGROUND_CONTEXT);
 			}
+			if (!this.#enabled) return;
+			const transition = this.rebind(attachment !== undefined, BACKGROUND_CONTEXT);
+			this.#transitions.add(transition);
 			void transition.then(
 				() => {
 					this.#transitions.delete(transition);
@@ -145,6 +168,16 @@ class SessionServiceNamespace extends RemoteServiceNamespace implements SessionS
 				},
 			);
 		});
+	}
+
+	async activate(context: Context): Promise<void> {
+		if (!this.#enabled) {
+			this.#enabled = true;
+			const transition = this.rebind(this.#client.attachment !== undefined, context);
+			this.#transitions.add(transition);
+			await transition.finally(() => this.#transitions.delete(transition));
+		}
+		await this.ready(context);
 	}
 
 	override async ready(context: Context): Promise<void> {
