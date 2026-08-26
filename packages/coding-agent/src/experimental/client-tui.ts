@@ -3,6 +3,7 @@ import type { SessionSummary } from "@earendil-works/pi-protocol";
 import {
 	type Component,
 	Container,
+	Input,
 	ProcessTerminal,
 	type SelectItem,
 	SelectList,
@@ -14,6 +15,7 @@ import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runtime.ts";
 import { combineFacetLoaders, createStaticFacetLoader, type FacetLoader, type LoadedFacets } from "./facet-loader.ts";
 import { createFacetHost, defineFacet, type FacetHost } from "./facets.ts";
+import { Chat } from "./services/chat.ts";
 import type { ServerServiceConnection, SessionServiceConnection } from "./services/connection.ts";
 import { Models } from "./services/models.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
@@ -39,6 +41,11 @@ interface SessionPickerFeature {
 interface ModelSelectionFeature {
 	readonly serverId: string;
 	readonly models: Models;
+}
+
+interface ChatFeature {
+	readonly serverId: string;
+	readonly chat: Chat;
 }
 
 type ClientTuiAction =
@@ -81,9 +88,18 @@ export const modelSelectionTuiFacet = defineFacet({
 	},
 });
 
-const BUILTIN_TUI_FACET_LOADER = createStaticFacetLoader([sessionPickerTuiFacet, modelSelectionTuiFacet]);
+export const chatTuiFacet = defineFacet({
+	id: "@pi/chat-input",
+	setup(env) {
+		const tui = env.use(Tui);
+		const chat = env.use(Chat);
+		env.onActivate(() => env.own(tui.registerChat(chat)));
+	},
+});
 
-/** Minimal service-only presentation used before Harness execution is available. */
+const BUILTIN_TUI_FACET_LOADER = createStaticFacetLoader([sessionPickerTuiFacet, modelSelectionTuiFacet, chatTuiFacet]);
+
+/** Minimal service-only presentation for Session selection, model selection, and turns. */
 export class ExperimentalClientTui implements Component {
 	readonly #requestRender: () => void;
 	readonly #finish: () => void;
@@ -92,9 +108,11 @@ export class ExperimentalClientTui implements Component {
 	readonly #facetHosts: FacetHost[] = [];
 	readonly #sessionPickers = new Map<string, SessionPickerFeature>();
 	readonly #modelSelections = new Map<string, ModelSelectionFeature>();
+	readonly #chats = new Map<string, ChatFeature>();
 	readonly #actions = new Map<string, ClientTuiAction>();
+	readonly #chatInput = new Input();
 	#selectList: SelectList | undefined;
-	#screen: "sessions" | "models" = "sessions";
+	#screen: "sessions" | "models" | "chat" = "sessions";
 	#selectedServerId: string | undefined;
 	#status = "Select a Session or create one.";
 	#busy = false;
@@ -104,6 +122,12 @@ export class ExperimentalClientTui implements Component {
 		this.#requestRender = requestRender;
 		this.#finish = finish;
 		this.#loadedFacets = loadedFacets;
+		this.#chatInput.onSubmit = (message) => void this.#runPrompt(message);
+		this.#chatInput.onEscape = () => {
+			this.#screen = "models";
+			this.#status = "Select a model.";
+			this.#rebuild();
+		};
 	}
 
 	static async create(options: {
@@ -135,7 +159,13 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (!this.#busy) this.#selectList?.handleInput(data);
+		if (this.#busy) return;
+		if (this.#screen === "chat") {
+			this.#chatInput.handleInput(data);
+			this.#requestRender();
+			return;
+		}
+		this.#selectList?.handleInput(data);
 	}
 
 	invalidate(): void {
@@ -174,6 +204,11 @@ export class ExperimentalClientTui implements Component {
 							this.#register(this.#modelSelections, "Model selection", {
 								serverId: server.serverId,
 								models,
+							}),
+						registerChat: (chat) =>
+							this.#register(this.#chats, "Chat", {
+								serverId: server.serverId,
+								chat,
 							}),
 						refresh: () => this.#rebuild(),
 						setStatus: (status) => {
@@ -230,32 +265,45 @@ export class ExperimentalClientTui implements Component {
 	#rebuild(): void {
 		this.#container.clear();
 		this.#actions.clear();
-		const title = this.#screen === "sessions" ? "Experimental Sessions" : "Experimental Models";
+		const title =
+			this.#screen === "sessions"
+				? "Experimental Sessions"
+				: this.#screen === "models"
+					? "Experimental Models"
+					: "Experimental Chat";
 		this.#container.addChild(new Text(chalk.bold(title), 1, 1));
 		this.#container.addChild(new Text(this.#status, 1, 0));
-		const items = this.#screen === "sessions" ? this.#sessionItems() : this.#modelItems();
-		this.#selectList = new SelectList(items, Math.min(Math.max(items.length, 1), 12), selectTheme);
-		this.#selectList.onSelect = (item) => {
-			const action = this.#actions.get(item.value);
-			if (action !== undefined) void this.#runAction(action);
-		};
-		this.#selectList.onCancel = () => {
-			if (this.#screen === "models") {
-				this.#screen = "sessions";
-				this.#status = "Select a Session or create one.";
-				this.#rebuild();
-			} else {
-				this.#finish();
-			}
-		};
-		this.#container.addChild(this.#selectList);
-		this.#container.addChild(
-			new Text(
-				chalk.dim(this.#screen === "sessions" ? "enter select · esc quit" : "enter select · esc sessions"),
-				1,
-				1,
-			),
-		);
+		if (this.#screen === "chat") {
+			this.#selectList = undefined;
+			this.#chatInput.focused = !this.#busy;
+			this.#container.addChild(this.#chatInput);
+			this.#container.addChild(new Text(chalk.dim(this.#busy ? "running turn…" : "enter send · esc models"), 1, 1));
+		} else {
+			this.#chatInput.focused = false;
+			const items = this.#screen === "sessions" ? this.#sessionItems() : this.#modelItems();
+			this.#selectList = new SelectList(items, Math.min(Math.max(items.length, 1), 12), selectTheme);
+			this.#selectList.onSelect = (item) => {
+				const action = this.#actions.get(item.value);
+				if (action !== undefined) void this.#runAction(action);
+			};
+			this.#selectList.onCancel = () => {
+				if (this.#screen === "models") {
+					this.#screen = "sessions";
+					this.#status = "Select a Session or create one.";
+					this.#rebuild();
+				} else {
+					this.#finish();
+				}
+			};
+			this.#container.addChild(this.#selectList);
+			this.#container.addChild(
+				new Text(
+					chalk.dim(this.#screen === "sessions" ? "enter select · esc quit" : "enter select · esc sessions"),
+					1,
+					1,
+				),
+			);
+		}
 		this.#requestRender();
 	}
 
@@ -326,7 +374,8 @@ export class ExperimentalClientTui implements Component {
 					this.#selectedServerId === undefined ? undefined : this.#modelSelections.get(this.#selectedServerId);
 				if (feature === undefined) throw new Error("No Session model selection is available");
 				await feature.models.select({ provider: action.provider, modelId: action.modelId }, BACKGROUND_CONTEXT);
-				this.#status = `Selected ${action.provider}/${action.modelId}`;
+				this.#screen = "chat";
+				this.#status = `Selected ${action.provider}/${action.modelId}. Enter a prompt.`;
 				return;
 			}
 			const summary =
@@ -346,6 +395,35 @@ export class ExperimentalClientTui implements Component {
 			this.#selectedServerId = action.feature.serverId;
 			this.#screen = "models";
 			this.#status = `Attached ${summary.sessionId}. Select a model.`;
+		} catch (error) {
+			this.#status = `Error: ${error instanceof Error ? error.message : String(error)}`;
+		} finally {
+			this.#busy = false;
+			this.#rebuild();
+		}
+	}
+
+	async #runPrompt(message: string): Promise<void> {
+		if (this.#busy) return;
+		const prompt = message.trim();
+		if (prompt.length === 0) {
+			this.#status = "Enter a prompt.";
+			this.#rebuild();
+			return;
+		}
+		this.#busy = true;
+		this.#chatInput.setValue("");
+		this.#status = "Running turn…";
+		this.#rebuild();
+		try {
+			const feature = this.#selectedServerId === undefined ? undefined : this.#chats.get(this.#selectedServerId);
+			if (feature === undefined) throw new Error("No Session Chat service is available");
+			const response = await feature.chat.prompt({ message: prompt, images: null }, BACKGROUND_CONTEXT);
+			this.#status = response.accepted
+				? response.error === null
+					? `Turn ${response.operationId} completed.`
+					: `Turn failed: ${response.error.message}`
+				: `Prompt rejected: ${response.error.message}`;
 		} catch (error) {
 			this.#status = `Error: ${error instanceof Error ? error.message : String(error)}`;
 		} finally {

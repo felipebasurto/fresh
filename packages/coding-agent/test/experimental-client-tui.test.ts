@@ -1,4 +1,5 @@
 import {
+	type AgentLane,
 	BACKGROUND_CONTEXT,
 	createLoopbackServiceConnection,
 	RemoteServiceNamespace,
@@ -10,6 +11,8 @@ import { describe, expect, test, vi } from "vitest";
 import { type ClientTuiServer, ExperimentalClientTui } from "../src/experimental/client-tui.ts";
 import type { FacetLoader } from "../src/experimental/facet-loader.ts";
 import { defineFacet } from "../src/experimental/facets.ts";
+import { Chat } from "../src/experimental/services/chat.ts";
+import { createChatService } from "../src/experimental/services/chat-provider.ts";
 import type {
 	ServerConnectionState,
 	ServerServiceConnection,
@@ -31,7 +34,7 @@ function session(sessionId: string, createdAt: number): SessionSummary {
 }
 
 describe("experimental client TUI", () => {
-	test("creates and switches Sessions, then selects a model through facet service handles", async () => {
+	test("creates a Session, selects a model, and runs a turn through facet service handles", async () => {
 		const directoryState = replicatedState<SessionDirectoryState>({ revision: 1, sessions: [session("one", 1)] });
 		const attachment = replicatedState<SessionAttachmentState>({ status: "detached" });
 		const modelsState = replicatedState<ModelsState>({
@@ -56,6 +59,15 @@ describe("experimental client TUI", () => {
 				BACKGROUND_CONTEXT,
 			);
 		});
+		const prompt = vi.fn(async () => ({
+			ok: true as const,
+			value: {
+				operation: "run" as const,
+				kind: "completed" as const,
+				runId: "run-1",
+				tipId: "entry-1",
+			},
+		}));
 
 		const serverProvider = new RemoteServiceProvider([SessionDirectory, SessionManagement]);
 		serverProvider.provide(SessionDirectory, { state: directoryState });
@@ -69,13 +81,14 @@ describe("experimental client TUI", () => {
 				attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);
 			},
 		});
-		const sessionProvider = new RemoteServiceProvider([Models]);
+		const sessionProvider = new RemoteServiceProvider([Models, Chat]);
 		sessionProvider.provide(Models, {
 			state: modelsState,
 			async cycleThinking() {},
 			async refresh() {},
 			select,
 		});
+		sessionProvider.provide(Chat, createChatService({ prompt } as unknown as AgentLane));
 
 		const serverNamespace = new RemoteServiceNamespace({
 			services: [SessionDirectory, SessionManagement],
@@ -97,7 +110,7 @@ describe("experimental client TUI", () => {
 			},
 		});
 		const sessionNamespace = new RemoteServiceNamespace({
-			services: [Models],
+			services: [Models, Chat],
 			connection: createLoopbackServiceConnection(sessionProvider),
 			bound: false,
 		});
@@ -166,8 +179,17 @@ describe("experimental client TUI", () => {
 				expect(select).toHaveBeenCalledWith({ provider: "test", modelId: "two" }, expect.anything()),
 			);
 			expect(modelsState.value.configuration.model).toEqual({ provider: "test", modelId: "two" });
-			await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("Selected test/two"));
+			await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("Experimental Chat"));
+			expect(component.render(80).join("\n")).toContain("Selected test/two");
 
+			component.handleInput("hello");
+			expect(component.render(80).join("\n")).toContain("hello");
+			component.handleInput("\r");
+			await vi.waitFor(() => expect(prompt).toHaveBeenCalledWith("hello", undefined, expect.anything()));
+			await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("Turn run-1 completed."));
+
+			component.handleInput("\u001b");
+			expect(component.render(80).join("\n")).toContain("Experimental Models");
 			component.handleInput("\u001b");
 			expect(component.render(80).join("\n")).toContain("Experimental Sessions");
 			component.handleInput("\u001b");
