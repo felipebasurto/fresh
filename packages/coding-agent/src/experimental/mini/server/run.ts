@@ -7,6 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 // Narrow entries: the server routes and lists sessions, it never runs an agent.
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core/harness/context";
@@ -16,7 +17,8 @@ import { type SessionSummary, Sessions, type SessionsServiceApi, Worker } from "
 import { createPeer, type RpcPeer } from "../shared/rpc.ts";
 import { childConnection, type Transport } from "../shared/transport.ts";
 
-const WORKER_ENTRY = fileURLToPath(new URL("../worker/entry.ts", import.meta.url));
+const SELF_EXTENSION = extname(fileURLToPath(import.meta.url));
+const WORKER_ENTRY = fileURLToPath(new URL(`../worker/entry${SELF_EXTENSION}`, import.meta.url));
 const WORKER_START_TIMEOUT_MS = 30_000;
 /** Grace period before an idle server retires, so a reconnecting presentation does not race it. */
 const IDLE_SHUTDOWN_MS = 10_000;

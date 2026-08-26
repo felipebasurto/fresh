@@ -4,14 +4,15 @@
 
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../../../config.ts";
 import { socketTransport, type Transport } from "../shared/transport.ts";
 import { connect, listSessions } from "./session.ts";
 import { runView } from "./view.ts";
 
-const SERVER_ENTRY = fileURLToPath(new URL("../server/entry.ts", import.meta.url));
+const SELF_EXTENSION = extname(fileURLToPath(import.meta.url));
+const SERVER_ENTRY = fileURLToPath(new URL(`../server/entry${SELF_EXTENSION}`, import.meta.url));
 const SERVER_START_TIMEOUT_MS = 10_000;
 
 export interface TuiOptions {

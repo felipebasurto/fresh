@@ -28,6 +28,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { getAgentDir } from "../../../config.ts";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
+import { createAllToolRenderers } from "../../../core/tools/renderers/index.ts";
 import { AssistantMessageComponent } from "../../../modes/interactive/components/assistant-message.ts";
 import { CustomEditor } from "../../../modes/interactive/components/custom-editor.ts";
 import { DynamicBorder } from "../../../modes/interactive/components/dynamic-border.ts";
@@ -42,7 +43,7 @@ import {
 	type StatusIndicator,
 	WorkingStatusIndicator,
 } from "../../../modes/interactive/components/status-indicator.ts";
-import { ToolExecutionComponent } from "../../../modes/interactive/components/tool-execution.ts";
+import { ToolExecutionComponent, type ToolRenderers } from "../../../modes/interactive/components/tool-execution.ts";
 import { UserMessageComponent } from "../../../modes/interactive/components/user-message.ts";
 import { getEditorTheme, initTheme, theme } from "../../../modes/interactive/theme/theme.ts";
 import type { AuthPromptRequest, CommandResult, ProviderAccount } from "../shared/protocol.ts";
@@ -338,6 +339,9 @@ class MiniTui {
 		}
 	}
 
+	/** Built-in renderers, without the tool implementations or their schemas. */
+	static readonly #renderers: Record<string, ToolRenderers> = createAllToolRenderers();
+
 	/** Get or create the component for a tool call; omit `args` to look up without overwriting them. */
 	#tool(toolName: string, toolCallId: string, args?: unknown): ToolExecutionComponent {
 		const existing = this.#tools.get(toolCallId);
@@ -350,7 +354,7 @@ class MiniTui {
 			toolCallId,
 			args ?? {},
 			{},
-			undefined,
+			MiniTui.#renderers[toolName],
 			this.#ui,
 			this.#cwd,
 		);
