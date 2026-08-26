@@ -9,7 +9,7 @@ import {
 	RemoteServiceNamespace,
 	type RemoteServices,
 	type ReplicatedState,
-	remoteState,
+	replicatedState,
 } from "@earendil-works/pi-agent-core";
 import type { Client } from "@earendil-works/pi-client";
 import type {
@@ -115,7 +115,7 @@ class ServerServiceConnectionImpl implements ServerServiceConnection {
 		this.#remoteConnection = createRemoteServiceConnection(client, () => ({ serverId: client.serverId }));
 		this.#onError = options.onError ?? (() => {});
 		this.#connectionAttempt = client.connectionState === "connecting" ? 1 : 0;
-		const connectionState = remoteState<ServerConnectionState>(
+		const connectionState = replicatedState<ServerConnectionState>(
 			toServerConnectionState(client, this.#connectionAttempt),
 		);
 		this.connection = connectionState;
@@ -192,7 +192,7 @@ class SessionServiceConnectionImpl implements SessionServiceConnection {
 		this.#client = client;
 		this.#remoteConnection = createRemoteServiceConnection(client, () => client.attachment);
 		this.#onError = options.onError ?? (() => {});
-		this.#attachmentState = remoteState<SessionAttachmentState>(
+		this.#attachmentState = replicatedState<SessionAttachmentState>(
 			client.attachment === undefined
 				? { status: "detached" }
 				: { status: "attaching", sessionId: client.attachment.sessionId },

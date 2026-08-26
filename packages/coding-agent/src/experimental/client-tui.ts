@@ -65,15 +65,6 @@ export const sessionPickerTuiFacet = defineFacet({
 		env.onActivate(() => {
 			env.own(tui.registerSessionPicker(directory, management));
 			env.own(directory.state.subscribe(tui.refresh));
-			env.own(
-				directory.events.subscribe((event) => {
-					tui.setStatus(
-						event.type === "deleted"
-							? `Session removed: ${event.sessionId}`
-							: `Session ${event.type}: ${event.session.sessionId}`,
-					);
-				}),
-			);
 		});
 	},
 });

@@ -3,8 +3,7 @@ import {
 	createLoopbackServiceConnection,
 	RemoteServiceNamespace,
 	RemoteServiceProvider,
-	remoteEvents,
-	remoteState,
+	replicatedState,
 } from "@earendil-works/pi-agent-core";
 import type { SessionSummary } from "@earendil-works/pi-protocol";
 import { describe, expect, test, vi } from "vitest";
@@ -20,7 +19,6 @@ import type {
 import { Models, type ModelsState } from "../src/experimental/services/models.ts";
 import {
 	SessionDirectory,
-	type SessionDirectoryEvent,
 	type SessionDirectoryState,
 	SessionManagement,
 } from "../src/experimental/services/sessions.ts";
@@ -34,10 +32,9 @@ function session(sessionId: string, createdAt: number): SessionSummary {
 
 describe("experimental client TUI", () => {
 	test("creates and switches Sessions, then selects a model through facet service handles", async () => {
-		const directoryState = remoteState<SessionDirectoryState>({ revision: 1, sessions: [session("one", 1)] });
-		const directoryEvents = remoteEvents<SessionDirectoryEvent>();
-		const attachment = remoteState<SessionAttachmentState>({ status: "detached" });
-		const modelsState = remoteState<ModelsState>({
+		const directoryState = replicatedState<SessionDirectoryState>({ revision: 1, sessions: [session("one", 1)] });
+		const attachment = replicatedState<SessionAttachmentState>({ status: "detached" });
+		const modelsState = replicatedState<ModelsState>({
 			catalog: {
 				revision: 1,
 				availableModels: [
@@ -51,7 +48,6 @@ describe("experimental client TUI", () => {
 		const create = vi.fn(async () => {
 			const created = session("two", 2);
 			directoryState.set({ revision: 2, sessions: [...directoryState.value.sessions, created] }, BACKGROUND_CONTEXT);
-			directoryEvents.emit({ type: "created", session: created }, BACKGROUND_CONTEXT);
 			return created;
 		});
 		const select = vi.fn(async (model: { provider: string; modelId: string }) => {
@@ -62,7 +58,7 @@ describe("experimental client TUI", () => {
 		});
 
 		const serverProvider = new RemoteServiceProvider([SessionDirectory, SessionManagement]);
-		serverProvider.provide(SessionDirectory, { state: directoryState, events: directoryEvents });
+		serverProvider.provide(SessionDirectory, { state: directoryState });
 		serverProvider.provide(SessionManagement, {
 			create,
 			async remove() {},
@@ -88,7 +84,7 @@ describe("experimental client TUI", () => {
 		});
 		const serverServices: ServerServiceConnection = Object.assign(serverNamespace, {
 			acceptsUnavailableServices: false,
-			connection: remoteState<ServerConnectionState>({ status: "connected", since: "now" }),
+			connection: replicatedState<ServerConnectionState>({ status: "connected", since: "now" }),
 			async catalogue() {
 				return serverProvider.catalogue;
 			},
@@ -158,8 +154,6 @@ describe("experimental client TUI", () => {
 		try {
 			expect(component.render(80).join("\n")).toContain("one");
 			expect(component.render(80).join("\n")).toContain("Loaded test TUI facet");
-			directoryEvents.emit({ type: "deleted", sessionId: "removed" }, BACKGROUND_CONTEXT);
-			expect(component.render(80).join("\n")).toContain("Session removed: removed");
 
 			component.handleInput("\r");
 			await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("Experimental Models"));
@@ -183,7 +177,6 @@ describe("experimental client TUI", () => {
 			expect(disposeLoadedFacets).toHaveBeenCalledOnce();
 			const rendersAfterClose = requestRender.mock.calls.length;
 			directoryState.set({ revision: 3, sessions: [] }, BACKGROUND_CONTEXT);
-			directoryEvents.emit({ type: "deleted", sessionId: "two" }, BACKGROUND_CONTEXT);
 			attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);
 			modelsState.set({ ...modelsState.value, refresh: { status: "refreshing" } }, BACKGROUND_CONTEXT);
 			expect(requestRender).toHaveBeenCalledTimes(rendersAfterClose);

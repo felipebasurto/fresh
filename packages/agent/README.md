@@ -44,7 +44,7 @@ await agent.prompt("Hello!");
 
 ## Experimental plugin services
 
-The package exports the transport-neutral plugin-service primitives used by the experimental application hosts: `defineService()`, `remoteState()`, `RemoteServiceProvider`, and `RemoteServiceNamespace`. Providers classify implementation methods, state members, and event members at runtime; consumers receive stable singleton facades through `use()` or lifecycle-scoped keyed instances through `observe()`. `ReplicatedState` values and `RemoteEvents` deliveries are borrowed immutable JSON: the runtime does not defensively clone them, so callers must not mutate or retain them. Remote events are ordered, non-durable, and not replayed to late consumers. Wire framing and host routing remain outside this package.
+The package exports the transport-neutral plugin-service primitives used by the experimental application hosts: `defineService()`, `replicatedState()`, `RemoteServiceProvider`, and `RemoteServiceNamespace`. Providers classify implementation methods and replicated-state members at runtime; consumers receive stable singleton facades through `use()` or lifecycle-scoped keyed instances through `observe()`. `ReplicatedState` values are borrowed immutable JSON: the runtime does not defensively clone them, so callers must not mutate or retain them. Wire framing and host routing remain outside this package.
 
 ## Core Concepts
 

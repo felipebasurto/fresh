@@ -377,7 +377,7 @@ describe("Client service operations", () => {
 			},
 		});
 		server.send({
-			type: "service_event",
+			type: "service_update",
 			subscriptionId: "service-1",
 			update: { type: "state", member: "state", sequence: 1, value: { revision: 1 } },
 		});

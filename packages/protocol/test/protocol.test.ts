@@ -270,36 +270,47 @@ describe("protocol validation", () => {
 		});
 		expect(
 			parseServiceSubscriptionSnapshot({
-				serviceId: "pi.transcript",
+				serviceId: "pi.models",
 				mode: "singleton",
-				instances: [{ members: [{ name: "events", kind: "events" }], states: {} }],
+				instances: [
+					{
+						members: [{ name: "state", kind: "state" }],
+						states: { state: { sequence: 0, value: { revision: 1 } } },
+					},
+				],
 			}),
 		).toEqual({
-			serviceId: "pi.transcript",
+			serviceId: "pi.models",
 			mode: "singleton",
-			instances: [{ members: [{ name: "events", kind: "events" }], states: {} }],
+			instances: [
+				{
+					members: [{ name: "state", kind: "state" }],
+					states: { state: { sequence: 0, value: { revision: 1 } } },
+				},
+			],
 		});
 		expect(
 			parseServerMessage({
-				type: "service_event",
+				type: "service_update",
 				subscriptionId: "subscription-1",
 				update: {
-					type: "event",
-					member: "events",
-					event: { type: "changed", revision: 1 },
+					type: "state",
+					member: "state",
+					sequence: 1,
+					value: { revision: 2 },
 				},
 			}),
-		).toMatchObject({ update: { type: "event", member: "events" } });
+		).toMatchObject({ update: { type: "state", member: "state" } });
 		expect(
 			parseServerMessage({
-				type: "service_event",
+				type: "service_update",
 				subscriptionId: "subscription-1",
 				update: { type: "unavailable" },
 			}),
 		).toMatchObject({ update: { type: "unavailable" } });
 		expect(
 			parseServerMessage({
-				type: "service_event",
+				type: "service_update",
 				subscriptionId: "subscription-1",
 				update: {
 					type: "replaced",

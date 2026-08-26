@@ -326,7 +326,7 @@ export class Server<TMetadata extends SessionMetadata = SessionMetadata> {
 				result = await state.serverServices.invokeService(
 					envelope.call,
 					async (subscriptionId, update) => {
-						await this.sendMessage(state, { type: "service_event", subscriptionId, update });
+						await this.sendMessage(state, { type: "service_update", subscriptionId, update });
 					},
 					context,
 				);

@@ -420,7 +420,7 @@ export class Client {
 				.catch((error: unknown) => this.#reportListenerError(error));
 			return;
 		}
-		if (message.type === "service_event") {
+		if (message.type === "service_update") {
 			const active = this.#serviceListeners.get(message.subscriptionId);
 			if (active === undefined) return;
 			if (active.ready) this.#deliverServiceUpdate(active, message.update);

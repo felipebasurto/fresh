@@ -221,7 +221,7 @@ export const SessionWorkerEventSchema = Type.Union([
 		event: LaneEventSchema,
 	}),
 	Type.Object({
-		type: Type.Literal("service_event"),
+		type: Type.Literal("service_update"),
 		token: Type.String(),
 		sessionKey: Type.String(),
 		scope: WorkerOperationScopeSchema,
@@ -593,7 +593,7 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 			facetLoader: runtime.facetLoader,
 			publish: (scope, subscriptionId, update) =>
 				control.send({
-					type: "service_event",
+					type: "service_update",
 					token,
 					sessionKey,
 					scope,

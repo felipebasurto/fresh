@@ -2,10 +2,8 @@ import {
 	BACKGROUND_CONTEXT,
 	type Context,
 	type ServiceProviderUpdate as CoreServiceProviderUpdate,
-	type MutableRemoteEvents,
 	RemoteServiceProvider,
-	remoteEvents,
-	remoteState,
+	replicatedState,
 	type ServiceProviderSubscription,
 } from "@earendil-works/pi-agent-core";
 import {
@@ -19,12 +17,7 @@ import {
 } from "@earendil-works/pi-protocol";
 import type { RoutedServerServiceAttachment, RoutedServerServiceHost } from "@earendil-works/pi-server";
 import { Check } from "typebox/value";
-import {
-	SessionDirectory,
-	type SessionDirectoryEvent,
-	type SessionDirectoryState,
-	SessionManagement,
-} from "./sessions.ts";
+import { SessionDirectory, type SessionDirectoryState, SessionManagement } from "./sessions.ts";
 
 export interface ExperimentalServerServices {
 	readonly host: RoutedServerServiceHost;
@@ -38,20 +31,17 @@ export async function createExperimentalServerServices(options: {
 	remove(sessionId: string, context: Context): Promise<void>;
 }): Promise<ExperimentalServerServices> {
 	let revision = 1;
-	const directory = remoteState<SessionDirectoryState>({
+	const directory = replicatedState<SessionDirectoryState>({
 		revision,
 		sessions: await options.list(BACKGROUND_CONTEXT),
 	});
-	const directoryEvents = remoteEvents<SessionDirectoryEvent>();
 	const attachments = new Set<RoutedServerServiceAttachment>();
 	let mutationTail = Promise.resolve();
 
 	const refreshNow = async (context: Context): Promise<void> => {
-		const previous = directory.value.sessions;
 		const sessions = await options.list(context);
 		revision += 1;
 		directory.set({ revision, sessions }, context);
-		publishDirectoryChanges(previous, sessions, directoryEvents, context);
 	};
 	const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
 		const result = mutationTail.catch(() => {}).then(operation);
@@ -69,7 +59,7 @@ export async function createExperimentalServerServices(options: {
 					{ service: SessionDirectory, mode: "singleton" },
 					{ service: SessionManagement, mode: "singleton" },
 				]);
-				provider.provide(SessionDirectory, { state: directory, events: directoryEvents });
+				provider.provide(SessionDirectory, { state: directory });
 				provider.provide(SessionManagement, {
 					create: (createOptions, context) =>
 						serialize(async () => {
@@ -109,28 +99,6 @@ export async function createExperimentalServerServices(options: {
 			if (errors.length > 1) throw new AggregateError(errors, "Failed to release server service attachments");
 		},
 	};
-}
-
-function publishDirectoryChanges(
-	previous: readonly SessionSummary[],
-	next: readonly SessionSummary[],
-	events: MutableRemoteEvents<SessionDirectoryEvent>,
-	context: Context,
-): void {
-	const previousById = new Map(previous.map((session) => [session.sessionId, session]));
-	const nextById = new Map(next.map((session) => [session.sessionId, session]));
-	for (const session of previous) {
-		if (!nextById.has(session.sessionId)) events.emit({ type: "deleted", sessionId: session.sessionId }, context);
-	}
-	for (const session of next) {
-		const existing = previousById.get(session.sessionId);
-		if (existing === undefined) events.emit({ type: "created", session }, context);
-		else if (!sameSessionSummary(existing, session)) events.emit({ type: "changed", session }, context);
-	}
-}
-
-function sameSessionSummary(left: SessionSummary, right: SessionSummary): boolean {
-	return left.serverId === right.serverId && left.sessionId === right.sessionId && left.createdAt === right.createdAt;
 }
 
 function createProviderAttachment(

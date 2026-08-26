@@ -1,4 +1,4 @@
-import { type Context, defineService, type RemoteEvents, type ReplicatedState } from "@earendil-works/pi-agent-core";
+import { type Context, defineService, type ReplicatedState } from "@earendil-works/pi-agent-core";
 import type { SessionCreateOptions, SessionSummary } from "@earendil-works/pi-protocol";
 
 export interface SessionDirectoryState {
@@ -6,13 +6,8 @@ export interface SessionDirectoryState {
 	sessions: SessionSummary[];
 }
 
-export type SessionDirectoryEvent =
-	| { type: "created" | "changed"; session: SessionSummary }
-	| { type: "deleted"; sessionId: string };
-
 export interface SessionDirectory {
 	readonly state: ReplicatedState<SessionDirectoryState>;
-	readonly events: RemoteEvents<SessionDirectoryEvent>;
 }
 
 export const SessionDirectory = defineService<SessionDirectory>("pi.session-directory");

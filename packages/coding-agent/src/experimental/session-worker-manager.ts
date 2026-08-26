@@ -608,7 +608,7 @@ export class SessionWorkerManager {
 			);
 			return;
 		}
-		if (message.type === "service_event") {
+		if (message.type === "service_update") {
 			this.#handleServiceEvent(
 				event.from,
 				message.token,

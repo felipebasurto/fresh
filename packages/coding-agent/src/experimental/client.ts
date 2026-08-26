@@ -72,7 +72,7 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 
 		const chat = match.chat;
 		const completedText = new Map<string, string>();
-		// Chat deliberately returns no transcript content. Keep the compatibility watch until Transcript uses RemoteEvents.
+		// Chat deliberately returns no transcript content. Keep the compatibility watch until Transcript is implemented.
 		const watch = await match.client.watchSession(sessionId);
 		await watch.start(async (event) => {
 			if (event.type === "message_end" && event.runId !== undefined && event.message.role === "assistant") {

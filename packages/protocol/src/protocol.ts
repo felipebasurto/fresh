@@ -123,7 +123,7 @@ export type ProtocolRpcResult = JsonValue | undefined;
 
 export const ServiceMemberDescriptionSchema = StrictObject({
 	name: IdSchema,
-	kind: Type.Union([Type.Literal("method"), Type.Literal("state"), Type.Literal("events")]),
+	kind: Type.Union([Type.Literal("method"), Type.Literal("state")]),
 });
 export type ServiceMemberDescription = Static<typeof ServiceMemberDescriptionSchema>;
 
@@ -161,12 +161,6 @@ export const ServiceProviderUpdateSchema = Type.Union([
 		member: IdSchema,
 		sequence: Type.Integer({ minimum: 1 }),
 		value: JsonValueSchema,
-	}),
-	StrictObject({
-		type: Type.Literal("event"),
-		instance: Type.Optional(ServiceInstanceAddressSchema),
-		member: IdSchema,
-		event: JsonValueSchema,
 	}),
 	StrictObject({
 		type: Type.Literal("unavailable"),
@@ -381,7 +375,7 @@ export const EventEnvelopeSchema = StrictObject({
 	event: LaneEventSchema,
 });
 export const ServiceEventEnvelopeSchema = StrictObject({
-	type: Type.Literal("service_event"),
+	type: Type.Literal("service_update"),
 	subscriptionId: IdSchema,
 	update: ServiceProviderUpdateSchema,
 });

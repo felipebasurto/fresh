@@ -16,11 +16,6 @@ describe("experimental built-in service surface", () => {
 				),
 			).rejects.toBeInstanceOf(ServiceSliceNotImplemented);
 
-			const transcript = host.services.subscribe("pi.transcript", "singleton", () => {}).snapshot;
-			expect(transcript.instances[0]?.members).toEqual([
-				{ name: "events", kind: "events" },
-				{ name: "snapshot", kind: "method" },
-			]);
 			await expect(
 				host.services.invoke({ serviceId: "pi.transcript", member: "snapshot", args: [] }, BACKGROUND_CONTEXT),
 			).rejects.toBeInstanceOf(ServiceSliceNotImplemented);

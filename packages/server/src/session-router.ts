@@ -325,7 +325,7 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 			attachment.lease,
 			call,
 			(subscriptionId, update, updateContext) =>
-				publish({ type: "service_event", subscriptionId, update }, updateContext),
+				publish({ type: "service_update", subscriptionId, update }, updateContext),
 			context,
 		);
 		this.trackOperation(attachment, result);
