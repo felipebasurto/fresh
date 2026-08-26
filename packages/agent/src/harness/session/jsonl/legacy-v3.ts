@@ -1,4 +1,5 @@
-import { type ImageContent, type TextContent, type Usage, uuidv7 } from "@earendil-works/pi-ai";
+import type { ImageContent, TextContent, Usage } from "@earendil-works/pi-ai";
+import { uuidv7 } from "@earendil-works/pi-ai/utils/uuid";
 import type { AgentMessage, ThinkingLevel } from "../../../types.ts";
 import type { Context } from "../../context.ts";
 import { createBranchSummaryMessage, createCompactionSummaryMessage } from "../../messages.ts";
