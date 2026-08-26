@@ -643,22 +643,17 @@ describe("experimental durable server composition", () => {
 		expect(result).toMatchObject({
 			ok: true,
 			value: {
-				kind: "completed",
+				kind: "run",
+				status: "completed",
 				tipId: expect.any(String),
-				finalEntryId: expect.any(String),
-				finalMessage: {
-					role: "assistant",
-					content: [{ type: "text", text: "deterministic remote answer" }],
-					stopReason: "stop",
-				},
 			},
 		});
 		expect(runtime.workerPids.get("demo-1")).toBe(workerPid);
 		expect(processExists(workerPid!)).toBe(true);
-		if (!result.ok || result.value.kind !== "completed" || !("finalEntryId" in result.value)) {
-			throw new Error("Expected a completed prompt with a final assistant entry");
+		if (!result.ok || result.value.status !== "completed" || result.value.tipId === null) {
+			throw new Error("Expected a completed prompt with a terminal tip");
 		}
-		const finalEntryId = result.value.finalEntryId;
+		const finalEntryId = result.value.tipId;
 
 		await client.dispose();
 		clients.delete(client);

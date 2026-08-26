@@ -77,8 +77,6 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 		await watch.start(async (event) => {
 			if (event.type === "message_end" && event.runId !== undefined && event.message.role === "assistant") {
 				completedText.set(event.runId, messageText(event.message));
-			} else if (event.type === "run_end" && "finalMessage" in event) {
-				completedText.set(event.runId, messageText(event.finalMessage));
 			}
 			await options.onEvent?.(event);
 		});

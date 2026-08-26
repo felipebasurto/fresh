@@ -27,6 +27,7 @@ const emptyLaneSnapshot: LaneSnapshot = {
 	lane: "main",
 	transcript: [],
 	tipId: null,
+	lastOperationId: null,
 	operation: null,
 	queues: { steer: [], followUp: [], nextRun: [] },
 	pendingWrites: [],
@@ -149,7 +150,15 @@ export class TestHarness {
 		}
 		const result = this.nextPromptResult ?? {
 			ok: true,
-			value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
+			value: {
+				operationId: "run-1",
+				kind: "run",
+				status: "completed",
+				fromTipId: null,
+				tipId: "leaf-1",
+				startedAt: 1,
+				endedAt: 2,
+			},
 		};
 		this.nextPromptResult = undefined;
 		return result;

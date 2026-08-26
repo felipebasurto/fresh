@@ -248,58 +248,30 @@ function toHarnessDeferred(deferred: DeferredHandle): DeferredHandle {
 }
 
 function toWireRunValue(value: Extract<HarnessRunResult, { ok: true }>["value"]): WireRunValue {
-	switch (value.kind) {
-		case "completed":
-			return value.finalEntryId === undefined
-				? { kind: "completed", runId: value.runId, tipId: value.tipId }
-				: {
-						kind: "completed",
-						runId: value.runId,
-						tipId: value.tipId,
-						finalEntryId: value.finalEntryId,
-						finalMessage: toWireAssistantMessage(value.finalMessage),
-					};
-		case "aborted":
-			return value.finalEntryId === undefined
-				? { kind: "aborted", runId: value.runId, tipId: value.tipId }
-				: {
-						kind: "aborted",
-						runId: value.runId,
-						tipId: value.tipId,
-						finalEntryId: value.finalEntryId,
-						finalMessage: toWireAssistantMessage(value.finalMessage),
-					};
-		case "failed": {
-			const error = {
-				code: value.error.code,
-				message: value.error.message,
-				...(value.error.details === undefined
-					? {}
-					: { details: toWireJsonValue(value.error.details, "operation error details") }),
-			};
-			return value.finalEntryId === undefined
-				? { kind: "failed", runId: value.runId, tipId: value.tipId, error }
-				: {
-						kind: "failed",
-						runId: value.runId,
-						tipId: value.tipId,
-						error,
-						finalEntryId: value.finalEntryId,
-						finalMessage: toWireAssistantMessage(value.finalMessage),
-					};
-		}
-		case "suspended":
-			return {
-				kind: "suspended",
-				reason: "deferred",
-				runId: value.runId,
-				tipId: value.tipId,
-				finalEntryId: value.finalEntryId,
-				deferred: toWireDeferred(value.deferred),
-			};
-		default:
-			return assertNever(value);
+	if (value.status === "suspended") {
+		return { operationId: value.operationId, status: "suspended", deferred: toWireDeferred(value.deferred) };
 	}
+	const base = {
+		operationId: value.operationId,
+		kind: value.kind,
+		fromTipId: value.fromTipId,
+		tipId: value.tipId,
+		startedAt: value.startedAt,
+		endedAt: value.endedAt,
+	};
+	if (value.status !== "failed") return { ...base, status: value.status };
+	if (value.error === undefined) throw new TypeError("Failed harness result is missing its error");
+	return {
+		...base,
+		status: "failed",
+		error: {
+			code: value.error.code,
+			message: value.error.message,
+			...(value.error.details === undefined
+				? {}
+				: { details: toWireJsonValue(value.error.details, "operation error details") }),
+		},
+	};
 }
 
 function toWireRunError(error: Extract<HarnessRunResult, { ok: false }>["error"]): WireRunError {
@@ -631,6 +603,7 @@ export function toWireLaneSnapshot(snapshot: HarnessLaneSnapshot): LaneSnapshot 
 		lane: snapshot.lane,
 		transcript: snapshot.transcript.map(toWireEntry),
 		tipId: snapshot.tipId,
+		lastOperationId: snapshot.lastOperationId,
 		operation:
 			snapshot.operation === null
 				? null
@@ -721,15 +694,21 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 				...base,
 				lane: event.lane,
 			};
-		case "run_end": {
-			const final =
-				event.finalEntryId === undefined
-					? {}
-					: { finalEntryId: event.finalEntryId, finalMessage: toWireAssistantMessage(event.finalMessage) };
-			return event.outcome === "failed"
-				? { ...event, error: { ...event.error }, ...final, ...base, lane: event.lane }
-				: { ...event, ...final, ...base, lane: event.lane };
-		}
+		case "run_end":
+			return event.status === "failed"
+				? {
+						...event,
+						error: {
+							code: event.error.code,
+							message: event.error.message,
+							...(event.error.details === undefined
+								? {}
+								: { details: toWireJsonValue(event.error.details, "operation error details") }),
+						},
+						...base,
+						lane: event.lane,
+					}
+				: { ...event, ...base, lane: event.lane };
 		case "message_start":
 		case "message_end":
 			return { ...event, message: toWireMessage(event.message), ...base, lane: event.lane };

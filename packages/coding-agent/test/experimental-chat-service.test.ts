@@ -37,10 +37,13 @@ describe("Chat service", () => {
 		const prompt = vi.fn(async () => ({
 			ok: true as const,
 			value: {
-				operation: "run" as const,
-				kind: "completed" as const,
-				runId: "operation-1",
+				operationId: "operation-1",
+				kind: "run" as const,
+				status: "completed" as const,
+				fromTipId: null,
 				tipId: "entry-1",
+				startedAt: 1,
+				endedAt: 2,
 			},
 		}));
 		const requestAbort = vi.fn(async () => ({
@@ -87,18 +90,29 @@ describe("Chat service", () => {
 		expect(
 			toChatPromptResponse({
 				ok: true,
-				value: { operation: "run", kind: "completed", runId: "operation-1", tipId: "entry-1" },
+				value: {
+					operationId: "operation-1",
+					kind: "run",
+					status: "completed",
+					fromTipId: null,
+					tipId: "entry-1",
+					startedAt: 1,
+					endedAt: 2,
+				},
 			}),
 		).toEqual({ accepted: true, operationId: "operation-1", error: null });
 		expect(
 			toChatPromptResponse({
 				ok: true,
 				value: {
-					operation: "run",
-					kind: "failed",
-					runId: "operation-2",
-					tipId: "entry-1",
+					operationId: "operation-2",
+					kind: "run",
+					status: "failed",
 					error: { code: "provider", message: "failed", details: { status: 500 } },
+					fromTipId: null,
+					tipId: "entry-1",
+					startedAt: 1,
+					endedAt: 2,
 				},
 			}),
 		).toEqual({

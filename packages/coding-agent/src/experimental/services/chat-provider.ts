@@ -58,9 +58,9 @@ export function toChatPromptResponse(result: HarnessRunResult): ChatPromptRespon
 	if (result.ok) {
 		return {
 			accepted: true,
-			operationId: result.value.runId,
+			operationId: result.value.operationId,
 			error:
-				result.value.kind === "failed"
+				result.value.status === "failed" && result.value.error !== undefined
 					? {
 							code: result.value.error.code,
 							message: result.value.error.message,

@@ -168,43 +168,23 @@ const OperationErrorSchema = StrictObject({
 	message: Type.String(),
 	details: Type.Optional(JsonValueSchema),
 });
+const OperationResultBase = {
+	operationId: IdSchema,
+	kind: Type.Union([Type.Literal("run"), Type.Literal("compaction"), Type.Literal("navigation")]),
+	fromTipId: Type.Union([IdSchema, Type.Null()]),
+	tipId: Type.Union([IdSchema, Type.Null()]),
+	startedAt: TimestampSchema,
+	endedAt: TimestampSchema,
+};
 const RunValueSchema = Type.Union([
-	StrictObject({ kind: Type.Literal("completed"), runId: IdSchema, tipId: IdSchema }),
 	StrictObject({
-		kind: Type.Literal("completed"),
-		runId: IdSchema,
-		tipId: IdSchema,
-		finalEntryId: IdSchema,
-		finalMessage: AssistantMessageSchema,
+		...OperationResultBase,
+		status: Type.Union([Type.Literal("completed"), Type.Literal("declined"), Type.Literal("aborted")]),
 	}),
-	StrictObject({ kind: Type.Literal("aborted"), runId: IdSchema, tipId: IdSchema }),
+	StrictObject({ ...OperationResultBase, status: Type.Literal("failed"), error: OperationErrorSchema }),
 	StrictObject({
-		kind: Type.Literal("aborted"),
-		runId: IdSchema,
-		tipId: IdSchema,
-		finalEntryId: IdSchema,
-		finalMessage: AssistantMessageSchema,
-	}),
-	StrictObject({
-		kind: Type.Literal("failed"),
-		runId: IdSchema,
-		tipId: IdSchema,
-		error: OperationErrorSchema,
-	}),
-	StrictObject({
-		kind: Type.Literal("failed"),
-		runId: IdSchema,
-		tipId: IdSchema,
-		error: OperationErrorSchema,
-		finalEntryId: IdSchema,
-		finalMessage: AssistantMessageSchema,
-	}),
-	StrictObject({
-		kind: Type.Literal("suspended"),
-		reason: Type.Literal("deferred"),
-		runId: IdSchema,
-		tipId: IdSchema,
-		finalEntryId: IdSchema,
+		operationId: IdSchema,
+		status: Type.Literal("suspended"),
 		deferred: DeferredHandleSchema,
 	}),
 ]);
@@ -380,6 +360,7 @@ export const LaneSnapshotSchema = StrictObject({
 	lane: Type.String(),
 	transcript: Type.Array(LaneEntrySchema),
 	tipId: Type.Union([IdSchema, Type.Null()]),
+	lastOperationId: Type.Union([IdSchema, Type.Null()]),
 	operation: Type.Union([LaneOperationSchema, Type.Null()]),
 	queues: StrictObject({
 		steer: Type.Array(QueuedItemSchema),
@@ -411,6 +392,7 @@ const LaneEventBase = {
 const RunEndBase = {
 	type: Type.Literal("run_end"),
 	runId: IdSchema,
+	fromTipId: Type.Union([IdSchema, Type.Null()]),
 	tipId: Type.Union([IdSchema, Type.Null()]),
 	...LaneEventBase,
 };
@@ -433,22 +415,9 @@ export const LaneEventSchema = Type.Union([
 	}),
 	StrictObject({
 		...RunEndBase,
-		outcome: Type.Union([Type.Literal("completed"), Type.Literal("aborted")]),
+		status: Type.Union([Type.Literal("completed"), Type.Literal("aborted")]),
 	}),
-	StrictObject({
-		...RunEndBase,
-		outcome: Type.Union([Type.Literal("completed"), Type.Literal("aborted")]),
-		finalEntryId: IdSchema,
-		finalMessage: AssistantMessageSchema,
-	}),
-	StrictObject({ ...RunEndBase, outcome: Type.Literal("failed"), error: OperationErrorSchema }),
-	StrictObject({
-		...RunEndBase,
-		outcome: Type.Literal("failed"),
-		error: OperationErrorSchema,
-		finalEntryId: IdSchema,
-		finalMessage: AssistantMessageSchema,
-	}),
+	StrictObject({ ...RunEndBase, status: Type.Literal("failed"), error: OperationErrorSchema }),
 	StrictObject({
 		type: Type.Literal("message_start"),
 		runId: Type.Optional(IdSchema),

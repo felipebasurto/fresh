@@ -55,6 +55,7 @@ const laneSnapshot = {
 	lane: "main",
 	transcript: [],
 	tipId: null,
+	lastOperationId: null,
 	operation: null,
 	queues: { steer: [], followUp: [], nextRun: [] },
 	pendingWrites: [],
@@ -63,7 +64,15 @@ const laneSnapshot = {
 
 const completedRunResult = {
 	ok: true,
-	value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
+	value: {
+		operationId: "run-1",
+		kind: "run",
+		status: "completed",
+		fromTipId: null,
+		tipId: "leaf-1",
+		startedAt: 1,
+		endedAt: 2,
+	},
 } as const satisfies RunResult;
 
 describe("RPC manifest", () => {
@@ -444,8 +453,9 @@ describe("protocol validation", () => {
 					type: "run_end",
 					lane: "main",
 					runId: "run-1",
+					fromTipId: null,
 					tipId: "leaf-1",
-					outcome: "completed",
+					status: "completed",
 					finalEntryId: "entry-1",
 				},
 			}),
@@ -470,14 +480,29 @@ describe("protocol validation", () => {
 	});
 
 	test.each([
-		{ ok: true, value: { kind: "completed", runId: "run-1", tipId: "leaf-1" } },
-		{ ok: true, value: { kind: "aborted", runId: "run-1", tipId: "leaf-1" } },
+		completedRunResult,
 		{
 			ok: true,
 			value: {
-				kind: "failed",
-				runId: "run-1",
+				operationId: "run-1",
+				kind: "run",
+				status: "aborted",
+				fromTipId: null,
 				tipId: "leaf-1",
+				startedAt: 1,
+				endedAt: 2,
+			},
+		},
+		{
+			ok: true,
+			value: {
+				operationId: "run-1",
+				kind: "run",
+				status: "failed",
+				fromTipId: null,
+				tipId: "leaf-1",
+				startedAt: 1,
+				endedAt: 2,
 				error: { code: "provider", message: "provider failed" },
 			},
 		},
@@ -522,9 +547,13 @@ describe("protocol validation", () => {
 			Check(RunResultSchema, {
 				ok: true,
 				value: {
-					kind: "failed",
-					runId: "run-1",
+					operationId: "run-1",
+					kind: "run",
+					status: "failed",
+					fromTipId: null,
 					tipId: "leaf-1",
+					startedAt: 1,
+					endedAt: 2,
 					error: { code: "provider", message: "failed", details },
 				},
 			}),

@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
+	type JsonValue,
 	LaneEventSchema,
 	LaneSnapshotSchema,
 	type PromptArguments,
@@ -120,65 +121,46 @@ describe("Harness wire adapter", () => {
 	test.each([
 		{
 			ok: true,
-			value: { operation: "run", kind: "completed", runId: "run-1", tipId: "leaf-1" },
-		},
-		{
-			ok: true,
 			value: {
-				operation: "run",
-				kind: "completed",
-				runId: "run-1",
+				operationId: "run-1",
+				kind: "run",
+				status: "completed",
+				fromTipId: null,
 				tipId: "leaf-1",
-				finalEntryId: "entry-1",
-				finalMessage,
-			},
-		},
-		{
-			ok: true,
-			value: { operation: "run", kind: "aborted", runId: "run-1", tipId: "leaf-1" },
-		},
-		{
-			ok: true,
-			value: {
-				operation: "run",
-				kind: "aborted",
-				runId: "run-1",
-				tipId: "leaf-1",
-				finalEntryId: "entry-1",
-				finalMessage,
+				startedAt: 1,
+				endedAt: 2,
 			},
 		},
 		{
 			ok: true,
 			value: {
-				operation: "run",
-				kind: "failed",
-				runId: "run-1",
+				operationId: "run-1",
+				kind: "run",
+				status: "aborted",
+				fromTipId: "source",
 				tipId: "leaf-1",
+				startedAt: 1,
+				endedAt: 2,
+			},
+		},
+		{
+			ok: true,
+			value: {
+				operationId: "run-1",
+				kind: "run",
+				status: "failed",
 				error: { code: "provider", message: "failed", details: { status: 500 } },
+				fromTipId: null,
+				tipId: "leaf-1",
+				startedAt: 1,
+				endedAt: 2,
 			},
 		},
 		{
 			ok: true,
 			value: {
-				operation: "run",
-				kind: "failed",
-				runId: "run-1",
-				tipId: "leaf-1",
-				error: { code: "provider", message: "failed" },
-				finalEntryId: "entry-1",
-				finalMessage,
-			},
-		},
-		{
-			ok: true,
-			value: {
-				operation: "run",
-				kind: "suspended",
-				reason: "deferred",
-				runId: "run-1",
-				tipId: "leaf-1",
-				finalEntryId: "entry-1",
+				operationId: "run-1",
+				status: "suspended",
 				deferred: { provider: "test", modelId: "model", api: "test", id: "deferred-1", data: { row: 1 } },
 			},
 		},
@@ -186,8 +168,7 @@ describe("Harness wire adapter", () => {
 		const wire = toWireRunResult(result);
 		expect(Check(RunResultSchema, wire)).toBe(true);
 		if (!result.ok || !wire.ok) throw new Error("Expected successful run result");
-		const { operation: _operation, ...expected } = result.value;
-		expect(wire.value).toEqual(expected);
+		expect(wire.value).toEqual(result.value);
 	});
 
 	test.each([
@@ -222,6 +203,7 @@ describe("Harness wire adapter", () => {
 				},
 			],
 			tipId: "entry-1",
+			lastOperationId: null,
 			operation: null,
 			queues: { steer: [], followUp: [], nextRun: [] },
 			pendingWrites: [],
@@ -257,19 +239,19 @@ describe("Harness wire adapter", () => {
 	});
 
 	test("rejects non-JSON values in Harness output", () => {
-		const unsafeMessage: AssistantMessage = {
-			...finalMessage,
-			content: [{ type: "toolCall", id: "tool-1", name: "read", arguments: { when: new Date(0) } }],
-		};
+		const details = { when: null } satisfies JsonValue;
+		Object.defineProperty(details, "when", { value: new Date(0) });
 		const result: HarnessRunResult = {
 			ok: true,
 			value: {
-				operation: "run",
-				kind: "completed",
-				runId: "run-1",
+				operationId: "run-1",
+				kind: "run",
+				status: "failed",
+				error: { code: "provider", message: "failed", details },
+				fromTipId: null,
 				tipId: "leaf-1",
-				finalEntryId: "entry-1",
-				finalMessage: unsafeMessage,
+				startedAt: 1,
+				endedAt: 2,
 			},
 		};
 		expect(() => toWireRunResult(result)).toThrow(/not JSON-serializable/);
