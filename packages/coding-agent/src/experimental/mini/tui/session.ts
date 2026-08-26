@@ -11,6 +11,7 @@
  * The fold is the harness's `reduceLaneSnapshot`: a replica must not have a second opinion.
  */
 
+import { randomUUID } from "node:crypto";
 import { type HarnessEvent, reduceLaneSnapshot } from "@earendil-works/pi-agent-core";
 import {
 	type AuthEventPayload,
@@ -51,6 +52,8 @@ export async function listSessions(transport: Transport): Promise<SessionSummary
 export async function connect(transport: Transport, sessionId: string | null, cwd: string): Promise<AttachedSession> {
 	const peer = createPeer(await transport.connect());
 	const lane = peer.use(Lane);
+	/** This presentation's identity: the server routes our lane events by it. */
+	const presentationId = randomUUID();
 	const listeners = new Set<() => void>();
 	const authHandlers = new Set<(event: AuthEventPayload) => void>();
 	const publish = (): void => {
@@ -74,7 +77,7 @@ export async function connect(transport: Transport, sessionId: string | null, cw
 	/** First attach and rebase are the same operation: take a new subscription, drop the old one. */
 	const resubscribe = async (): Promise<void> => {
 		const previous = subscriptionId;
-		const opened = await lane.watch();
+		const opened = await lane.watch(presentationId);
 		snapshot = opened.snapshot;
 		subscriptionId = opened.subscriptionId;
 		publish();
@@ -83,6 +86,7 @@ export async function connect(transport: Transport, sessionId: string | null, cw
 	};
 
 	peer.on(Lane, (event) => {
+		// Addressed to us by the server; the id check discards a superseded subscription after a rebase.
 		if (event.subscriptionId === subscriptionId) fold(event.event);
 	});
 	peer.on(Models, (event) => {
@@ -96,7 +100,7 @@ export async function connect(transport: Transport, sessionId: string | null, cw
 		publish();
 	});
 
-	await peer.use(Sessions, { timeoutMs: ATTACH_TIMEOUT_MS }).attach(sessionId, cwd);
+	await peer.use(Sessions, { timeoutMs: ATTACH_TIMEOUT_MS }).attach(sessionId, cwd, presentationId);
 	await resubscribe();
 
 	return {

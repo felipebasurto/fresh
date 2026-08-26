@@ -86,7 +86,7 @@ export async function runSessionWorker(options: {
 		context,
 		session: { id: session.metadata.id, cwd, path: session.metadata.path },
 		modelsState: () => models.state,
-		publish: (subscriptionId, event) => peer.emit(Lane, { subscriptionId, event }),
+		publish: (subscriptionId, to, event) => peer.emitTo(Lane, { subscriptionId, event }, to),
 	});
 	peer.provide(Lane, laneService);
 	peer.provide(Models, models);

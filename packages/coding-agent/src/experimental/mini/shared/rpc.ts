@@ -16,7 +16,7 @@ type Frame =
 	| { kind: "result"; id: number; result: unknown }
 	| { kind: "error"; id: number; error: string }
 	| { kind: "cancel"; id: number }
-	| { kind: "event"; service: string; payload: unknown }
+	| { kind: "event"; service: string; payload: unknown; to?: string }
 	| { kind: "announce"; services: string[] }
 	| { kind: "ping" };
 
@@ -47,12 +47,14 @@ export interface RpcPeer {
 	readonly announced: ReadonlySet<string>;
 	/** Use a service, wherever it is provided: this peer's other side, or its next hop. */
 	use<TApi extends object, TEvent>(token: ServiceToken<TApi, TEvent>, options?: CallOptions): Remote<TApi>;
-	/** Publish under a token; consumers filter with `on`, routers forward with `onEvent`. */
+	/** Publish to everyone listening on the other side. */
 	emit<TApi extends object, TEvent>(token: ServiceToken<TApi, TEvent>, event: TEvent): void;
+	/** Publish for one destination. A router delivers it there instead of broadcasting. */
+	emitTo<TApi extends object, TEvent>(token: ServiceToken<TApi, TEvent>, event: TEvent, to: string): void;
 	on<TApi extends object, TEvent>(token: ServiceToken<TApi, TEvent>, handler: (event: TEvent) => void): void;
 	/** Router half of the event channel: observe and republish without knowing the service. */
-	onEvent(handler: (service: string, payload: unknown) => void): void;
-	emitRaw(service: string, payload: unknown): void;
+	onEvent(handler: (service: string, payload: unknown, to: string | undefined) => void): void;
+	emitRaw(service: string, payload: unknown, to?: string): void;
 	call(method: string, ...args: unknown[]): Promise<unknown>;
 	callWith(options: CallOptions, method: string, ...args: unknown[]): Promise<unknown>;
 	onClose(handler: () => void): void;
@@ -68,7 +70,7 @@ export function createPeer(connection: Connection, options: PeerOptions = {}): R
 	const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	/** Controllers for calls this peer is currently answering, so a `cancel` frame can stop them. */
 	const inflight = new Map<number, AbortController>();
-	const eventHandlers: ((service: string, payload: unknown) => void)[] = [];
+	const eventHandlers: ((service: string, payload: unknown, to: string | undefined) => void)[] = [];
 	let nextId = 1;
 	let lastFrameAt = Date.now();
 
@@ -91,7 +93,7 @@ export function createPeer(connection: Connection, options: PeerOptions = {}): R
 		lastFrameAt = Date.now();
 		switch (frame.kind) {
 			case "event": {
-				for (const handler of eventHandlers) handler(frame.service, frame.payload);
+				for (const handler of eventHandlers) handler(frame.service, frame.payload, frame.to);
 				return;
 			}
 			case "call": {
@@ -210,7 +212,9 @@ export function createPeer(connection: Connection, options: PeerOptions = {}): R
 						callWith(callOptions, `${token.name}.${String(method)}`, ...args),
 			}) as never,
 		emit: (token, event) => connection.send({ kind: "event", service: token.name, payload: event }),
-		emitRaw: (service, payload) => connection.send({ kind: "event", service, payload }),
+		emitTo: (token, event, to) => connection.send({ kind: "event", service: token.name, payload: event, to }),
+		emitRaw: (service, payload, to) =>
+			connection.send({ kind: "event", service, payload, ...(to === undefined ? {} : { to }) }),
 		on: (token, handler) =>
 			eventHandlers.push((name, payload) => {
 				if (name === token.name) handler(payload as never);

@@ -24,8 +24,8 @@ interface Route {
 	sessionId: string;
 	/** Peer to the worker process. */
 	worker: RpcPeer;
-	/** Presentation peers currently attached, for event fan-out and worker lifetime. */
-	subscribers: Set<RpcPeer>;
+	/** Attached presentations by id, so an addressed event goes to exactly one of them. */
+	subscribers: Map<string, RpcPeer>;
 	stop(): void;
 }
 
@@ -77,12 +77,16 @@ export async function runServer(options: { transport: Transport; sessionsRoot: s
 		const route: Route = {
 			sessionId: described.sessionId,
 			worker: peer,
-			subscribers: new Set(),
+			subscribers: new Map(),
 			stop: () => child.kill(),
 		};
-		// Fan-out is the server's job: the worker publishes once, to us.
-		peer.onEvent((service, payload) => {
-			for (const subscriber of route.subscribers) subscriber.emitRaw(service, payload);
+		// Routing is the server's job. An addressed event reaches one presentation; the rest are shared.
+		peer.onEvent((service, payload, to) => {
+			if (to !== undefined) {
+				route.subscribers.get(to)?.emitRaw(service, payload);
+				return;
+			}
+			for (const subscriber of route.subscribers.values()) subscriber.emitRaw(service, payload);
 		});
 		peer.onClose(() => {
 			routes.delete(route.sessionId);
@@ -111,12 +115,14 @@ export async function runServer(options: { transport: Transport; sessionsRoot: s
 	const listener = await options.transport.listen((connection) => {
 		presentations += 1;
 		let route: Route | undefined;
+		let attachedAs: string | undefined;
 		const sessions: SessionsServiceApi = {
 			list,
-			attach: async (sessionId, cwd) => {
-				route?.subscribers.delete(presentation);
+			attach: async (sessionId, cwd, presentationId) => {
+				route?.subscribers.delete(attachedAs ?? "");
+				attachedAs = presentationId;
 				route = await ensureRoute(sessionId, cwd);
-				route.subscribers.add(presentation);
+				route.subscribers.set(presentationId, presentation);
 				return route.sessionId;
 			},
 		};
@@ -135,8 +141,8 @@ export async function runServer(options: { transport: Transport; sessionsRoot: s
 		presentation.provide(Sessions, sessions);
 		connection.onClose(() => {
 			presentations -= 1;
-			if (route) {
-				route.subscribers.delete(presentation);
+			if (route && attachedAs !== undefined) {
+				route.subscribers.delete(attachedAs);
 				// One worker per session, kept alive only while someone is looking at it.
 				if (route.subscribers.size === 0) route.stop();
 			}

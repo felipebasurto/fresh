@@ -96,8 +96,11 @@ export interface LaneEvent {
 }
 
 export interface LaneServiceApi {
-	/** Capture a snapshot and open a subscription. Events buffer in the worker until `start`. */
-	watch(): Promise<LaneSubscription>;
+	/**
+	 * Capture a snapshot and open a subscription for one presentation. Its events are addressed to
+	 * `presentationId`, so the server routes them instead of broadcasting. Buffered until `start`.
+	 */
+	watch(presentationId: string): Promise<LaneSubscription>;
 	/** Begin delivery, draining everything buffered since the snapshot. */
 	start(subscriptionId: string): Promise<void>;
 	unwatch(subscriptionId: string): Promise<void>;
@@ -122,7 +125,7 @@ export interface WorkerServiceApi {
 
 export interface SessionsServiceApi {
 	list(): Promise<SessionSummary[]>;
-	attach(sessionId: string | null, cwd: string): Promise<string>;
+	attach(sessionId: string | null, cwd: string, presentationId: string): Promise<string>;
 }
 
 /** Provided by the worker. One subscription per presentation; `watch` again to rebase. */

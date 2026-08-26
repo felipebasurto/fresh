@@ -25,24 +25,24 @@ export interface LaneServiceOptions {
 	session: { id: string; cwd: string; path: string };
 	/** Model catalog state belongs to the `Models` service; the snapshot carries a copy. */
 	modelsState: () => ModelsState;
-	publish: (subscriptionId: string, event: HarnessEvent) => void;
+	publish: (subscriptionId: string, to: string, event: HarnessEvent) => void;
 }
 
 export class LaneService implements LaneServiceApi {
 	readonly #options: LaneServiceOptions;
-	readonly #watches = new Map<string, WatchHandle<LaneSnapshot>>();
+	readonly #watches = new Map<string, { handle: WatchHandle<LaneSnapshot>; to: string }>();
 
 	constructor(options: LaneServiceOptions) {
 		this.#options = options;
 	}
 
 	/** Capture a snapshot. The harness buffers this subscription's events until `start`. */
-	async watch(): Promise<LaneSubscription> {
+	async watch(presentationId: string): Promise<LaneSubscription> {
 		const { lane, context, session } = this.#options;
 		const subscriptionId = randomUUID();
 		const handle = await lane.watch(context);
 		try {
-			this.#watches.set(subscriptionId, handle);
+			this.#watches.set(subscriptionId, { handle, to: presentationId });
 			const snapshot: SessionSnapshot = {
 				sessionId: session.id,
 				cwd: session.cwd,
@@ -60,13 +60,13 @@ export class LaneService implements LaneServiceApi {
 
 	/** Begin delivery, draining what buffered since the snapshot. */
 	async start(subscriptionId: string): Promise<void> {
-		const handle = this.#watches.get(subscriptionId);
-		if (!handle) throw new Error(`Unknown subscription: ${subscriptionId}`);
-		handle.start((event) => this.#options.publish(subscriptionId, event));
+		const watch = this.#watches.get(subscriptionId);
+		if (!watch) throw new Error(`Unknown subscription: ${subscriptionId}`);
+		watch.handle.start((event) => this.#options.publish(subscriptionId, watch.to, event));
 	}
 
 	async unwatch(subscriptionId: string): Promise<void> {
-		this.#watches.get(subscriptionId)?.unsubscribe();
+		this.#watches.get(subscriptionId)?.handle.unsubscribe();
 		this.#watches.delete(subscriptionId);
 	}
 
@@ -107,7 +107,7 @@ export class LaneService implements LaneServiceApi {
 	}
 
 	close(): void {
-		for (const handle of this.#watches.values()) handle.unsubscribe();
+		for (const watch of this.#watches.values()) watch.handle.unsubscribe();
 		this.#watches.clear();
 	}
 
