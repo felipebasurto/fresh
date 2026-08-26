@@ -169,6 +169,13 @@ export const ServiceProviderUpdateSchema = Type.Union([
 		event: JsonValueSchema,
 	}),
 	StrictObject({
+		type: Type.Literal("unavailable"),
+	}),
+	StrictObject({
+		type: Type.Literal("replaced"),
+		snapshot: ServiceInstanceSnapshotSchema,
+	}),
+	StrictObject({
 		type: Type.Literal("spawned"),
 		instance: ServiceInstanceSnapshotSchema,
 	}),

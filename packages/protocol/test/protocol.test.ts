@@ -290,6 +290,23 @@ describe("protocol validation", () => {
 				},
 			}),
 		).toMatchObject({ update: { type: "event", member: "events" } });
+		expect(
+			parseServerMessage({
+				type: "service_event",
+				subscriptionId: "subscription-1",
+				update: { type: "unavailable" },
+			}),
+		).toMatchObject({ update: { type: "unavailable" } });
+		expect(
+			parseServerMessage({
+				type: "service_event",
+				subscriptionId: "subscription-1",
+				update: {
+					type: "replaced",
+					snapshot: { members: [{ name: "select", kind: "method" }], states: {} },
+				},
+			}),
+		).toMatchObject({ update: { type: "replaced", snapshot: { members: [{ name: "select" }] } } });
 		const keyed: ClientMessage = {
 			type: "request",
 			id: "request-1",
