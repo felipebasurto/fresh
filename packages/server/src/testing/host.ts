@@ -27,10 +27,24 @@ const emptyLaneSnapshot: LaneSnapshot = {
 	lane: "main",
 	transcript: [],
 	tipId: null,
-	lastOperationId: null,
+	configuration: {
+		model: { provider: "faux", modelId: "faux-1" },
+		thinkingLevel: "off",
+		activeToolNames: [],
+	},
+	stats: {
+		messageCount: 0,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	},
 	operation: null,
-	queues: { steer: [], followUp: [], nextRun: [] },
-	pendingWrites: [],
+	queues: [],
 	faulted: false,
 };
 
@@ -50,6 +64,10 @@ class TestHarnessWatch implements RoutedSessionWatch {
 		this.state = "started";
 		this.listener = listener;
 		for (const buffered of this.buffered.splice(0)) this.enqueue(buffered.event, buffered.context);
+	}
+
+	resnapshot(_context: Context): Promise<LaneSnapshot> {
+		return Promise.resolve(structuredClone(this.snapshot));
 	}
 
 	unsubscribe(_context: Context): void {
@@ -124,6 +142,7 @@ export class TestHarness {
 		return {
 			snapshot: watch.snapshot,
 			start: (listener, context) => watch.start(listener, context),
+			resnapshot: (context) => watch.resnapshot(context),
 			unsubscribe: (context) => {
 				watch.unsubscribe(context);
 				this.watches.delete(watch);

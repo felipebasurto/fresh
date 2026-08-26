@@ -29,6 +29,7 @@ import {
 	type LaneEntry,
 	type LaneEvent,
 	type LaneSnapshot,
+	type OperationResultRecord,
 	type PromptArguments,
 	type PromptImage,
 	type PromptMessage,
@@ -251,6 +252,10 @@ function toWireRunValue(value: Extract<HarnessRunResult, { ok: true }>["value"])
 	if (value.status === "suspended") {
 		return { operationId: value.operationId, status: "suspended", deferred: toWireDeferred(value.deferred) };
 	}
+	return toWireOperationResult(value);
+}
+
+function toWireOperationResult(value: NonNullable<HarnessLaneSnapshot["lastResult"]>): OperationResultRecord {
 	const base = {
 		operationId: value.operationId,
 		kind: value.kind,
@@ -598,12 +603,30 @@ function toWireFrame(frame: AiAssistantMessageFrame): AssistantMessageFrame {
 	}
 }
 
+function toWireQueuedItem(item: HarnessLaneSnapshot["queues"][number]): LaneSnapshot["queues"][number] {
+	return item.type === "message"
+		? { entryId: item.entryId, kind: item.kind, type: "message", message: toWireMessage(item.message) }
+		: {
+				entryId: item.entryId,
+				kind: "write",
+				type: "custom",
+				customType: item.customType,
+				...(item.data === undefined ? {} : { data: item.data }),
+			};
+}
+
 export function toWireLaneSnapshot(snapshot: HarnessLaneSnapshot): LaneSnapshot {
 	return {
 		lane: snapshot.lane,
 		transcript: snapshot.transcript.map(toWireEntry),
 		tipId: snapshot.tipId,
-		lastOperationId: snapshot.lastOperationId,
+		...(snapshot.lastResult === undefined ? {} : { lastResult: toWireOperationResult(snapshot.lastResult) }),
+		configuration: {
+			model: { ...snapshot.configuration.model },
+			thinkingLevel: snapshot.configuration.thinkingLevel,
+			activeToolNames: [...snapshot.configuration.activeToolNames],
+		},
+		stats: { messageCount: snapshot.stats.messageCount, usage: toHarnessUsage(snapshot.stats.usage) },
 		operation:
 			snapshot.operation === null
 				? null
@@ -612,6 +635,7 @@ export function toWireLaneSnapshot(snapshot: HarnessLaneSnapshot): LaneSnapshot 
 						kind: snapshot.operation.kind,
 						status: snapshot.operation.status,
 						startedAt: snapshot.operation.startedAt,
+						fromTipId: snapshot.operation.fromTipId,
 						...(snapshot.operation.deferred === undefined
 							? {}
 							: {
@@ -633,25 +657,17 @@ export function toWireLaneSnapshot(snapshot: HarnessLaneSnapshot): LaneSnapshot 
 						})),
 						...(snapshot.operation.retry === undefined ? {} : { retry: { ...snapshot.operation.retry } }),
 					},
-		queues: {
-			steer: snapshot.queues.steer.map((item) => ({ entryId: item.entryId, message: toWireMessage(item.message) })),
-			followUp: snapshot.queues.followUp.map((item) => ({
-				entryId: item.entryId,
-				message: toWireMessage(item.message),
-			})),
-			nextRun: snapshot.queues.nextRun.map((item) => ({
-				entryId: item.entryId,
-				message: toWireMessage(item.message),
-			})),
-		},
-		pendingWrites: snapshot.pendingWrites.map((pending) => ({
-			entryId: pending.entryId,
-			type: pending.type,
-			...(pending.customType === undefined ? {} : { customType: pending.customType }),
-			...(pending.message === undefined ? {} : { message: toWireMessage(pending.message) }),
-			...(pending.data === undefined ? {} : { data: pending.data }),
-		})),
+		queues: snapshot.queues.map(toWireQueuedItem),
 		faulted: snapshot.faulted,
+	};
+}
+
+function toWireOperationError(error: Extract<HarnessEvent, { type: "run_end" }>["error"]) {
+	if (error === undefined) return undefined;
+	return {
+		code: error.code,
+		message: error.message,
+		...(error.details === undefined ? {} : { details: toWireJsonValue(error.details, "operation error details") }),
 	};
 }
 
@@ -660,14 +676,16 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 	const base = lane === undefined ? {} : { lane, ...(event.recovery === true ? { recovery: true as const } : {}) };
 	switch (event.type) {
 		case "run_start":
+			return { type: "run_start", runId: event.runId, startedAt: event.startedAt, ...base, lane: event.lane };
 		case "run_resume":
-			return { type: event.type, runId: event.runId, ...base, lane: event.lane };
+			return { type: "run_resume", runId: event.runId, ...base, lane: event.lane };
 		case "run_suspend":
 			return {
 				type: "run_suspend",
 				runId: event.runId,
 				reason: "deferred",
 				deferred: toWireDeferred(event.deferred),
+				poll: event.poll,
 				...base,
 				lane: event.lane,
 			};
@@ -682,32 +700,23 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 			};
 		case "run_end":
 			return event.status === "failed"
-				? {
-						...event,
-						error: {
-							code: event.error.code,
-							message: event.error.message,
-							...(event.error.details === undefined
-								? {}
-								: { details: toWireJsonValue(event.error.details, "operation error details") }),
-						},
-						...base,
-						lane: event.lane,
-					}
+				? { ...event, error: toWireOperationError(event.error)!, ...base, lane: event.lane }
 				: { ...event, ...base, lane: event.lane };
 		case "message_start":
 		case "message_end":
 			return { ...event, message: toWireMessage(event.message), ...base, lane: event.lane };
 		case "message_update":
-			return event.frame === undefined
-				? undefined
-				: {
-						type: "message_update",
-						runId: event.runId,
-						frame: toWireFrame(event.frame),
-						...base,
-						lane: event.lane,
-					};
+			if (event.message.role !== "assistant") {
+				throw new TypeError("Harness message_update did not carry an assistant message");
+			}
+			return {
+				type: "message_update",
+				runId: event.runId,
+				message: toWireAssistantMessage(event.message),
+				...(event.frame === undefined ? {} : { frame: toWireFrame(event.frame) }),
+				...base,
+				lane: event.lane,
+			};
 		case "tool_start":
 			return {
 				...event,
@@ -722,32 +731,68 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 		case "entry_added":
 			return { type: "entry_added", entry: toWireEntry(event.entry), ...base, lane: event.lane };
 		case "queue_update":
-			return {
-				type: "queue_update",
-				steer: event.steer.map((item) => ({ entryId: item.entryId, message: toWireMessage(item.message) })),
-				followUp: event.followUp.map((item) => ({ entryId: item.entryId, message: toWireMessage(item.message) })),
-				nextRun: event.nextRun.map((item) => ({ entryId: item.entryId, message: toWireMessage(item.message) })),
-				...base,
-				lane: event.lane,
-			};
+			return { type: "queue_update", queues: event.queues.map(toWireQueuedItem), ...base, lane: event.lane };
 		case "retry_scheduled":
 		case "retry_start":
 		case "retry_end":
+		case "compaction_start":
+		case "navigation_start":
 			return { ...event, ...base, lane: event.lane };
+		case "compaction_end":
+		case "navigation_end":
+			return event.status === "failed"
+				? { ...event, error: toWireOperationError(event.error)!, ...base, lane: event.lane }
+				: { ...event, ...base, lane: event.lane };
+		case "usage":
+			return {
+				type: "usage",
+				lane: event.lane,
+				row: {
+					...event.row,
+					usage: toHarnessUsage(event.row.usage),
+					...(event.row.details === undefined
+						? {}
+						: { details: toWireJsonValue(event.row.details, "usage details") }),
+				},
+				totals: toHarnessUsage(event.totals),
+			};
+		case "config_update":
+			switch (event.property) {
+				case "tools":
+				case "resources":
+					return { type: "config_update", property: event.property };
+				case "model":
+				case "thinkingLevel":
+				case "activeTools":
+					return {
+						type: "config_update",
+						property: event.property,
+						value: toWireJsonValue(event.value, `config ${event.property}`),
+						previous: toWireJsonValue(event.previous, `previous config ${event.property}`),
+						...base,
+						lane: event.lane,
+					};
+				case "streamOptions":
+				case "retryPolicy":
+				case "compactionSettings":
+				case "steeringMode":
+				case "followUpMode":
+					return {
+						type: "config_update",
+						property: event.property,
+						value: toWireJsonValue(event.value, `config ${event.property}`),
+						previous: toWireJsonValue(event.previous, `previous config ${event.property}`),
+					};
+				default:
+					return assertNever(event);
+			}
 		case "fault":
 			return { type: "fault", code: event.code, message: event.message };
 		case "handler_error":
 		case "turn_start":
 		case "turn_end":
-		case "write_pending":
 		case "value_update":
-		case "config_update":
-		case "compaction_start":
-		case "compaction_end":
-		case "navigation_start":
-		case "navigation_end":
 		case "lane_created":
-		case "usage":
 			return undefined;
 		default:
 			return assertNever(event);

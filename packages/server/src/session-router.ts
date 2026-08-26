@@ -117,6 +117,8 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 					this.runForClient(client, () => this.createWatch(client, target, context)),
 				startWatch: ({ client, publish, context, target }, watchId) =>
 					this.runForClient(client, () => this.startWatch(client, target, watchId, publish, context)),
+				resnapshotWatch: ({ client, context, target }, watchId) =>
+					this.runForClient(client, () => this.resnapshotWatch(client, target, watchId, context)),
 				stopWatch: ({ client, context, target }, watchId) =>
 					this.runForClient(client, () => this.stopWatch(client, target, watchId, context)),
 			},
@@ -381,6 +383,18 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 			}
 		}
 		return { watchId };
+	}
+
+	private async resnapshotWatch(
+		client: object,
+		target: RpcTarget,
+		watchId: string,
+		context: Context,
+	): Promise<{ watchId: string; snapshot: RoutedSessionWatch["snapshot"] }> {
+		const attachment = this.requireAttachment(client, target);
+		const watch = attachment.watch;
+		if (watch?.id !== watchId) throw new WatchNotFoundError();
+		return { watchId, snapshot: await watch.handle.resnapshot(context) };
 	}
 
 	private async stopWatch(

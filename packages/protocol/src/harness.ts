@@ -176,12 +176,16 @@ const OperationResultBase = {
 	startedAt: TimestampSchema,
 	endedAt: TimestampSchema,
 };
-const RunValueSchema = Type.Union([
+export const OperationResultRecordSchema = Type.Union([
 	StrictObject({
 		...OperationResultBase,
 		status: Type.Union([Type.Literal("completed"), Type.Literal("declined"), Type.Literal("aborted")]),
 	}),
 	StrictObject({ ...OperationResultBase, status: Type.Literal("failed"), error: OperationErrorSchema }),
+]);
+export type OperationResultRecord = Static<typeof OperationResultRecordSchema>;
+const RunValueSchema = Type.Union([
+	OperationResultRecordSchema,
 	StrictObject({
 		operationId: IdSchema,
 		status: Type.Literal("suspended"),
@@ -330,7 +334,27 @@ export const LaneEntrySchema = Type.Union([
 ]);
 export type LaneEntry = Static<typeof LaneEntrySchema>;
 
-const QueuedItemSchema = StrictObject({ entryId: IdSchema, message: PromptMessageSchema });
+export const LaneQueuedItemSchema = Type.Union([
+	StrictObject({
+		entryId: IdSchema,
+		kind: Type.Union([
+			Type.Literal("steer"),
+			Type.Literal("followUp"),
+			Type.Literal("nextRun"),
+			Type.Literal("write"),
+		]),
+		type: Type.Literal("message"),
+		message: PromptMessageSchema,
+	}),
+	StrictObject({
+		entryId: IdSchema,
+		kind: Type.Literal("write"),
+		type: Type.Literal("custom"),
+		customType: Type.String(),
+		data: Type.Optional(JsonValueSchema),
+	}),
+]);
+export type LaneQueuedItem = Static<typeof LaneQueuedItemSchema>;
 const RunningToolSchema = StrictObject({
 	toolCallId: Type.String(),
 	toolName: Type.String(),
@@ -342,6 +366,7 @@ const LaneOperationSchema = StrictObject({
 	kind: Type.Union([Type.Literal("run"), Type.Literal("compaction"), Type.Literal("navigation")]),
 	status: Type.Union([Type.Literal("running"), Type.Literal("open"), Type.Literal("aborting")]),
 	startedAt: TimestampSchema,
+	fromTipId: Type.Union([IdSchema, Type.Null()]),
 	deferred: Type.Optional(StrictObject({ handle: DeferredHandleSchema, poll: Type.Integer({ minimum: 0 }) })),
 	streamingMessage: Type.Optional(AssistantMessageSchema),
 	runningTools: Type.Array(RunningToolSchema),
@@ -353,31 +378,31 @@ const LaneOperationSchema = StrictObject({
 		}),
 	),
 });
+const ModelIdentitySchema = StrictObject({ provider: Type.String(), modelId: Type.String() });
+const ThinkingLevelSchema = Type.Union([
+	Type.Literal("off"),
+	Type.Literal("minimal"),
+	Type.Literal("low"),
+	Type.Literal("medium"),
+	Type.Literal("high"),
+	Type.Literal("xhigh"),
+	Type.Literal("max"),
+]);
+const LaneConfigurationSchema = StrictObject({
+	model: ModelIdentitySchema,
+	thinkingLevel: ThinkingLevelSchema,
+	activeToolNames: Type.Array(Type.String()),
+});
+const SessionStatsSchema = StrictObject({ messageCount: Type.Integer({ minimum: 0 }), usage: UsageSchema });
 export const LaneSnapshotSchema = StrictObject({
 	lane: Type.String(),
 	transcript: Type.Array(LaneEntrySchema),
 	tipId: Type.Union([IdSchema, Type.Null()]),
-	lastOperationId: Type.Union([IdSchema, Type.Null()]),
+	lastResult: Type.Optional(OperationResultRecordSchema),
+	configuration: LaneConfigurationSchema,
+	stats: SessionStatsSchema,
 	operation: Type.Union([LaneOperationSchema, Type.Null()]),
-	queues: StrictObject({
-		steer: Type.Array(QueuedItemSchema),
-		followUp: Type.Array(QueuedItemSchema),
-		nextRun: Type.Array(QueuedItemSchema),
-	}),
-	pendingWrites: Type.Array(
-		StrictObject({
-			entryId: IdSchema,
-			type: Type.Union([
-				Type.Literal("message"),
-				Type.Literal("compaction"),
-				Type.Literal("branch_summary"),
-				Type.Literal("custom"),
-			]),
-			customType: Type.Optional(Type.String()),
-			message: Type.Optional(PromptMessageSchema),
-			data: Type.Optional(JsonValueSchema),
-		}),
-	),
+	queues: Type.Array(LaneQueuedItemSchema),
 	faulted: Type.Boolean(),
 });
 export type LaneSnapshot = Static<typeof LaneSnapshotSchema>;
@@ -391,16 +416,18 @@ const RunEndBase = {
 	runId: IdSchema,
 	fromTipId: Type.Union([IdSchema, Type.Null()]),
 	tipId: Type.Union([IdSchema, Type.Null()]),
+	endedAt: TimestampSchema,
 	...LaneEventBase,
 };
 export const LaneEventSchema = Type.Union([
-	StrictObject({ type: Type.Literal("run_start"), runId: IdSchema, ...LaneEventBase }),
+	StrictObject({ type: Type.Literal("run_start"), runId: IdSchema, startedAt: TimestampSchema, ...LaneEventBase }),
 	StrictObject({ type: Type.Literal("run_resume"), runId: IdSchema, ...LaneEventBase }),
 	StrictObject({
 		type: Type.Literal("run_suspend"),
 		runId: IdSchema,
 		reason: Type.Literal("deferred"),
 		deferred: DeferredHandleSchema,
+		poll: Type.Integer({ minimum: 0 }),
 		...LaneEventBase,
 	}),
 	StrictObject({
@@ -424,7 +451,8 @@ export const LaneEventSchema = Type.Union([
 	StrictObject({
 		type: Type.Literal("message_update"),
 		runId: IdSchema,
-		frame: AssistantMessageFrameSchema,
+		message: AssistantMessageSchema,
+		frame: Type.Optional(AssistantMessageFrameSchema),
 		...LaneEventBase,
 	}),
 	StrictObject({
@@ -466,9 +494,7 @@ export const LaneEventSchema = Type.Union([
 	StrictObject({ type: Type.Literal("entry_added"), entry: LaneEntrySchema, ...LaneEventBase }),
 	StrictObject({
 		type: Type.Literal("queue_update"),
-		steer: Type.Array(QueuedItemSchema),
-		followUp: Type.Array(QueuedItemSchema),
-		nextRun: Type.Array(QueuedItemSchema),
+		queues: Type.Array(LaneQueuedItemSchema),
 		...LaneEventBase,
 	}),
 	StrictObject({
@@ -478,6 +504,7 @@ export const LaneEventSchema = Type.Union([
 		attempt: Type.Integer({ minimum: 1 }),
 		maxAttempts: Type.Integer({ minimum: 1 }),
 		delayMs: Type.Integer({ minimum: 0 }),
+		notBefore: TimestampSchema,
 		errorMessage: Type.String(),
 		...LaneEventBase,
 	}),
@@ -496,6 +523,86 @@ export const LaneEventSchema = Type.Union([
 		success: Type.Boolean(),
 		finalError: Type.Optional(Type.String()),
 		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("compaction_start"),
+		runId: IdSchema,
+		reason: Type.Union([Type.Literal("manual"), Type.Literal("threshold"), Type.Literal("overflow")]),
+		startedAt: TimestampSchema,
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("compaction_end"),
+		runId: IdSchema,
+		reason: Type.Union([Type.Literal("manual"), Type.Literal("threshold"), Type.Literal("overflow")]),
+		status: Type.Union([
+			Type.Literal("completed"),
+			Type.Literal("declined"),
+			Type.Literal("failed"),
+			Type.Literal("aborted"),
+		]),
+		entryId: Type.Optional(IdSchema),
+		error: Type.Optional(OperationErrorSchema),
+		endedAt: TimestampSchema,
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("navigation_start"),
+		runId: IdSchema,
+		targetId: Type.Union([IdSchema, Type.Null()]),
+		startedAt: TimestampSchema,
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("navigation_end"),
+		runId: IdSchema,
+		status: Type.Union([
+			Type.Literal("completed"),
+			Type.Literal("declined"),
+			Type.Literal("failed"),
+			Type.Literal("aborted"),
+		]),
+		fromTipId: Type.Union([IdSchema, Type.Null()]),
+		tipId: Type.Union([IdSchema, Type.Null()]),
+		error: Type.Optional(OperationErrorSchema),
+		endedAt: TimestampSchema,
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("usage"),
+		lane: Type.String(),
+		row: StrictObject({
+			id: IdSchema,
+			seq: Type.Integer({ minimum: 1 }),
+			usage: UsageSchema,
+			entryId: Type.Optional(IdSchema),
+			adjustment: Type.Boolean(),
+			details: Type.Optional(JsonValueSchema),
+		}),
+		totals: UsageSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("config_update"),
+		property: Type.Union([Type.Literal("model"), Type.Literal("thinkingLevel"), Type.Literal("activeTools")]),
+		value: JsonValueSchema,
+		previous: JsonValueSchema,
+		...LaneEventBase,
+	}),
+	StrictObject({
+		type: Type.Literal("config_update"),
+		property: Type.Union([
+			Type.Literal("streamOptions"),
+			Type.Literal("retryPolicy"),
+			Type.Literal("compactionSettings"),
+			Type.Literal("steeringMode"),
+			Type.Literal("followUpMode"),
+		]),
+		value: JsonValueSchema,
+		previous: JsonValueSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("config_update"),
+		property: Type.Union([Type.Literal("tools"), Type.Literal("resources")]),
 	}),
 	StrictObject({ type: Type.Literal("fault"), code: Type.String(), message: Type.String() }),
 ]);

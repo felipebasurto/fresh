@@ -203,10 +203,14 @@ describe("Harness wire adapter", () => {
 				},
 			],
 			tipId: "entry-1",
-			lastOperationId: null,
+			configuration: {
+				model: { provider: "faux", modelId: "faux-1" },
+				thinkingLevel: "off",
+				activeToolNames: [],
+			},
+			stats: { messageCount: 1, usage: finalMessage.usage },
 			operation: null,
-			queues: { steer: [], followUp: [], nextRun: [] },
-			pendingWrites: [],
+			queues: [],
 			faulted: false,
 		};
 		const wire = toWireLaneSnapshot(snapshot);
@@ -247,6 +251,7 @@ describe("Harness wire adapter", () => {
 			type: "message_update",
 			lane: "main",
 			runId: "run-1",
+			message: partial,
 			frame: { type: "text_delta", contentIndex: 0, delta: "swer" },
 		});
 	});

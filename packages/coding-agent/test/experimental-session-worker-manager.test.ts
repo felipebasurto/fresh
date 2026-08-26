@@ -173,6 +173,15 @@ describe("Session worker lifecycle failures", () => {
 });
 
 describe("Session worker operations", () => {
+	const completedRun = {
+		operationId: "run-1",
+		kind: "run" as const,
+		status: "completed" as const,
+		fromTipId: null,
+		tipId: "leaf-1",
+		startedAt: 1,
+		endedAt: 2,
+	};
 	test("correlates prompt results to the worker generation and attachment", async () => {
 		const { coordinator, workers, attachment, release } = await createAttachedWorker();
 		coordinator.onSend = (peerId, payload) => {
@@ -192,7 +201,7 @@ describe("Session worker operations", () => {
 							scope,
 							result: {
 								ok: true,
-								value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
+								value: completedRun,
 							},
 						},
 					},
@@ -202,7 +211,7 @@ describe("Session worker operations", () => {
 
 		await expect(attachment.prompt(["Hello"], BACKGROUND_CONTEXT)).resolves.toEqual({
 			ok: true,
-			value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
+			value: completedRun,
 		});
 		const operation = coordinator.sent
 			.map(({ payload }) => asObject(payload))
@@ -233,7 +242,7 @@ describe("Session worker operations", () => {
 							scope: payload.scope,
 							result: {
 								ok: true,
-								value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
+								value: completedRun,
 							},
 						},
 					},
@@ -264,7 +273,7 @@ describe("Session worker operations", () => {
 							scope: null,
 							result: {
 								ok: true,
-								value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
+								value: completedRun,
 							},
 						},
 					},

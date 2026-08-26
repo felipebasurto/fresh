@@ -91,7 +91,7 @@ export class ProtocolTestClient {
 		if (!Array.isArray(call.args) || !call.args.every(isJsonValue)) {
 			throw new Error(`Test call ${call.method} requires JSON array arguments`);
 		}
-		const sessionOperation = ["prompt", "watch", "startWatch", "stopWatch"].includes(call.method);
+		const sessionOperation = ["prompt", "watch", "startWatch", "resnapshotWatch", "stopWatch"].includes(call.method);
 		let target: RpcTarget = { serverId };
 		let args = call.args;
 		if (sessionOperation) {
@@ -174,6 +174,7 @@ function serviceAddress(method: string): { serviceId: string; member: string } {
 			return { serviceId: "pi.chat", member: "prompt" };
 		case "watch":
 		case "startWatch":
+		case "resnapshotWatch":
 		case "stopWatch":
 			return { serviceId: "pi.transcript", member: method };
 		default:

@@ -611,7 +611,7 @@ async function runClientCommand(command: ClientCommand): Promise<void> {
 	let streamedText = false;
 	const result = await runClient(command, {
 		onEvent(event) {
-			if (event.type !== "message_update" || event.frame.type !== "text_delta") return;
+			if (event.type !== "message_update" || event.frame?.type !== "text_delta") return;
 			streamedText = true;
 			process.stdout.write(event.frame.delta);
 		},

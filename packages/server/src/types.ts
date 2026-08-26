@@ -64,6 +64,7 @@ export interface RoutedServerServiceHost {
 export interface RoutedSessionWatch {
 	readonly snapshot: LaneSnapshot;
 	start(listener: (event: LaneEvent, context: Context) => MaybePromise<void>, context: Context): MaybePromise<void>;
+	resnapshot(context: Context): Promise<LaneSnapshot>;
 	unsubscribe(context: Context): MaybePromise<void>;
 }
 

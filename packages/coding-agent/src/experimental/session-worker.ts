@@ -103,6 +103,10 @@ export const SessionWorkerOperations = defineRpc({
 		args: Type.Tuple([Type.String({ minLength: 1 })]),
 		result: StrictObject({ watchId: Type.String({ minLength: 1 }) }),
 	},
+	resnapshotWatch: {
+		args: Type.Tuple([Type.String({ minLength: 1 })]),
+		result: StrictObject({ watchId: Type.String({ minLength: 1 }), snapshot: LaneSnapshotSchema }),
+	},
 	stopWatch: {
 		args: Type.Tuple([Type.String({ minLength: 1 })]),
 		result: StrictObject({ watchId: Type.String({ minLength: 1 }) }),
@@ -701,6 +705,11 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 			});
 			return { watchId };
 		},
+		resnapshotWatch: async ({ scope, context }: WorkerOperationContext, watchId) => {
+			const watch = laneWatches.get(watchId);
+			if (!watch || !sameScope(watch.scope, scope)) throw new Error("Session worker lane watch was not found");
+			return { watchId, snapshot: toWireLaneSnapshot(await watch.handle.resnapshot(context)) };
+		},
 		stopWatch: async ({ scope }: WorkerOperationContext, watchId) => {
 			const watch = laneWatches.get(watchId);
 			if (!watch || !sameScope(watch.scope, scope)) throw new Error("Session worker lane watch was not found");
@@ -934,7 +943,7 @@ async function createCodingAgentHarness(
 				currentModel.provider !== resolved.model.provider ||
 				currentModel.id !== resolved.model.id
 			) {
-				await lane.setModel(resolved.model, TODO_CONTEXT);
+				await lane.setModel({ provider: resolved.model.provider, modelId: resolved.model.id }, TODO_CONTEXT);
 			}
 			if (
 				resolved.thinkingLevel !== undefined &&

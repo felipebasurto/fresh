@@ -70,6 +70,10 @@ export const ServiceRpc = defineRpc({
 		args: Type.Tuple([IdSchema]),
 		result: StrictObject({ watchId: IdSchema }),
 	},
+	resnapshotWatch: {
+		args: Type.Tuple([IdSchema]),
+		result: StrictObject({ watchId: IdSchema, snapshot: LaneSnapshotSchema }),
+	},
 	stopWatch: {
 		args: Type.Tuple([IdSchema]),
 		result: StrictObject({ watchId: IdSchema }),
@@ -215,6 +219,7 @@ const ServiceRpcAddresses = {
 	prompt: { serviceId: "pi.chat", member: "prompt" },
 	watch: { serviceId: "pi.transcript", member: "watch" },
 	startWatch: { serviceId: "pi.transcript", member: "startWatch" },
+	resnapshotWatch: { serviceId: "pi.transcript", member: "resnapshotWatch" },
 	stopWatch: { serviceId: "pi.transcript", member: "stopWatch" },
 } as const satisfies Record<ServiceRpcMethod, { serviceId: string; member: string }>;
 

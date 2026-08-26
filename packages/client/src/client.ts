@@ -287,11 +287,14 @@ export class Client {
 		this.#requireSessionTarget(sessionId);
 		const { watchId, snapshot } = await this.#rpc.watch();
 		const connection = this.#hello;
+		let currentSnapshot = snapshot;
 		let state: "ready" | "starting" | "started" | "disposed" = "ready";
 		return {
 			id: watchId,
 			sessionId,
-			snapshot,
+			get snapshot() {
+				return currentSnapshot;
+			},
 			start: async (listener) => {
 				if (state !== "ready") throw new Error("Lane watch may be started only once");
 				if (this.#watchListeners.has(watchId)) {
@@ -309,6 +312,13 @@ export class Client {
 					state = "disposed";
 					throw error;
 				}
+			},
+			resnapshot: async () => {
+				if (state === "disposed") throw new Error("Lane watch is disposed");
+				this.#requireSessionTarget(sessionId);
+				const refreshed = await this.#rpc.resnapshotWatch(watchId);
+				currentSnapshot = refreshed.snapshot;
+				return currentSnapshot;
 			},
 			dispose: async () => {
 				if (state === "disposed") return;
@@ -477,6 +487,7 @@ export class Client {
 			case "prompt":
 			case "watch":
 			case "startWatch":
+			case "resnapshotWatch":
 			case "stopWatch":
 				return this.#requireSessionTarget();
 		}

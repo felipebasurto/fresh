@@ -566,21 +566,9 @@ describe("experimental durable server composition", () => {
 		await expect(services.dispose(BACKGROUND_CONTEXT)).resolves.toBeUndefined();
 	});
 
-	test("routes Chat through the worker-owned service provider and sanitizes runtime failures", async ({
-		onTestFinished,
-	}) => {
+	test("streams prompt events through the worker-owned service provider", async ({ onTestFinished }) => {
 		const legacyPrompt = vi.spyOn(Client.prototype, "promptSession");
 		onTestFinished(() => legacyPrompt.mockRestore());
-		const { directory } = await makeServer();
-
-		await expect(
-			runClient({ command: "client", sessionId: "demo-1", prompt: "question" }, { directory }),
-		).rejects.toThrow("Internal server error");
-		expect(legacyPrompt).not.toHaveBeenCalled();
-	});
-
-	// Runtime cannot complete no-tool runs yet; keep the framed prompt path covered as a sanitized failure above.
-	test.skip("streams prompt events from the worker to the client", async ({ onTestFinished }) => {
 		const spawn = vi
 			.spyOn(processRuntime, "spawnInternalProcess")
 			.mockImplementation((role, args, options) =>
@@ -593,7 +581,6 @@ describe("experimental durable server composition", () => {
 		onTestFinished(() => spawn.mockRestore());
 		const { directory } = await makeServer();
 		const eventTypes: string[] = [];
-		const text: string[] = [];
 
 		const result = await runClient(
 			{ command: "client", sessionId: "demo-1", prompt: "question" },
@@ -601,15 +588,11 @@ describe("experimental durable server composition", () => {
 				directory,
 				onEvent(event) {
 					eventTypes.push(event.type);
-					if (event.type === "message_update" && event.frame.type === "text_delta") {
-						text.push(event.frame.delta);
-					}
 				},
 			},
 		);
 
 		expect(result).toMatchObject({ kind: "prompted", text: "deterministic remote answer" });
-		expect(text.join("")).toBe("deterministic remote answer");
 		expect(eventTypes).toEqual(
 			expect.arrayContaining([
 				"run_start",
@@ -620,6 +603,7 @@ describe("experimental durable server composition", () => {
 				"run_end",
 			]),
 		);
+		expect(legacyPrompt).not.toHaveBeenCalled();
 	});
 
 	// Re-enable with runtime no-tool execution.

@@ -55,10 +55,24 @@ const laneSnapshot = {
 	lane: "main",
 	transcript: [],
 	tipId: null,
-	lastOperationId: null,
+	configuration: {
+		model: { provider: "faux", modelId: "faux-1" },
+		thinkingLevel: "off",
+		activeToolNames: [],
+	},
+	stats: {
+		messageCount: 0,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	},
 	operation: null,
-	queues: { steer: [], followUp: [], nextRun: [] },
-	pendingWrites: [],
+	queues: [],
 	faulted: false,
 } satisfies LaneSnapshot;
 
@@ -94,6 +108,8 @@ describe("RPC manifest", () => {
 				case "startWatch":
 				case "stopWatch":
 					return { watchId: call.args[0] };
+				case "resnapshotWatch":
+					return { watchId: call.args[0], snapshot: laneSnapshot };
 			}
 		});
 
@@ -106,6 +122,10 @@ describe("RPC manifest", () => {
 		await expect(client.prompt(["Hello"])).resolves.toEqual(completedRunResult);
 		await expect(client.watch()).resolves.toEqual({ watchId: "watch-1", snapshot: laneSnapshot });
 		await expect(client.startWatch("watch-1")).resolves.toEqual({ watchId: "watch-1" });
+		await expect(client.resnapshotWatch("watch-1")).resolves.toEqual({
+			watchId: "watch-1",
+			snapshot: laneSnapshot,
+		});
 		await expect(client.stopWatch("watch-1")).resolves.toEqual({ watchId: "watch-1" });
 		expect(calls).toEqual([
 			{ method: "list", args: [] },
@@ -114,6 +134,7 @@ describe("RPC manifest", () => {
 			{ method: "prompt", args: [["Hello"]] },
 			{ method: "watch", args: [] },
 			{ method: "startWatch", args: ["watch-1"] },
+			{ method: "resnapshotWatch", args: ["watch-1"] },
 			{ method: "stopWatch", args: ["watch-1"] },
 		]);
 	});
@@ -138,6 +159,7 @@ describe("RPC manifest", () => {
 			prompt: () => completedRunResult,
 			watch: () => ({ watchId: "watch-1", snapshot: laneSnapshot }),
 			startWatch: (_context, watchId) => ({ watchId }),
+			resnapshotWatch: (_context, watchId) => ({ watchId, snapshot: laneSnapshot }),
 			stopWatch: (_context, watchId) => ({ watchId }),
 		});
 		await expect(dispatch({ method: "list", args: [] }, undefined)).resolves.toEqual([summary]);
@@ -148,6 +170,10 @@ describe("RPC manifest", () => {
 		});
 		await expect(dispatch({ method: "prompt", args: [["Hello"]] }, undefined)).resolves.toEqual(completedRunResult);
 		await expect(dispatch({ method: "watch", args: [] }, undefined)).resolves.toEqual({
+			watchId: "watch-1",
+			snapshot: laneSnapshot,
+		});
+		await expect(dispatch({ method: "resnapshotWatch", args: ["watch-1"] }, undefined)).resolves.toEqual({
 			watchId: "watch-1",
 			snapshot: laneSnapshot,
 		});
@@ -166,6 +192,7 @@ describe("RPC manifest", () => {
 			prompt: () => completedRunResult,
 			watch: () => ({ watchId: "watch-1", snapshot: laneSnapshot }),
 			startWatch: (_context: undefined, watchId: string) => ({ watchId }),
+			resnapshotWatch: (_context: undefined, watchId: string) => ({ watchId, snapshot: laneSnapshot }),
 			stopWatch: (_context: undefined, watchId: string) => ({ watchId }),
 		} as never);
 		await expect(dispatch({ method: "list", args: [] }, undefined)).rejects.toThrow(/Invalid result.*list/);
@@ -426,7 +453,7 @@ describe("protocol validation", () => {
 		const eventMessage: ServerMessage = {
 			type: "event",
 			watchId: "watch-1",
-			event: { type: "run_start", lane: "main", runId: "run-1" },
+			event: { type: "run_start", lane: "main", runId: "run-1", startedAt: 1 },
 		};
 		expect(parseServerMessage(snapshotMessage)).toEqual(snapshotMessage);
 		expect(parseServerMessage(eventMessage)).toEqual(eventMessage);
@@ -438,6 +465,23 @@ describe("protocol validation", () => {
 					type: "message_update",
 					lane: "main",
 					runId: "run-1",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "hello" }],
+						api: "test",
+						provider: "test",
+						model: "test",
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "pending",
+						timestamp: 1,
+					},
 					frame: { type: "text_delta", contentIndex: 0, delta: "hello" },
 				},
 			}),

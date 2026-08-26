@@ -23,6 +23,7 @@ export interface LaneWatch {
 	readonly sessionId: string;
 	readonly snapshot: LaneSnapshot;
 	start(listener: (event: LaneEvent) => void | Promise<void>): Promise<void>;
+	resnapshot(): Promise<LaneSnapshot>;
 	dispose(): Promise<void>;
 }
 

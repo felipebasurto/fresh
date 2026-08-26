@@ -152,16 +152,22 @@ describe("Client service operations", () => {
 			},
 			call: { serviceId: "pi.chat", member: "prompt", args: [["Hello"]] },
 		});
+		const completed = {
+			operationId: "run-1",
+			kind: "run" as const,
+			status: "completed" as const,
+			fromTipId: null,
+			tipId: "leaf-1",
+			startedAt: 1,
+			endedAt: 2,
+		};
 		server.send({
 			type: "response",
 			id: "request-4",
 			ok: true,
-			result: { ok: true, value: { kind: "completed", runId: "run-1", tipId: "leaf-1" } },
+			result: { ok: true, value: completed },
 		});
-		await expect(prompting).resolves.toEqual({
-			ok: true,
-			value: { kind: "completed", runId: "run-1", tipId: "leaf-1" },
-		});
+		await expect(prompting).resolves.toEqual({ ok: true, value: completed });
 		await client.dispose();
 	});
 
@@ -247,9 +253,24 @@ describe("Client service operations", () => {
 					lane: "main",
 					transcript: [],
 					tipId: null,
+					configuration: {
+						model: { provider: "faux", modelId: "faux-1" },
+						thinkingLevel: "off",
+						activeToolNames: [],
+					},
+					stats: {
+						messageCount: 0,
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+					},
 					operation: null,
-					queues: { steer: [], followUp: [], nextRun: [] },
-					pendingWrites: [],
+					queues: [],
 					faulted: false,
 				},
 			},
@@ -273,22 +294,47 @@ describe("Client service operations", () => {
 		server.send({
 			type: "event",
 			watchId: "watch-1",
-			event: { type: "run_start", lane: "main", runId: "run-1" },
+			event: { type: "run_start", lane: "main", runId: "run-1", startedAt: 1 },
 		});
 		await Promise.resolve();
 		expect(events).toEqual([]);
 		server.send({ type: "response", id: "request-3", ok: true, result: { watchId: "watch-1" } });
 		await starting;
 
+		const refreshing = watch.resnapshot();
+		await server.waitForMessages(5);
+		expect(server.messages[4]).toMatchObject({
+			call: { serviceId: "pi.transcript", member: "resnapshotWatch", args: ["watch-1"] },
+		});
+		const refreshed = {
+			...watch.snapshot,
+			operation: {
+				id: "run-1",
+				kind: "run" as const,
+				startedAt: 1,
+				fromTipId: null,
+				status: "open" as const,
+				runningTools: [],
+			},
+		};
+		server.send({
+			type: "response",
+			id: "request-4",
+			ok: true,
+			result: { watchId: "watch-1", snapshot: refreshed },
+		});
+		expect(await refreshing).toEqual(refreshed);
+		expect(watch.snapshot).toEqual(refreshed);
+
 		let disposed = false;
 		const disposing = watch.dispose().then(() => {
 			disposed = true;
 		});
-		await server.waitForMessages(5);
-		expect(server.messages[4]).toMatchObject({
+		await server.waitForMessages(6);
+		expect(server.messages[5]).toMatchObject({
 			call: { serviceId: "pi.transcript", member: "stopWatch", args: ["watch-1"] },
 		});
-		server.send({ type: "response", id: "request-4", ok: true, result: { watchId: "watch-1" } });
+		server.send({ type: "response", id: "request-5", ok: true, result: { watchId: "watch-1" } });
 		await Promise.resolve();
 		expect(disposed).toBe(false);
 		releaseEvent();

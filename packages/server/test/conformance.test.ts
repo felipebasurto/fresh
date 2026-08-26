@@ -286,6 +286,7 @@ describe("Session protocol", () => {
 			type: "run_start",
 			lane: "main",
 			runId: "run-1",
+			startedAt: 1,
 		});
 		expect(client.messages.some((message) => message.type === "event")).toBe(false);
 
@@ -300,6 +301,12 @@ describe("Session protocol", () => {
 			event: { type: "run_start", runId: "run-1" },
 		});
 		await expect(starting).resolves.toMatchObject({ ok: true, result: { watchId } });
+		await expect(
+			client.request("00000000-0000-4000-8000-000000000001", {
+				method: "resnapshotWatch",
+				args: ["session-1", watchId],
+			}),
+		).resolves.toMatchObject({ ok: true, result: { watchId, snapshot: { lane: "main" } } });
 
 		await host.latestHarness("session-1").emitEvent({
 			type: "message_start",

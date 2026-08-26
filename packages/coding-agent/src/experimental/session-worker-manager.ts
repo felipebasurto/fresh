@@ -309,6 +309,12 @@ export class SessionWorkerManager {
 					throw error;
 				}
 			},
+			resnapshot: async (resnapshotContext) => {
+				if (state === "unsubscribed" || this.#laneWatches.get(watchId) !== watch) {
+					throw new Error("Session worker lane watch is unsubscribed");
+				}
+				return (await this.#operations(worker, scope, resnapshotContext).resnapshotWatch(watchId)).snapshot;
+			},
 			unsubscribe: async (unsubscribeContext) => {
 				if (state === "unsubscribed") return;
 				state = "unsubscribed";
