@@ -489,7 +489,7 @@ describe("experimental durable server composition", () => {
 
 		await expect(transcript.snapshot(BACKGROUND_CONTEXT)).rejects.toMatchObject({
 			code: "service_not_implemented",
-			message: "Transcript.snapshot is not implemented until its later plugin-service slice",
+			message: "Transcript.snapshot is not implemented until its later facet-service slice",
 		});
 		await services.dispose(BACKGROUND_CONTEXT);
 	});

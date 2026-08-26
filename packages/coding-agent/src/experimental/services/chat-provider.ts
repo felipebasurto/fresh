@@ -2,6 +2,7 @@ import {
 	type AgentLane,
 	type RunResult as HarnessRunResult,
 	ServiceSliceNotImplemented,
+	SliceNotImplemented,
 } from "@earendil-works/pi-agent-core";
 import type { PromptArguments } from "@earendil-works/pi-protocol";
 import { defineFacet } from "../facets.ts";
@@ -12,16 +13,20 @@ import { Lane } from "./harness.ts";
 export function createChatService(lane: AgentLane): ChatService {
 	return {
 		async prompt(request, context) {
-			const prompt = toHarnessPromptArguments(toPromptArguments(request));
-			const result =
-				typeof prompt[0] === "string"
-					? await lane.prompt(prompt[0], prompt[1], context)
-					: await lane.prompt(prompt[0], context);
-			return toChatPromptResponse(result);
+			return mapHarnessSlice("Chat.prompt", async () => {
+				const prompt = toHarnessPromptArguments(toPromptArguments(request));
+				const result =
+					typeof prompt[0] === "string"
+						? await lane.prompt(prompt[0], prompt[1], context)
+						: await lane.prompt(prompt[0], context);
+				return toChatPromptResponse(result);
+			});
 		},
 		async requestAbort(operationId, context) {
-			const result = await lane.requestAbort(operationId, context);
-			if (!result.ok) throw new Error(result.error.message);
+			await mapHarnessSlice("Chat.requestAbort", async () => {
+				const result = await lane.requestAbort(operationId, context);
+				if (!result.ok) throw new Error(result.error.message);
+			});
 		},
 		async steer() {
 			throw new ServiceSliceNotImplemented("Chat.steer");
@@ -45,6 +50,15 @@ export function createChatService(lane: AgentLane): ChatService {
 			throw new ServiceSliceNotImplemented("Chat.navigate");
 		},
 	};
+}
+
+async function mapHarnessSlice<T>(operation: string, callback: () => Promise<T>): Promise<T> {
+	try {
+		return await callback();
+	} catch (error) {
+		if (error instanceof SliceNotImplemented) throw new ServiceSliceNotImplemented(operation);
+		throw error;
+	}
 }
 
 export const chatServiceFacet = defineFacet({

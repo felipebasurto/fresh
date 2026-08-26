@@ -6,12 +6,17 @@ import {
 	InvalidMessage,
 	LaneBusy,
 	ServiceSliceNotImplemented,
+	SliceNotImplemented,
 	UnknownSkill,
 	UnknownTemplate,
 } from "@earendil-works/pi-agent-core";
 import { describe, expect, test, vi } from "vitest";
 import { createFacetHost, defineFacet } from "../src/experimental/facets.ts";
-import { chatServiceFacet, toChatPromptResponse } from "../src/experimental/services/chat-provider.ts";
+import {
+	chatServiceFacet,
+	createChatService,
+	toChatPromptResponse,
+} from "../src/experimental/services/chat-provider.ts";
 import { Lane } from "../src/experimental/services/harness.ts";
 
 const admissionErrors = [
@@ -86,6 +91,27 @@ describe("Chat service", () => {
 		} finally {
 			await host.dispose();
 		}
+	});
+
+	test("maps missing Harness slices to service errors", async () => {
+		const lane = {
+			async prompt() {
+				throw new SliceNotImplemented("prompt");
+			},
+			async requestAbort() {
+				throw new SliceNotImplemented("requestAbort");
+			},
+		} as unknown as AgentLane;
+		const chat = createChatService(lane);
+
+		await expect(chat.prompt({ message: "hello", images: null }, BACKGROUND_CONTEXT)).rejects.toMatchObject({
+			name: "ServiceSliceNotImplemented",
+			code: "service_not_implemented",
+		});
+		await expect(chat.requestAbort("operation-1", BACKGROUND_CONTEXT)).rejects.toMatchObject({
+			name: "ServiceSliceNotImplemented",
+			code: "service_not_implemented",
+		});
 	});
 
 	test("reports accepted successful and failed operations", () => {

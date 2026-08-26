@@ -2,7 +2,7 @@
 
 Experimental local server for the new durable Session and Agent Harness interfaces.
 
-The current slice supports server- and Session-scoped plugin-service routing, multi-presentation attachment, prompting, and optional main-lane observation. `RoutedServerServiceHost.attachClient()` creates one connection-scoped server service endpoint with narrow attachment-management capabilities. `RoutedSessionHandle.attachClient()` returns a presentation-scoped Session capability. Its optional `invokeService()` forwards an opaque service/member envelope to the selected Session endpoint; the server validates the attachment route but does not load the plugin contract. Its optional `watch()` supplies an authoritative snapshot plus buffered events.
+The current slice supports server- and Session-scoped facet-service routing, multi-presentation attachment, prompting, and optional main-lane observation. `RoutedServerServiceHost.attachClient()` creates one connection-scoped server service endpoint with narrow attachment-management capabilities. `RoutedSessionHandle.attachClient()` returns a presentation-scoped Session capability. Its optional `invokeService()` forwards an opaque service/member envelope to the selected Session endpoint; the server validates the attachment route but does not load the facet contract. Its optional `watch()` supplies an authoritative snapshot plus buffered events.
 
 - server service calls and subscriptions route opaquely through the connection's `RoutedServerServiceAttachment`;
 - the application-owned `SessionDirectory` projects the private catalog into replicated presentation-safe state;
@@ -73,6 +73,6 @@ Applications supply a private Session catalog and a routed Session factory. The 
 
 `serverId` is a logical identity supplied by the launcher, not a socket address. The Unix preset requires an explicit physical `path`; `getUnixSocketPath()` derives one from a caller-selected directory. Choose a short, private runtime directory rather than deriving the route from an unbounded home-directory path. A long-lived launcher can reuse the same ID and path when replacing a server process.
 
-`Server` composes authenticated transports through `ServerListener`. The Unix submodule provides `createUnixListener()` and `createUnixServer()`. Low-level CBOR framing and validation come from `@earendil-works/pi-protocol`.
+`Server` composes transports through `ServerListener`; peer authentication remains application policy and is not implemented by the experimental Unix transport. The Unix submodule provides `createUnixListener()` and `createUnixServer()`. Low-level CBOR framing and validation come from `@earendil-works/pi-protocol`.
 
 Server and worker lifecycle is managed outside the public Pi protocol. The replaceable application server converts connection attachments into private demand updates; the worker combines generation-tagged demand with authoritative Harness activity. The experimental coordinator only supplies stable routing and reports generic server-generation connection changes.
