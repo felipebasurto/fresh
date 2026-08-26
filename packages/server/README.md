@@ -31,23 +31,23 @@ async function startServer(
   const sessions = new MemorySessionRepo();
   const host: ServerHost = {
     sessions: {
-      list: () => sessions.list(),
-      async create({ id }) {
-        const session = await sessions.create({ id });
+      list: (context) => sessions.list(undefined, context),
+      async create({ id }, context) {
+        const session = await sessions.create({ id }, context);
         try {
           return session.metadata;
         } finally {
-          await session.close();
+          await session.close(context);
         }
       },
     },
-    async openSession(metadata) {
-      const session = await sessions.open(metadata);
+    async openSession(metadata, context) {
+      const session = await sessions.open(metadata, context);
       try {
         return await openRoutedSession(session);
       } catch (error) {
         try {
-          await session.close();
+          await session.close(context);
         } catch (cleanupError) {
           throw new AggregateError(
             [error, cleanupError],
