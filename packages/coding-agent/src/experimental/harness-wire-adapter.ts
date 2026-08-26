@@ -620,20 +620,6 @@ export function toWireLaneSnapshot(snapshot: HarnessLaneSnapshot): LaneSnapshot 
 										poll: snapshot.operation.deferred.poll,
 									},
 								}),
-						...(snapshot.operation.drained === undefined
-							? {}
-							: {
-									drained: {
-										steer: snapshot.operation.drained.steer.map((item) => ({
-											entryId: item.entryId,
-											message: toWireMessage(item.message),
-										})),
-										followUp: snapshot.operation.drained.followUp.map((item) => ({
-											entryId: item.entryId,
-											message: toWireMessage(item.message),
-										})),
-									},
-								}),
 						...(snapshot.operation.streamingMessage === undefined
 							? {}
 							: { streamingMessage: toWireAssistantMessage(snapshot.operation.streamingMessage) }),
@@ -685,10 +671,10 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 				...base,
 				lane: event.lane,
 			};
-		case "run_abort":
+		case "operation_abort":
 			return {
-				type: "run_abort",
-				runId: event.runId,
+				type: "operation_abort",
+				operationId: event.operationId,
 				steer: event.steer.map(toWireMessage),
 				followUp: event.followUp.map(toWireMessage),
 				...base,

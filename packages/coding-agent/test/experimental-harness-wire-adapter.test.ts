@@ -214,6 +214,19 @@ describe("Harness wire adapter", () => {
 		expect(wire).toMatchObject({ lane: "main", transcript: [{ id: "entry-1" }] });
 	});
 
+	test("projects family-neutral operation abort events", () => {
+		const event: HarnessEvent = {
+			type: "operation_abort",
+			lane: "main",
+			operationId: "operation-1",
+			steer: [{ role: "user", content: "steer", timestamp: 1 }],
+			followUp: [{ role: "user", content: "follow", timestamp: 2 }],
+		};
+		const wire = toWireLaneEvent(event);
+		expect(Check(LaneEventSchema, wire)).toBe(true);
+		expect(wire).toMatchObject({ type: "operation_abort", operationId: "operation-1" });
+	});
+
 	test("projects assistant updates as compact frames", () => {
 		const partial: AssistantMessage = {
 			...finalMessage,

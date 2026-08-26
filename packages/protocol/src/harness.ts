@@ -343,9 +343,6 @@ const LaneOperationSchema = StrictObject({
 	status: Type.Union([Type.Literal("running"), Type.Literal("open"), Type.Literal("aborting")]),
 	startedAt: TimestampSchema,
 	deferred: Type.Optional(StrictObject({ handle: DeferredHandleSchema, poll: Type.Integer({ minimum: 0 }) })),
-	drained: Type.Optional(
-		StrictObject({ steer: Type.Array(QueuedItemSchema), followUp: Type.Array(QueuedItemSchema) }),
-	),
 	streamingMessage: Type.Optional(AssistantMessageSchema),
 	runningTools: Type.Array(RunningToolSchema),
 	retry: Type.Optional(
@@ -407,8 +404,8 @@ export const LaneEventSchema = Type.Union([
 		...LaneEventBase,
 	}),
 	StrictObject({
-		type: Type.Literal("run_abort"),
-		runId: IdSchema,
+		type: Type.Literal("operation_abort"),
+		operationId: IdSchema,
 		steer: Type.Array(PromptMessageSchema),
 		followUp: Type.Array(PromptMessageSchema),
 		...LaneEventBase,
