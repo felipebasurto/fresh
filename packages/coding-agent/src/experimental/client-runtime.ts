@@ -5,7 +5,7 @@ import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute }
 import { isServerId } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
-import { Chat } from "./services/chat.ts";
+import { AgentController } from "./services/agent-controller.ts";
 import {
 	createServerServiceConnection,
 	createSessionServiceConnection,
@@ -26,7 +26,7 @@ export interface ActivatedClientRuntimeServer extends ClientRuntimeServer {
 	readonly directory: SessionDirectory;
 	readonly management: SessionManagement;
 	readonly models: Models;
-	readonly chat: Chat;
+	readonly agent: AgentController;
 }
 
 export interface ClientRuntime {
@@ -128,7 +128,7 @@ export async function activateBuiltinClientServices(
 		onError() {},
 	});
 	const sessionServices = server.session.open({
-		services: [Models, Chat],
+		services: [Models, AgentController],
 		assertAccess() {},
 		onError() {},
 	});
@@ -151,9 +151,9 @@ export async function activateBuiltinClientServices(
 		},
 	};
 	const models = sessionServices.use(Models);
-	const chat = sessionServices.use(Chat);
+	const agent = sessionServices.use(AgentController);
 	await Promise.all([serverServices.activate(BACKGROUND_CONTEXT), sessionServices.activate(BACKGROUND_CONTEXT)]);
-	return { ...server, directory, management, models, chat };
+	return { ...server, directory, management, models, agent };
 }
 
 function routeFromExplicitPath(path: string): UnixServerRoute {

@@ -587,9 +587,9 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 		harness = runtime.harness;
 		lane = runtime.lane ?? (await harness.lane("main", TODO_CONTEXT));
 		services = await createSessionWorkerServices({
-			harness,
 			lane,
 			modelRuntime: runtime.modelRuntime,
+			settingsManager: runtime.settingsManager,
 			facetLoader: runtime.facetLoader,
 			publish: (scope, subscriptionId, update) =>
 				control.send({
@@ -890,9 +890,9 @@ async function createCodingAgentHarness(
 	executionEnv: NodeExecutionEnv,
 ): Promise<SessionWorkerRuntime> {
 	const modelRuntime = await ModelRuntime.create();
+	const settingsManager = SettingsManager.create(session.metadata.cwd);
 	let resolved: Awaited<ReturnType<typeof findInitialModel>> | ReturnType<typeof resolveCliModel>;
 	if (options.model === undefined) {
-		const settingsManager = SettingsManager.create(session.metadata.cwd);
 		resolved = await findInitialModel({
 			scopedModels: [],
 			isContinuing: true,
@@ -936,23 +936,7 @@ async function createCodingAgentHarness(
 		) {
 			await lane.setActiveTools(activeToolNames, TODO_CONTEXT);
 		}
-		if (options.model !== undefined) {
-			const currentModel = await lane.getModel(TODO_CONTEXT);
-			if (
-				!currentModel ||
-				currentModel.provider !== resolved.model.provider ||
-				currentModel.id !== resolved.model.id
-			) {
-				await lane.setModel({ provider: resolved.model.provider, modelId: resolved.model.id }, TODO_CONTEXT);
-			}
-			if (
-				resolved.thinkingLevel !== undefined &&
-				(await lane.getThinkingLevel(TODO_CONTEXT)) !== resolved.thinkingLevel
-			) {
-				await lane.setThinkingLevel(resolved.thinkingLevel, TODO_CONTEXT);
-			}
-		}
-		return { harness, lane, modelRuntime };
+		return { harness, lane, modelRuntime, settingsManager };
 	} catch (error) {
 		try {
 			await harness.close(TODO_CONTEXT);

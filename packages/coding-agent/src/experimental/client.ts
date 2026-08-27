@@ -2,7 +2,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import type { LaneEvent, PromptMessage, SessionAddress } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { activateBuiltinClientServices, openClientRuntime } from "./client-runtime.ts";
-import type { ChatPromptResponse } from "./services/chat.ts";
+import type { AgentOperationResponse } from "./services/agent-controller.ts";
 
 export type ClientResult =
 	| {
@@ -70,9 +70,9 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 			return { kind: "attached", serverId: match.route.serverId, sessionId };
 		}
 
-		const chat = match.chat;
+		const agent = match.agent;
 		const completedText = new Map<string, string>();
-		// Chat deliberately returns no transcript content. Keep the compatibility watch until Transcript is implemented.
+		// AgentController returns no transcript content. Keep the lane watch until Transcript owns live deltas.
 		const watch = await match.client.watchSession(sessionId);
 		await watch.start(async (event) => {
 			if (event.type === "message_end" && event.runId !== undefined && event.message.role === "assistant") {
@@ -80,9 +80,9 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 			}
 			await options.onEvent?.(event);
 		});
-		let response: ChatPromptResponse;
+		let response: AgentOperationResponse;
 		try {
-			response = await chat.prompt({ message: command.prompt, images: null }, BACKGROUND_CONTEXT);
+			response = await agent.prompt({ message: command.prompt, images: null }, BACKGROUND_CONTEXT);
 		} finally {
 			await watch.dispose();
 		}

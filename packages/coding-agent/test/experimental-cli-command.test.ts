@@ -110,6 +110,18 @@ describe("experimental CLI commands", () => {
 		});
 	});
 
+	test.each([
+		["-c", "continue"],
+		["--continue", "continue"],
+		["-r", "resume"],
+		["--resume", "resume"],
+	] as const)("parses client Session selection %s", (option, property) => {
+		expect(cli.parse(["client", option])).toEqual({
+			ok: true,
+			command: { command: "client", [property]: true },
+		});
+	});
+
 	test("parses a client session ID", () => {
 		expect(cli.parse(["client", "--session-id", "demo-1"])).toEqual({
 			ok: true,
@@ -214,6 +226,7 @@ describe("experimental CLI commands", () => {
 		],
 		[["client", "--connect", "ws://localhost:8080"], 'Unsupported --connect transport "ws:"'],
 		[["client", "--provider", "anthropic"], "--provider requires --model"],
+		[["client", "-c", "-r"], "--session-id, --continue, and --resume are mutually exclusive"],
 		[["server", "--provider", "anthropic"], "--provider requires --model"],
 		[["server", "--server-id", "not-a-uuid"], "Invalid --server-id"],
 		[["server", "--server-id"], "--server-id requires a value"],

@@ -15,6 +15,8 @@ export interface ClientCommand {
 	readonly auth?: AuthInput;
 	readonly connect?: TransportAddress;
 	readonly sessionId?: string;
+	readonly continue?: boolean;
+	readonly resume?: boolean;
 	readonly provider?: string;
 	readonly model?: string;
 	readonly prompt?: string;
@@ -49,11 +51,20 @@ export const clientCommand = new Command<ClientCommand, ClientCommandContext>("c
 			promptArgs[0]!.length > 0
 				? promptArgs[0]
 				: undefined;
-		const { errors: optionErrors } = parseLegacyOptions(input);
+		const { options, errors: optionErrors } = parseLegacyOptions(input);
 		const modelErrors = provider !== undefined && model === undefined ? ["--provider requires --model"] : [];
+		const sessionSelectionErrors =
+			[sessionId !== undefined, options.continue === true, options.resume === true].filter(Boolean).length > 1
+				? ["--session-id, --continue, and --resume are mutually exclusive"]
+				: [];
+		const onlySessionSelectionOptions =
+			input.remainingArgs.length > 0 &&
+			input.remainingArgs.every((arg) => arg === "--continue" || arg === "-c" || arg === "--resume" || arg === "-r");
 		const unsupportedErrors =
-			input.remainingArgs.length === 0 || prompt !== undefined ? [] : unsupportedLegacyOptions("client", input);
-		const errors = [...authErrors, ...optionErrors, ...modelErrors, ...unsupportedErrors];
+			input.remainingArgs.length === 0 || prompt !== undefined || onlySessionSelectionOptions
+				? []
+				: unsupportedLegacyOptions("client", input);
+		const errors = [...authErrors, ...optionErrors, ...modelErrors, ...sessionSelectionErrors, ...unsupportedErrors];
 		if (errors.length > 0) return { ok: false, errors };
 		return {
 			ok: true,
@@ -62,6 +73,8 @@ export const clientCommand = new Command<ClientCommand, ClientCommandContext>("c
 				...(auth === undefined ? {} : { auth }),
 				...(connect === undefined ? {} : { connect }),
 				...(sessionId === undefined ? {} : { sessionId }),
+				...(options.continue === true ? { continue: true } : {}),
+				...(options.resume === true ? { resume: true } : {}),
 				...(provider === undefined ? {} : { provider }),
 				...(model === undefined ? {} : { model }),
 				...(prompt === undefined ? {} : { prompt }),

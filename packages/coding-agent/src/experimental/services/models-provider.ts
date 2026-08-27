@@ -7,25 +7,31 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "../../core/model-runtime.ts";
-import { defineFacet } from "../facets.ts";
-import { Lane } from "./harness.ts";
+import type { SettingsManager } from "../../core/settings-manager.ts";
+import { defineFacet, type Facet } from "../facets.ts";
 import { Models, type Models as ModelsService, type ModelsState } from "./models.ts";
 
 export interface ModelsRuntime {
 	getAvailableSnapshot(): ReturnType<ModelRuntime["getAvailableSnapshot"]>;
 	refresh(options?: Parameters<ModelRuntime["refresh"]>[0]): ReturnType<ModelRuntime["refresh"]> | undefined;
 	getModel(...args: Parameters<ModelRuntime["getModel"]>): ReturnType<ModelRuntime["getModel"]>;
+	persistModel(provider: string, modelId: string): Promise<void>;
 }
 export const ModelsRuntime = defineService<ModelsRuntime>("pi.local.models-runtime", { rpc: false });
 
-export function createModelsRuntime(runtime: ModelRuntime | undefined): ModelsRuntime {
-	return (
-		runtime ?? {
-			getAvailableSnapshot: () => [],
-			refresh: () => undefined,
-			getModel: () => undefined,
-		}
-	);
+export function createModelsRuntime(
+	runtime: ModelRuntime | undefined,
+	settingsManager?: SettingsManager,
+): ModelsRuntime {
+	return {
+		getAvailableSnapshot: () => runtime?.getAvailableSnapshot() ?? [],
+		refresh: (options) => runtime?.refresh(options),
+		getModel: (...args) => runtime?.getModel(...args),
+		async persistModel(provider, modelId) {
+			settingsManager?.setDefaultModelAndProvider(provider, modelId);
+			await settingsManager?.flush();
+		},
+	};
 }
 
 export interface ModelsServiceRuntime {
@@ -110,6 +116,7 @@ export function createModelsService(
 			const selected = modelRuntime.getModel(model.provider, model.modelId);
 			if (selected === undefined) throw new Error(`Unknown model: ${model.provider}/${model.modelId}`);
 			await lane.setModel({ provider: selected.provider, modelId: selected.id }, context);
+			await modelRuntime.persistModel(selected.provider, selected.id);
 			state.set({ ...state.value, configuration: await readConfiguration(context) }, context);
 		},
 	};
@@ -122,14 +129,16 @@ export function createModelsService(
 	};
 }
 
-export const modelsServiceFacet = defineFacet({
-	id: "@pi/models",
-	setup(env) {
-		const runtime = createModelsService(env.use(Lane), env.use(ModelsRuntime), env.replicatedState);
-		env.provide(Models, runtime.service);
-		env.onActivate(() => runtime.activate(BACKGROUND_CONTEXT));
-	},
-});
+export function createModelsServiceFacet(lane: AgentLane): Facet {
+	return defineFacet({
+		id: "@pi/models",
+		setup(env) {
+			const runtime = createModelsService(lane, env.use(ModelsRuntime), env.replicatedState);
+			env.provide(Models, runtime.service);
+			env.onActivate(() => runtime.activate(BACKGROUND_CONTEXT));
+		},
+	});
+}
 
 function includesModel(
 	models: readonly { readonly provider: string; readonly id: string }[],

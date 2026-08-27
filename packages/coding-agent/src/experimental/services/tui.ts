@@ -1,12 +1,12 @@
 import { defineService } from "@earendil-works/pi-agent-core";
-import type { Chat } from "./chat.ts";
+import type { AgentController } from "./agent-controller.ts";
 import type { Models } from "./models.ts";
 import type { SessionDirectory, SessionManagement } from "./sessions.ts";
 
 export interface Tui {
-	registerSessionPicker(directory: SessionDirectory, management: SessionManagement): () => void;
+	registerSessions(directory: SessionDirectory, management: SessionManagement): () => void;
 	registerModelSelection(models: Models): () => void;
-	registerChat(chat: Chat): () => void;
+	registerAgentController(controller: AgentController): () => void;
 	refresh(): void;
 	setStatus(status: string): void;
 }

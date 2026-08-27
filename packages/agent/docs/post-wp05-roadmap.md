@@ -223,7 +223,7 @@ Remaining cleanup:
 These are not blockers for the durable Harness:
 
 - standalone S3 search after its API decisions;
-- Accounts removal, revisioned Transcript production, and Chat steer/follow-up/next-run/cancel/resume/compact/navigate service adapters;
+- Accounts removal and revisioned Transcript production;
 - authenticated workspace/client authorization for the experimental local server;
 - private returned references, service flow control, multi-pane presentation, plugin kernel/reload completion, and version-skew negotiation;
 - administrative precise rewrite tooling;

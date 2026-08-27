@@ -17,11 +17,12 @@ import {
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import type { ModelRuntime } from "../../core/model-runtime.ts";
+import type { SettingsManager } from "../../core/settings-manager.ts";
 import { combineFacetLoaders, createStaticFacetLoader, type FacetLoader } from "../facet-loader.ts";
 import { createFacetHost, defineFacet, type Facet, type FacetHost } from "../facets.ts";
-import { chatServiceFacet } from "./chat-provider.ts";
-import { Harness, Lane } from "./harness.ts";
-import { createModelsRuntime, ModelsRuntime, modelsServiceFacet } from "./models-provider.ts";
+import { AgentController } from "./agent-controller.ts";
+import { createAgentController } from "./agent-controller-provider.ts";
+import { createModelsRuntime, createModelsServiceFacet, ModelsRuntime } from "./models-provider.ts";
 import { accountsServiceFacet, transcriptServiceFacet } from "./stubs-provider.ts";
 
 export const ServiceOperationResultSchema = Type.Object(
@@ -34,6 +35,7 @@ export interface SessionWorkerRuntime {
 	readonly harness: AgentHarness;
 	readonly lane?: AgentLane;
 	readonly modelRuntime?: ModelRuntime;
+	readonly settingsManager?: SettingsManager;
 	readonly facetLoader?: FacetLoader;
 }
 
@@ -54,31 +56,31 @@ export interface SessionWorkerServices {
 	dispose(): Promise<void>;
 }
 
-const BUILTIN_SESSION_FACET_LOADER = createStaticFacetLoader([
-	chatServiceFacet,
-	modelsServiceFacet,
-	accountsServiceFacet,
-	transcriptServiceFacet,
-] satisfies readonly Facet[]);
+function createBuiltinSessionFacetLoader(lane: AgentLane): FacetLoader {
+	return createStaticFacetLoader([
+		createModelsServiceFacet(lane),
+		accountsServiceFacet,
+		transcriptServiceFacet,
+	] satisfies readonly Facet[]);
+}
 
 export async function createSessionWorkerServices(options: {
-	readonly harness: AgentHarness;
 	readonly lane: AgentLane;
 	readonly modelRuntime: ModelRuntime | undefined;
+	readonly settingsManager?: SettingsManager;
 	readonly facetLoader?: FacetLoader;
 	publish(scope: WorkerServiceScope, subscriptionId: string, update: ProtocolServiceProviderUpdate): Promise<void>;
 }): Promise<SessionWorkerServices> {
 	const sessionRuntimeFacet = defineFacet({
 		id: "@pi/session-runtime",
 		setup(env) {
-			env.provide(Harness, options.harness);
-			env.provide(Lane, options.lane);
-			env.provide(ModelsRuntime, createModelsRuntime(options.modelRuntime));
+			env.provide(AgentController, createAgentController(options.lane));
+			env.provide(ModelsRuntime, createModelsRuntime(options.modelRuntime, options.settingsManager));
 		},
 	});
 	const loader = combineFacetLoaders([
 		createStaticFacetLoader([sessionRuntimeFacet]),
-		BUILTIN_SESSION_FACET_LOADER,
+		createBuiltinSessionFacetLoader(options.lane),
 		...(options.facetLoader === undefined ? [] : [options.facetLoader]),
 	]);
 	const loaded = await loader.load();

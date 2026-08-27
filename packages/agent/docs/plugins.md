@@ -355,30 +355,22 @@ const Tui = defineService<TuiHost>("pi.local.tui", { rpc: false });
 
 The TUI loads all of its facets into one generation. Its host routes `env.use(SessionDirectory)` to the connected server and `env.use(Models)` to the selected Session. While detached, Session calls fail with `session_not_attached` and replicated state has no value. Connection and attachment health are host-local services because they describe presentation control state. A future web host similarly binds local services for routes, views, and DOM dialogs. Its server and Session facets still use unqualified service operations.
 
-The minimum `Chat` service exposes `prompt(request, context)` returning `{ accepted, operationId, error }`, plus `requestAbort(operationId, context)`. Its Session facet delegates through a process-local scoped Agent service. Additional queue, navigation, resume, and compaction operations should be added only with concrete presentation requirements.
+`AgentController` is the presentation-safe command facade over the worker-owned main `AgentLane`. It exposes prompt, queue, abort, resume, compaction, and navigation operations as JSON-safe results. The Session runtime constructs it directly from the lane; it does not publish the raw Harness or lane as local facet services.
 
-The scoped form is:
+The runtime form is:
 
 ```ts
-export const chatSessionFacet = defineFacet({
-	id: "@pi/chat",
-	setup(env) {
-		const agent = env.use(Agent);
-		env.provide(Chat, {
-			async prompt(request, context) {
-				const lane = await agent.lane("main", context);
-				return toPromptResponse(await lane.prompt(request.message, context));
-			},
-			async requestAbort(operationId, context) {
-				const lane = await agent.lane("main", context);
-				await lane.requestAbort(operationId, context);
-			},
-		});
-	},
-});
+export function createAgentControllerRuntimeFacet(lane: AgentLane) {
+	return defineFacet({
+		id: "@pi/agent-controller-runtime",
+		setup(env) {
+			env.provide(AgentController, createAgentController(lane));
+		},
+	});
+}
 ```
 
-Its TUI facet consumes `Chat` through `env.use()` exactly as the model picker consumes `Models`. Neither reveals the Harness object behind them; there is no universal remote Harness for arbitrary plugins. `rpc.md` may still define generic Harness proxies for other trusted integrations (an IDE bridge, an orchestrator) — deliberate, separate exposures, not the plugin boundary.
+Its TUI facet consumes `AgentController` through `env.use()` exactly as the model picker consumes `Models`. It does not reveal the Harness object behind the controller; there is no universal remote Harness for arbitrary plugins. `rpc.md` may still define generic Harness proxies for other trusted integrations (an IDE bridge, an orchestrator) — deliberate, separate exposures, not the plugin boundary.
 
 ## Local services and narrow remote facades
 
@@ -674,9 +666,9 @@ Session service handles are stable across switches: a proxy returned once by a S
 ### Routed session call
 
 ```text
-TUI A (selected session S1): rpc.client chat.prompt
+TUI A (selected session S1): rpc.client agent-controller.prompt
 server: authorize client for S1; route to session worker S1 with authenticated client identity
-S1: rpc.server chat.prompt — fresh local Context, validated JSON args → lane.prompt(...)
+S1: rpc.server agent-controller.prompt — fresh local Context, validated JSON args → lane.prompt(...)
 response returns S1 → server → TUI A
 ```
 

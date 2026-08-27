@@ -135,7 +135,7 @@ describe("experimental durable server composition", () => {
 		expect(state.activeTools).toEqual(["read", "write", "bash"]);
 	});
 
-	test("applies an explicit model when opening an existing Session", async () => {
+	test("preserves an existing Session model when the server default changes", async () => {
 		await writeFile(
 			join(agentDir, "settings.json"),
 			JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-opus-4-6" }),
@@ -157,7 +157,7 @@ describe("experimental durable server composition", () => {
 		clients.delete(secondClient);
 		await expect.poll(() => second.workerPids.has("demo-1")).toBe(false);
 		const state = await readExperimentalSessionState(second.sessionDir, "demo-1");
-		expect(state.model).toEqual({ provider: "anthropic", modelId: "claude-sonnet-4-5" });
+		expect(state.model).toEqual({ provider: "anthropic", modelId: "claude-opus-4-6" });
 	});
 
 	test.each(["discovery", "explicit connection"] as const)(
@@ -403,6 +403,32 @@ describe("experimental durable server composition", () => {
 		expect(errors).toEqual([]);
 
 		await Promise.all([firstServices.dispose(BACKGROUND_CONTEXT), secondServices.dispose(BACKGROUND_CONTEXT)]);
+	});
+
+	test("uses the most recently selected model for a new Session", async () => {
+		const directory = await mkdtemp(join("/tmp", "pes-model-default-"));
+		directories.add(directory);
+		const runtime = await startServer({ directory });
+		servers.add(runtime);
+		const firstClient = await attachClient(runtime, "demo-1");
+		const firstServices = createSessionServiceNamespace(firstClient, { services: [Models] });
+		const firstModels = firstServices.use(Models);
+		await firstServices.ready(BACKGROUND_CONTEXT);
+		await firstModels.select({ provider: "anthropic", modelId: "claude-opus-4-6" }, BACKGROUND_CONTEXT);
+		await firstServices.dispose(BACKGROUND_CONTEXT);
+		await firstClient.dispose();
+		clients.delete(firstClient);
+		await expect.poll(() => runtime.workerPids.has("demo-1")).toBe(false);
+
+		const secondClient = await attachClient(runtime, "demo-2");
+		const secondServices = createSessionServiceNamespace(secondClient, { services: [Models] });
+		const secondModels = secondServices.use(Models);
+		await secondServices.ready(BACKGROUND_CONTEXT);
+		expect(secondModels.state.value?.configuration.model).toEqual({
+			provider: "anthropic",
+			modelId: "claude-opus-4-6",
+		});
+		await secondServices.dispose(BACKGROUND_CONTEXT);
 	});
 
 	test("composes management attachment with Session service hydration", async () => {
