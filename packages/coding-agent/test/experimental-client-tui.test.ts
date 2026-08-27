@@ -8,7 +8,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import type { LaneEvent, LaneSnapshot, SessionSummary } from "@earendil-works/pi-protocol";
 import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
-import { describe, expect, test, vi } from "vitest";
+import { beforeAll, describe, expect, test, vi } from "vitest";
 import { type ClientTuiServer, ExperimentalClientTui } from "../src/experimental/client-tui.ts";
 import type { FacetLoader } from "../src/experimental/facet-loader.ts";
 import { defineFacet } from "../src/experimental/facets.ts";
@@ -26,6 +26,7 @@ import {
 	type SessionDirectoryState,
 	SessionManagement,
 } from "../src/experimental/services/sessions.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 const serverId = "00000000-0000-4000-8000-000000000001";
 
@@ -61,6 +62,8 @@ function laneSnapshot(): LaneSnapshot {
 }
 
 describe("experimental client TUI", () => {
+	beforeAll(() => initTheme("dark"));
+
 	test.each([
 		["new", { command: "client" as const }, "two", 1],
 		["continued", { command: "client" as const, continue: true }, "one", 0],
@@ -273,6 +276,7 @@ describe("experimental client TUI", () => {
 				await vi.waitFor(() => expect(prompt).toHaveBeenCalledWith("hello", undefined, expect.anything()));
 				await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("remote answer"));
 				expect(component.render(80).join("\n")).toContain("hello");
+				expect(component.render(80).join("\n")).not.toContain("Operation run-1 completed");
 
 				component.handleInput("/model");
 				component.handleInput("\r");

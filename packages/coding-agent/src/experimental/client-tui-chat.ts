@@ -18,14 +18,14 @@ function userMessageText(message: AgentMessage): string {
 }
 
 /** Snapshot-driven transcript used by the service-only experimental presentation. */
-export class ExperimentalChatView extends Container {
+export class ExperimentalChatView {
 	static readonly #renderers: Record<string, ToolRenderers> = createAllToolRenderers();
 
+	readonly transcript = new Container();
+	readonly pendingMessages = new Container();
+	readonly status = new Container();
 	readonly #ui: TUI;
 	readonly #cwd: string;
-	readonly #chat = new Container();
-	readonly #queue = new Container();
-	readonly #status = new Container();
 	readonly #tools = new Map<string, ToolExecutionComponent>();
 	#renderedEntryIds: string[] = [];
 	#streaming: AssistantMessageComponent | undefined;
@@ -33,12 +33,8 @@ export class ExperimentalChatView extends Container {
 	#working = false;
 
 	constructor(ui: TUI, cwd: string) {
-		super();
 		this.#ui = ui;
 		this.#cwd = cwd;
-		this.addChild(this.#chat);
-		this.addChild(this.#queue);
-		this.addChild(this.#status);
 	}
 
 	apply(snapshot: LaneSnapshot): void {
@@ -56,7 +52,22 @@ export class ExperimentalChatView extends Container {
 		}
 		this.#syncQueues(snapshot.queues);
 		this.#setWorking(snapshot.operation !== null);
-		this.invalidate();
+		this.transcript.invalidate();
+		this.pendingMessages.invalidate();
+		this.status.invalidate();
+	}
+
+	refreshTheme(snapshot: LaneSnapshot): void {
+		this.#indicator?.dispose();
+		this.#indicator = undefined;
+		this.#working = false;
+		this.transcript.clear();
+		this.pendingMessages.clear();
+		this.status.clear();
+		this.#tools.clear();
+		this.#renderedEntryIds = [];
+		this.#streaming = undefined;
+		this.apply(snapshot);
 	}
 
 	dispose(): void {
@@ -64,18 +75,18 @@ export class ExperimentalChatView extends Container {
 	}
 
 	#syncQueues(queues: LaneSnapshot["queues"]): void {
-		this.#queue.clear();
+		this.pendingMessages.clear();
 		for (const item of queues) {
 			const text =
 				item.type === "message" ? userMessageText(item.message).replace(/\s+/g, " ") : `<${item.customType}>`;
-			this.#queue.addChild(new TruncatedText(theme.fg("muted", `[${item.kind}] ${text}`), 1, 0));
+			this.pendingMessages.addChild(new TruncatedText(theme.fg("muted", `[${item.kind}] ${text}`), 1, 0));
 		}
 	}
 
 	#syncTranscript(transcript: readonly Entry[]): void {
 		const diverged = this.#renderedEntryIds.some((id, index) => transcript[index]?.id !== id);
 		if (diverged) {
-			this.#chat.clear();
+			this.transcript.clear();
 			this.#tools.clear();
 			this.#renderedEntryIds = [];
 			this.#streaming = undefined;
@@ -106,13 +117,13 @@ export class ExperimentalChatView extends Container {
 
 	#addMessage(message: AgentMessage): void {
 		if (message.role === "user") {
-			this.#chat.addChild(new Spacer(1));
-			this.#chat.addChild(new UserMessageComponent(userMessageText(message)));
+			this.transcript.addChild(new Spacer(1));
+			this.transcript.addChild(new UserMessageComponent(userMessageText(message)));
 			return;
 		}
 		if (message.role === "assistant") {
 			const component = this.#streaming ?? new AssistantMessageComponent();
-			if (!this.#streaming) this.#chat.addChild(component);
+			if (!this.#streaming) this.transcript.addChild(component);
 			this.#streaming = undefined;
 			component.updateContent(message, false);
 			for (const content of message.content) {
@@ -127,7 +138,7 @@ export class ExperimentalChatView extends Container {
 		if (!message) return;
 		if (!this.#streaming) {
 			this.#streaming = new AssistantMessageComponent();
-			this.#chat.addChild(this.#streaming);
+			this.transcript.addChild(this.#streaming);
 		}
 		this.#streaming.updateContent(message, true);
 		for (const content of message.content) {
@@ -150,14 +161,14 @@ export class ExperimentalChatView extends Container {
 			this.#ui,
 			this.#cwd,
 		);
-		this.#chat.addChild(component);
+		this.transcript.addChild(component);
 		this.#tools.set(toolCallId, component);
 		return component;
 	}
 
 	#addText(text: string): void {
-		this.#chat.addChild(new Spacer(1));
-		this.#chat.addChild(new Text(text, 1, 0));
+		this.transcript.addChild(new Spacer(1));
+		this.transcript.addChild(new Text(text, 1, 0));
 	}
 
 	#setWorking(working: boolean): void {
@@ -165,10 +176,10 @@ export class ExperimentalChatView extends Container {
 		this.#working = working;
 		this.#indicator?.dispose();
 		this.#indicator = undefined;
-		this.#status.clear();
+		this.status.clear();
 		if (working) {
 			this.#indicator = new WorkingStatusIndicator(this.#ui, "Working... (esc to abort)");
-			this.#status.addChild(this.#indicator);
+			this.status.addChild(this.#indicator);
 		}
 	}
 }

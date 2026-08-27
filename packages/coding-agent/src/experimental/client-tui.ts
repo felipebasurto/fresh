@@ -3,20 +3,22 @@ import type { SessionSummary } from "@earendil-works/pi-protocol";
 import {
 	type Component,
 	Container,
-	ProcessTerminal,
 	type SelectItem,
 	SelectList,
 	setKeybindings,
 	Text,
 	type TUI,
-	TuiMainScreen,
 } from "@earendil-works/pi-tui";
-import chalk from "chalk";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { getAgentDir } from "../config.ts";
 import { KeybindingsManager } from "../core/keybindings.ts";
+import { DefaultResourceLoader } from "../core/resource-loader.ts";
+import { SettingsManager } from "../core/settings-manager.ts";
+import { createChatViewport } from "../modes/interactive/chat-viewport.ts";
 import { CustomEditor } from "../modes/interactive/components/custom-editor.ts";
-import { getEditorTheme, initTheme, theme } from "../modes/interactive/theme/theme.ts";
+import { getEditorTheme, setRegisteredThemes, stopThemeWatcher, theme } from "../modes/interactive/theme/theme.ts";
+import { InteractiveThemeController } from "../modes/interactive/theme/theme-controller.ts";
+import { createInteractiveTui } from "../modes/interactive/tui-renderer.ts";
 import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runtime.ts";
 import { ExperimentalChatView } from "./client-tui-chat.ts";
 import { combineFacetLoaders, type FacetLoader, type LoadedFacets } from "./facet-loader.ts";
@@ -62,11 +64,11 @@ interface ModelAction {
 }
 
 const selectTheme = {
-	selectedPrefix: (text: string) => chalk.cyan(text),
-	selectedText: (text: string) => chalk.cyan(text),
-	description: (text: string) => chalk.dim(text),
-	scrollInfo: (text: string) => chalk.dim(text),
-	noMatch: (text: string) => chalk.yellow(text),
+	selectedPrefix: (text: string) => theme.fg("accent", text),
+	selectedText: (text: string) => theme.fg("accent", text),
+	description: (text: string) => theme.fg("muted", text),
+	scrollInfo: (text: string) => theme.fg("dim", text),
+	noMatch: (text: string) => theme.fg("warning", text),
 };
 
 /** Service-only presentation driven by a replicated main-lane snapshot. */
@@ -74,7 +76,13 @@ export class ExperimentalClientTui implements Component {
 	readonly #ui: TUI;
 	readonly #requestRender: () => void;
 	readonly #finish: () => void;
-	readonly #container = new Container();
+	readonly #documentContainer = new Container();
+	readonly #sessionHeading = new Text("", 1, 0);
+	readonly #pendingMessagesContainer = new Container();
+	readonly #statusContainer = new Container();
+	readonly #editorContainer = new Container();
+	readonly #footerComponent = new Text("", 1, 0);
+	readonly #layoutRoot: Component;
 	readonly #loadedFacets: LoadedFacets;
 	readonly #facetHosts: FacetHost[] = [];
 	readonly #sessions = new Map<string, SessionFeature>();
@@ -85,6 +93,7 @@ export class ExperimentalClientTui implements Component {
 	#selectList: SelectList | undefined;
 	#screen: "models" | "chat" = "chat";
 	#selectedServerId: string | undefined;
+	#sessionId: string | undefined;
 	#status = "Starting Session…";
 	#busy = false;
 	#closePromise: Promise<void> | undefined;
@@ -111,6 +120,16 @@ export class ExperimentalClientTui implements Component {
 			this.#chatInput.setText("");
 			void this.#queueFollowUp(text);
 		});
+		this.#editorContainer.addChild(this.#chatInput);
+		this.#layoutRoot = createChatViewport({
+			document: this.#documentContainer,
+			pendingMessages: this.#pendingMessagesContainer,
+			status: this.#statusContainer,
+			editor: this.#editorContainer,
+			footer: this.#footerComponent,
+			scrollbarStyle: (text) => theme.bg("scrollbarThumb", text),
+		}).root;
+		this.#rebuild();
 	}
 
 	static async create(options: {
@@ -121,7 +140,6 @@ export class ExperimentalClientTui implements Component {
 		requestRender(): void;
 		finish(): void;
 	}): Promise<ExperimentalClientTui> {
-		initTheme();
 		const loadedFacets = await combineFacetLoaders(
 			options.facetLoader === undefined ? [] : [options.facetLoader],
 		).load();
@@ -140,8 +158,18 @@ export class ExperimentalClientTui implements Component {
 		}
 	}
 
+	get layoutRoot(): Component {
+		return this.#layoutRoot;
+	}
+
 	render(width: number): string[] {
-		return this.#container.render(width);
+		return [
+			...this.#documentContainer.render(width),
+			...this.#pendingMessagesContainer.render(width),
+			...this.#statusContainer.render(width),
+			...this.#editorContainer.render(width),
+			...this.#footerComponent.render(width),
+		];
 	}
 
 	handleInput(data: string): void {
@@ -155,11 +183,22 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	invalidate(): void {
-		this.#container.invalidate();
+		this.#layoutRoot.invalidate();
 	}
 
 	dispose(): void {
 		void this.close().catch(() => {});
+	}
+
+	refreshTheme(): void {
+		const snapshot = this.#laneReplica?.state();
+		if (snapshot !== undefined) this.#chatView?.refreshTheme(snapshot);
+		this.#rebuild();
+	}
+
+	showError(error: string): void {
+		this.#status = `Error: ${error}`;
+		this.#rebuild();
 	}
 
 	close(): Promise<void> {
@@ -248,10 +287,11 @@ export class ExperimentalClientTui implements Component {
 		this.#rebuild();
 		await feature.management.attach(summary.sessionId, BACKGROUND_CONTEXT);
 		await feature.session.whenAttached(summary.sessionId, BACKGROUND_CONTEXT);
-		await this.#openLane(feature, summary.sessionId);
 		this.#selectedServerId = feature.serverId;
+		this.#sessionId = summary.sessionId;
+		await this.#openLane(feature, summary.sessionId);
 		this.#screen = "chat";
-		this.#status = summary.sessionId;
+		this.#status = "";
 		this.#rebuild();
 	}
 
@@ -289,11 +329,19 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	#rebuild(): void {
-		this.#container.clear();
+		this.#sessionHeading.setText(this.#sessionId === undefined ? "" : theme.fg("dim", this.#sessionId));
+		this.#statusContainer.clear();
+		if (this.#status.length > 0) {
+			this.#statusContainer.addChild(new Text(theme.fg("dim", this.#status), 1, 0));
+		}
+		if (this.#chatView !== undefined) this.#statusContainer.addChild(this.#chatView.status);
+		this.#footerComponent.setText(theme.fg("dim", this.#footer()));
+		this.#editorContainer.clear();
 		this.#modelActions.clear();
 		if (this.#screen === "models") {
 			this.#chatInput.focused = false;
-			this.#container.addChild(new Text(chalk.bold("Select model:"), 1, 1));
+			const selector = new Container();
+			selector.addChild(new Text(theme.bold("Select model:"), 1, 1));
 			const items = this.#modelItems();
 			this.#selectList = new SelectList(items, Math.min(Math.max(items.length, 1), 12), selectTheme);
 			this.#selectList.onSelect = (item) => {
@@ -304,17 +352,14 @@ export class ExperimentalClientTui implements Component {
 				this.#screen = "chat";
 				this.#rebuild();
 			};
-			this.#container.addChild(this.#selectList);
-			this.#requestRender();
-			return;
+			selector.addChild(this.#selectList);
+			this.#editorContainer.addChild(selector);
+		} else {
+			this.#selectList = undefined;
+			this.#chatInput.focused = !this.#busy;
+			this.#editorContainer.addChild(this.#chatInput);
 		}
-
-		this.#selectList = undefined;
-		this.#chatInput.focused = !this.#busy;
-		if (this.#status.length > 0) this.#container.addChild(new Text(theme.fg("dim", this.#status), 1, 0));
-		if (this.#chatView) this.#container.addChild(this.#chatView);
-		this.#container.addChild(this.#chatInput);
-		this.#container.addChild(new Text(theme.fg("dim", this.#footer()), 1, 1));
+		this.#layoutRoot.invalidate();
 		this.#requestRender();
 	}
 
@@ -362,6 +407,9 @@ export class ExperimentalClientTui implements Component {
 		view.apply(replica.state());
 		this.#laneReplica = replica;
 		this.#chatView = view;
+		this.#documentContainer.addChild(this.#sessionHeading);
+		this.#documentContainer.addChild(view.transcript);
+		this.#pendingMessagesContainer.addChild(view.pendingMessages);
 		this.#laneUnsubscribe = replica.subscribe(() => {
 			view.apply(replica.state());
 			this.#rebuild();
@@ -373,6 +421,9 @@ export class ExperimentalClientTui implements Component {
 		this.#laneUnsubscribe = undefined;
 		this.#chatView?.dispose();
 		this.#chatView = undefined;
+		this.#documentContainer.clear();
+		this.#pendingMessagesContainer.clear();
+		this.#statusContainer.clear();
 		const replica = this.#laneReplica;
 		this.#laneReplica = undefined;
 		await replica?.close();
@@ -433,7 +484,7 @@ export class ExperimentalClientTui implements Component {
 	#reportOperation(response: AgentOperationResponse): void {
 		this.#status = response.accepted
 			? response.error === null
-				? `Operation ${response.operationId} completed.`
+				? ""
 				: `Operation failed: ${response.error.message}`
 			: `Operation rejected: ${response.error.message}`;
 		this.#rebuild();
@@ -473,15 +524,43 @@ export class ExperimentalClientTui implements Component {
 }
 
 export async function runClientTui(command: ClientCommand, options: RunClientTuiOptions = {}): Promise<void> {
+	const cwd = process.cwd();
+	const agentDir = getAgentDir();
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		settingsManager,
+		noExtensions: true,
+		noSkills: true,
+		noPromptTemplates: true,
+		noContextFiles: true,
+	});
+	await resourceLoader.reload();
+	setRegisteredThemes(resourceLoader.getThemes().themes);
 	const runtime = await openClientRuntime(command, options);
-	const terminal = new ProcessTerminal();
-	const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
+	const tui = createInteractiveTui({
+		tuiMode: "fullscreen",
+		showHardwareCursor: settingsManager.getShowHardwareCursor(),
+		logDirectory: agentDir,
+	});
+	tui.setClearOnShrink(settingsManager.getClearOnShrink());
 	let component: ExperimentalClientTui | undefined;
+	let tuiStarted = false;
+	const themeController = new InteractiveThemeController(tui, {
+		getSettingsManager: () => settingsManager,
+		showError: (error) => component?.showError(error),
+		onChanged: () => component?.refreshTheme(),
+	});
 	try {
 		let finish!: () => void;
 		const finished = new Promise<void>((resolve) => {
 			finish = () => {
-				tui.stop();
+				themeController.disableAutoSync();
+				if (tuiStarted) {
+					tui.stop();
+					tuiStarted = false;
+				}
 				resolve();
 			};
 		});
@@ -499,10 +578,16 @@ export async function runClientTui(command: ClientCommand, options: RunClientTui
 			finish,
 		});
 		tui.addChild(component);
+		tui.setLayoutRoot(component.layoutRoot);
 		tui.setFocus(component);
+		tuiStarted = true;
 		tui.start();
+		await themeController.applyFromSettings();
 		await finished;
 	} finally {
+		themeController.dispose();
+		stopThemeWatcher();
+		if (tuiStarted) tui.stop();
 		await component?.close();
 		await runtime.dispose();
 	}
