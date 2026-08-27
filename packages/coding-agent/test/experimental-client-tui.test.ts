@@ -26,7 +26,6 @@ import {
 	type SessionDirectoryState,
 	SessionManagement,
 } from "../src/experimental/services/sessions.ts";
-import { Tui } from "../src/experimental/services/tui.ts";
 
 const serverId = "00000000-0000-4000-8000-000000000001";
 
@@ -240,8 +239,8 @@ describe("experimental client TUI", () => {
 							defineFacet({
 								id: "test-tui-facet",
 								setup(env) {
-									const tui = env.use(Tui);
-									env.onActivate(() => tui.setStatus("Loaded test TUI facet"));
+									const models = env.use(Models);
+									env.onActivate(() => env.own(models.state.subscribe(() => {})));
 								},
 							}),
 						],

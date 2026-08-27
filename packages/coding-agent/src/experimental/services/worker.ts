@@ -22,7 +22,7 @@ import { combineFacetLoaders, createStaticFacetLoader, type FacetLoader } from "
 import { createFacetHost, defineFacet, type Facet, type FacetHost } from "../facets.ts";
 import { AgentController } from "./agent-controller.ts";
 import { createAgentController } from "./agent-controller-provider.ts";
-import { createModelsRuntime, createModelsServiceFacet, ModelsRuntime } from "./models-provider.ts";
+import { createModelsServiceFacet } from "./models-provider.ts";
 import { accountsServiceFacet, transcriptServiceFacet } from "./stubs-provider.ts";
 
 export const ServiceOperationResultSchema = Type.Object(
@@ -56,9 +56,13 @@ export interface SessionWorkerServices {
 	dispose(): Promise<void>;
 }
 
-function createBuiltinSessionFacetLoader(lane: AgentLane): FacetLoader {
+function createBuiltinSessionFacetLoader(options: {
+	readonly lane: AgentLane;
+	readonly modelRuntime: ModelRuntime | undefined;
+	readonly settingsManager?: SettingsManager;
+}): FacetLoader {
 	return createStaticFacetLoader([
-		createModelsServiceFacet(lane),
+		createModelsServiceFacet(options),
 		accountsServiceFacet,
 		transcriptServiceFacet,
 	] satisfies readonly Facet[]);
@@ -71,16 +75,15 @@ export async function createSessionWorkerServices(options: {
 	readonly facetLoader?: FacetLoader;
 	publish(scope: WorkerServiceScope, subscriptionId: string, update: ProtocolServiceProviderUpdate): Promise<void>;
 }): Promise<SessionWorkerServices> {
-	const sessionRuntimeFacet = defineFacet({
-		id: "@pi/session-runtime",
+	const agentControllerRuntimeFacet = defineFacet({
+		id: "@pi/agent-controller-runtime",
 		setup(env) {
 			env.provide(AgentController, createAgentController(options.lane));
-			env.provide(ModelsRuntime, createModelsRuntime(options.modelRuntime, options.settingsManager));
 		},
 	});
 	const loader = combineFacetLoaders([
-		createStaticFacetLoader([sessionRuntimeFacet]),
-		createBuiltinSessionFacetLoader(options.lane),
+		createStaticFacetLoader([agentControllerRuntimeFacet]),
+		createBuiltinSessionFacetLoader(options),
 		...(options.facetLoader === undefined ? [] : [options.facetLoader]),
 	]);
 	const loaded = await loader.load();

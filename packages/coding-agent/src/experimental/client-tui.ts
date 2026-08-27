@@ -19,14 +19,13 @@ import { CustomEditor } from "../modes/interactive/components/custom-editor.ts";
 import { getEditorTheme, initTheme, theme } from "../modes/interactive/theme/theme.ts";
 import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runtime.ts";
 import { ExperimentalChatView } from "./client-tui-chat.ts";
-import { combineFacetLoaders, createStaticFacetLoader, type FacetLoader, type LoadedFacets } from "./facet-loader.ts";
+import { combineFacetLoaders, type FacetLoader, type LoadedFacets } from "./facet-loader.ts";
 import { createFacetHost, defineFacet, type FacetHost } from "./facets.ts";
 import { type LaneReplica, type LaneWatchSource, openLaneReplica } from "./lane-replica.ts";
 import { AgentController, type AgentOperationResponse, type AgentQueueResponse } from "./services/agent-controller.ts";
 import type { ServerServiceConnection, SessionServiceConnection } from "./services/connection.ts";
 import { Models } from "./services/models.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
-import { Tui } from "./services/tui.ts";
 
 export interface RunClientTuiOptions extends OpenClientRuntimeOptions {
 	readonly facetLoader?: FacetLoader;
@@ -69,46 +68,6 @@ const selectTheme = {
 	scrollInfo: (text: string) => chalk.dim(text),
 	noMatch: (text: string) => chalk.yellow(text),
 };
-
-export const sessionsTuiFacet = defineFacet({
-	id: "@pi/sessions",
-	setup(env) {
-		const tui = env.use(Tui);
-		const directory = env.use(SessionDirectory);
-		const management = env.use(SessionManagement);
-		env.onActivate(() => {
-			env.own(tui.registerSessions(directory, management));
-			env.own(directory.state.subscribe(tui.refresh));
-		});
-	},
-});
-
-export const modelSelectionTuiFacet = defineFacet({
-	id: "@pi/model-selection",
-	setup(env) {
-		const tui = env.use(Tui);
-		const models = env.use(Models);
-		env.onActivate(() => {
-			env.own(tui.registerModelSelection(models));
-			env.own(models.state.subscribe(tui.refresh));
-		});
-	},
-});
-
-export const agentControllerTuiFacet = defineFacet({
-	id: "@pi/agent-controller",
-	setup(env) {
-		const tui = env.use(Tui);
-		const controller = env.use(AgentController);
-		env.onActivate(() => env.own(tui.registerAgentController(controller)));
-	},
-});
-
-const BUILTIN_TUI_FACET_LOADER = createStaticFacetLoader([
-	sessionsTuiFacet,
-	modelSelectionTuiFacet,
-	agentControllerTuiFacet,
-]);
 
 /** Service-only presentation driven by a replicated main-lane snapshot. */
 export class ExperimentalClientTui implements Component {
@@ -163,10 +122,9 @@ export class ExperimentalClientTui implements Component {
 		finish(): void;
 	}): Promise<ExperimentalClientTui> {
 		initTheme();
-		const loadedFacets = await combineFacetLoaders([
-			BUILTIN_TUI_FACET_LOADER,
-			...(options.facetLoader === undefined ? [] : [options.facetLoader]),
-		]).load();
+		const loadedFacets = await combineFacetLoaders(
+			options.facetLoader === undefined ? [] : [options.facetLoader],
+		).load();
 		const component = new ExperimentalClientTui(options.ui, options.requestRender, options.finish, loadedFacets);
 		try {
 			await component.#start(options.servers);
@@ -211,11 +169,15 @@ export class ExperimentalClientTui implements Component {
 
 	async #start(servers: readonly ClientTuiServer[]): Promise<void> {
 		for (const server of servers) {
-			const tuiRuntimeFacet = defineFacet({
-				id: "@pi/tui-runtime",
+			const presentationBridgeFacet = defineFacet({
+				id: "@pi/presentation-bridge",
 				setup: (env) => {
-					env.provide(Tui, {
-						registerSessions: (directory, management) =>
+					const directory = env.use(SessionDirectory);
+					const management = env.use(SessionManagement);
+					const models = env.use(Models);
+					const controller = env.use(AgentController);
+					env.onActivate(() => {
+						env.own(
 							this.#register(this.#sessions, "Sessions", {
 								serverId: server.serverId,
 								directory,
@@ -223,20 +185,18 @@ export class ExperimentalClientTui implements Component {
 								session: server.session,
 								laneWatches: server.laneWatches,
 							}),
-						registerModelSelection: (models) =>
+						);
+						env.own(
 							this.#register(this.#modelSelections, "Model selection", { serverId: server.serverId, models }),
-						registerAgentController: (controller) =>
-							this.#register(this.#agents, "Agent controller", { serverId: server.serverId, controller }),
-						refresh: () => this.#rebuild(),
-						setStatus: (status) => {
-							this.#status = status;
-							this.#rebuild();
-						},
+						);
+						env.own(this.#register(this.#agents, "Agent controller", { serverId: server.serverId, controller }));
+						env.own(directory.state.subscribe(() => this.#rebuild()));
+						env.own(models.state.subscribe(() => this.#rebuild()));
 					});
 				},
 			});
 			const facetHost = await createFacetHost({
-				facets: [tuiRuntimeFacet, ...this.#loadedFacets.facets],
+				facets: [presentationBridgeFacet, ...this.#loadedFacets.facets],
 				connections: [server.server, server.session],
 			});
 			this.#facetHosts.push(facetHost);
