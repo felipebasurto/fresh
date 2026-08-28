@@ -95,6 +95,7 @@ export class ExperimentalClientTui implements Component {
 	readonly #modelSelections = new Map<string, ModelSelectionFeature>();
 	readonly #agents = new Map<string, AgentFeature>();
 	readonly #modelActions = new Map<string, ModelAction>();
+	readonly #keybindings = KeybindingsManager.create();
 	readonly #chatInput: CustomEditor;
 	#selectList: SelectList | undefined;
 	#screen: "models" | "chat" = "chat";
@@ -114,9 +115,8 @@ export class ExperimentalClientTui implements Component {
 		this.#requestRender = requestRender;
 		this.#finish = finish;
 		this.#loadedFacets = loadedFacets;
-		const keybindings = KeybindingsManager.create();
-		setKeybindings(keybindings);
-		this.#chatInput = new CustomEditor(ui, getEditorTheme(), keybindings, { paddingX: 1 });
+		setKeybindings(this.#keybindings);
+		this.#chatInput = new CustomEditor(ui, getEditorTheme(), this.#keybindings, { paddingX: 1 });
 		this.#chatInput.onSubmit = (message) => void this.#runPrompt(message);
 		this.#chatInput.onEscape = () => this.#interrupt();
 		this.#chatInput.onCtrlD = finish;
@@ -181,7 +181,15 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (this.#busy) return;
+		if (this.#busy) {
+			if (
+				this.#keybindings.matches(data, "app.clear") ||
+				(this.#chatInput.getText().length === 0 && this.#keybindings.matches(data, "app.exit"))
+			) {
+				this.#finish();
+			}
+			return;
+		}
 		if (this.#screen === "chat") {
 			this.#chatInput.handleInput(data);
 			this.#requestRender();

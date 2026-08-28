@@ -288,6 +288,12 @@ describe("experimental client TUI", () => {
 					BACKGROUND_CONTEXT,
 				);
 				await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("retrying"));
+				component.handleInput("\u0003");
+				expect(finished).toBe(true);
+				finished = false;
+				component.handleInput("\u0004");
+				expect(finished).toBe(true);
+				finished = false;
 				connectionState.set({ status: "connecting", attempt: 1 }, BACKGROUND_CONTEXT);
 				connectionState.set({ status: "connected", since: "reconnected" }, BACKGROUND_CONTEXT);
 				attachment.set({ status: "attached", sessionId }, BACKGROUND_CONTEXT);
