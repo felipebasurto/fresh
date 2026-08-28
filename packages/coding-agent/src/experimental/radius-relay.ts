@@ -18,6 +18,11 @@ const HOST_RETRY_MAX_MS = 30_000;
 const MISSING_AUTH_RETRY_MS = 30_000;
 const CLIENT_RETRY_INITIAL_MS = 1_000;
 const CLIENT_RETRY_MAX_MS = 30_000;
+// Undici implements the browser WebSocket API, which permits callers to send
+// only code 1000 or application codes from 3000 through 4999. RFC protocol
+// codes such as 1002 and 1011 may be received but cannot be passed to close().
+const LOCAL_PROTOCOL_ERROR_CLOSE_CODE = 4000;
+const LOCAL_TRANSPORT_ERROR_CLOSE_CODE = 4001;
 
 interface RadiusRelayMessageEvent extends Event {
 	readonly data: unknown;
@@ -193,7 +198,7 @@ export class RadiusRelayHost {
 				try {
 					this.#handleHostMessage(event.data);
 				} catch (error) {
-					socket.close(1002, "Radius relay protocol error");
+					closeWebSocket(socket, LOCAL_PROTOCOL_ERROR_CLOSE_CODE, "Radius relay protocol error");
 					finish(toError(error));
 				}
 			};
@@ -216,9 +221,11 @@ export class RadiusRelayHost {
 			const control = parseHostControlMessage(value);
 			switch (control.type) {
 				case "ping":
-					void this.#sendControl({ version: 1, type: "pong" }).catch((error: unknown) =>
-						this.#socket?.close(1011, errorMessage(error)),
-					);
+					void this.#sendControl({ version: 1, type: "pong" }).catch(() => {
+						if (this.#socket !== undefined) {
+							closeWebSocket(this.#socket, LOCAL_TRANSPORT_ERROR_CLOSE_CODE, "Radius relay send failed");
+						}
+					});
 					return;
 				case "pong":
 					return;
@@ -458,7 +465,7 @@ class RadiusClientByteTransport implements ByteTransport {
 
 	#fail(error: Error): void {
 		if (!this.#markClosed()) return;
-		this.#socket.close(1011, "Radius relay transport error");
+		closeWebSocket(this.#socket, LOCAL_TRANSPORT_ERROR_CLOSE_CODE, "Radius relay transport error");
 		this.#handlers.onError(error);
 	}
 

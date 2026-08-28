@@ -45,6 +45,9 @@ class FakeWebSocket {
 	}
 
 	close(code = 1000, reason = ""): void {
+		if (code !== 1000 && (code < 3000 || code > 4999)) {
+			throw new DOMException("Invalid close code", "InvalidAccessError");
+		}
 		if (this.readyState === 3) return;
 		this.readyState = 3;
 		this.emit("close", { code, reason });
@@ -67,6 +70,12 @@ class FakeWebSocket {
 
 	fail(error: Error): void {
 		this.emit("error", { error, message: error.message });
+	}
+
+	abnormalClose(error: Error): void {
+		this.readyState = 3;
+		this.emit("error", { error, message: error.message });
+		this.emit("close", { code: 1006, reason: "" });
 	}
 
 	private emit(type: string, event: unknown): void {
@@ -258,6 +267,26 @@ describe("experimental Radius relay", () => {
 		socket.remoteClose();
 		expect(onClose).toHaveBeenCalledOnce();
 		expect(onError).not.toHaveBeenCalled();
+	});
+
+	test("reports established abnormal closures so the client can reconnect", async () => {
+		const webSockets = socketFactory();
+		const onClose = vi.fn();
+		const onError = vi.fn();
+		const transportPromise = createRadiusClientTransportFactory({
+			serverId,
+			auth: new RadiusRelayAuthResolver({ type: "token", token: "secret" }),
+			webSocketFactory: webSockets.factory,
+		})({ onData: vi.fn(), onClose, onError });
+		await vi.waitFor(() => expect(webSockets.sockets).toHaveLength(1));
+		const { socket, options } = webSockets.sockets[0]!;
+		socket.open(options.protocol);
+		await transportPromise;
+
+		expect(() => socket.abnormalClose(new Error("network lost"))).not.toThrow();
+		expect(onError).toHaveBeenCalledOnce();
+		expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: "network lost" }));
+		expect(onClose).not.toHaveBeenCalled();
 	});
 
 	test("reports a useful error when Undici omits WebSocket failure details", async () => {
