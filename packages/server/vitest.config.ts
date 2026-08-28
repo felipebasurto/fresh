@@ -15,6 +15,7 @@ export default defineConfig({
 	},
 	resolve: {
 		alias: [
+			{ find: /^@earendil-works\/chord$/, replacement: src("../chord/src/index.ts") },
 			{ find: /^@earendil-works\/pi-agent-core$/, replacement: src("../agent/src/index.ts") },
 			{ find: /^@earendil-works\/pi-agent-core\/(.+)$/, replacement: `${src("../agent/src/")}$1.ts` },
 			{ find: /^@earendil-works\/pi-ai$/, replacement: src("../ai/src/index.ts") },
