@@ -1,6 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import type { SessionSummary } from "@earendil-works/pi-protocol";
 import {
+	CombinedAutocompleteProvider,
 	type Component,
 	Container,
 	type SelectItem,
@@ -21,9 +22,10 @@ import { InteractiveThemeController } from "../modes/interactive/theme/theme-con
 import { createInteractiveTui } from "../modes/interactive/tui-renderer.ts";
 import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runtime.ts";
 import { ExperimentalChatView } from "./client-tui-chat.ts";
-import { combineFacetLoaders, type FacetLoader, type LoadedFacets } from "./facet-loader.ts";
+import { combineFacetLoaders, createStaticFacetLoader, type FacetLoader, type LoadedFacets } from "./facet-loader.ts";
 import { createFacetHost, defineFacet, type FacetHost } from "./facets.ts";
 import { type LaneReplica, type LaneWatchSource, openLaneReplica } from "./lane-replica.ts";
+import helloPluginFacet from "./plugins/hello.ts";
 import { AgentController, type AgentOperationResponse, type AgentQueueResponse } from "./services/agent-controller.ts";
 import type {
 	ServerConnectionState,
@@ -31,8 +33,12 @@ import type {
 	SessionAttachmentState,
 	SessionServiceConnection,
 } from "./services/connection.ts";
-import { Models } from "./services/models.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
+import { type SlashCommandExecutionContext, SlashCommands } from "./services/slash-commands.ts";
+import {
+	createBuiltInSlashCommandsFacet,
+	createSlashCommandsRuntimeFacet,
+} from "./services/slash-commands-provider.ts";
 
 export interface RunClientTuiOptions extends OpenClientRuntimeOptions {
 	readonly facetLoader?: FacetLoader;
@@ -54,9 +60,9 @@ interface SessionFeature {
 	readonly laneWatches: LaneWatchSource;
 }
 
-interface ModelSelectionFeature {
+interface SlashCommandFeature {
 	readonly serverId: string;
-	readonly models: Models;
+	readonly commands: SlashCommands;
 }
 
 interface AgentFeature {
@@ -64,9 +70,11 @@ interface AgentFeature {
 	readonly controller: AgentController;
 }
 
-interface ModelAction {
-	readonly provider: string;
-	readonly modelId: string;
+interface PendingSelection {
+	readonly title: string;
+	readonly items: readonly SelectItem[];
+	readonly selectedValue?: string;
+	resolve(value: string | undefined): void;
 }
 
 const selectTheme = {
@@ -92,13 +100,13 @@ export class ExperimentalClientTui implements Component {
 	readonly #loadedFacets: LoadedFacets;
 	readonly #facetHosts: FacetHost[] = [];
 	readonly #sessions = new Map<string, SessionFeature>();
-	readonly #modelSelections = new Map<string, ModelSelectionFeature>();
+	readonly #slashCommands = new Map<string, SlashCommandFeature>();
 	readonly #agents = new Map<string, AgentFeature>();
-	readonly #modelActions = new Map<string, ModelAction>();
 	readonly #keybindings = KeybindingsManager.create();
 	readonly #chatInput: CustomEditor;
 	#selectList: SelectList | undefined;
-	#screen: "models" | "chat" = "chat";
+	#selection: PendingSelection | undefined;
+	#screen: "select" | "chat" = "chat";
 	#selectedServerId: string | undefined;
 	#sessionId: string | undefined;
 	#status = "Starting Session…";
@@ -121,7 +129,7 @@ export class ExperimentalClientTui implements Component {
 		this.#chatInput.onEscape = () => this.#interrupt();
 		this.#chatInput.onCtrlD = finish;
 		this.#chatInput.onAction("app.clear", finish);
-		this.#chatInput.onAction("app.model.select", () => this.#showModels());
+		this.#chatInput.onAction("app.model.select", () => void this.#executeSlashCommand("model", ""));
 		this.#chatInput.onAction("app.message.followUp", () => {
 			const text = this.#chatInput.getText().trim();
 			if (text.length === 0) return;
@@ -148,9 +156,10 @@ export class ExperimentalClientTui implements Component {
 		requestRender(): void;
 		finish(): void;
 	}): Promise<ExperimentalClientTui> {
-		const loadedFacets = await combineFacetLoaders(
-			options.facetLoader === undefined ? [] : [options.facetLoader],
-		).load();
+		const loadedFacets = await combineFacetLoaders([
+			createStaticFacetLoader([helloPluginFacet]),
+			...(options.facetLoader === undefined ? [] : [options.facetLoader]),
+		]).load();
 		const component = new ExperimentalClientTui(options.ui, options.requestRender, options.finish, loadedFacets);
 		try {
 			await component.#start(options.servers);
@@ -229,7 +238,7 @@ export class ExperimentalClientTui implements Component {
 				setup: (env) => {
 					const directory = env.use(SessionDirectory);
 					const management = env.use(SessionManagement);
-					const models = env.use(Models);
+					const commands = env.use(SlashCommands);
 					const controller = env.use(AgentController);
 					const sessionFeature: SessionFeature = {
 						serverId: server.serverId,
@@ -241,11 +250,11 @@ export class ExperimentalClientTui implements Component {
 					env.onActivate(() => {
 						env.own(this.#register(this.#sessions, "Sessions", sessionFeature));
 						env.own(
-							this.#register(this.#modelSelections, "Model selection", { serverId: server.serverId, models }),
+							this.#register(this.#slashCommands, "Slash commands", { serverId: server.serverId, commands }),
 						);
 						env.own(this.#register(this.#agents, "Agent controller", { serverId: server.serverId, controller }));
 						env.own(directory.state.subscribe(() => this.#rebuild()));
-						env.own(models.state.subscribe(() => this.#rebuild()));
+						env.own(commands.subscribe(() => this.#updateAutocomplete()));
 						if (server.radius) {
 							env.own(
 								server.server.connection.subscribe((state) =>
@@ -262,7 +271,12 @@ export class ExperimentalClientTui implements Component {
 				},
 			});
 			const facetHost = await createFacetHost({
-				facets: [presentationBridgeFacet, ...this.#loadedFacets.facets],
+				facets: [
+					createSlashCommandsRuntimeFacet(),
+					presentationBridgeFacet,
+					createBuiltInSlashCommandsFacet(),
+					...this.#loadedFacets.facets,
+				],
 				connections: [server.server, server.session],
 			});
 			this.#facetHosts.push(facetHost);
@@ -319,6 +333,7 @@ export class ExperimentalClientTui implements Component {
 		await feature.session.whenAttached(summary.sessionId, BACKGROUND_CONTEXT);
 		this.#selectedServerId = feature.serverId;
 		this.#sessionId = summary.sessionId;
+		this.#updateAutocomplete();
 		await this.#openLane(feature, summary.sessionId);
 		this.#screen = "chat";
 		this.#status = "";
@@ -327,6 +342,7 @@ export class ExperimentalClientTui implements Component {
 
 	async #close(): Promise<void> {
 		this.#closed = true;
+		this.#completeSelection(undefined);
 		const errors: unknown[] = [];
 		try {
 			await this.#recoveryTransition;
@@ -373,21 +389,16 @@ export class ExperimentalClientTui implements Component {
 		if (this.#chatView !== undefined) this.#statusContainer.addChild(this.#chatView.status);
 		this.#footerComponent.setText(theme.fg("dim", this.#footer()));
 		this.#editorContainer.clear();
-		this.#modelActions.clear();
-		if (this.#screen === "models") {
+		if (this.#screen === "select" && this.#selection !== undefined) {
 			this.#chatInput.focused = false;
 			const selector = new Container();
-			selector.addChild(new Text(theme.bold("Select model:"), 1, 1));
-			const items = this.#modelItems();
+			selector.addChild(new Text(theme.bold(this.#selection.title), 1, 1));
+			const items = [...this.#selection.items];
 			this.#selectList = new SelectList(items, Math.min(Math.max(items.length, 1), 12), selectTheme);
-			this.#selectList.onSelect = (item) => {
-				const action = this.#modelActions.get(item.value);
-				if (action !== undefined) void this.#selectModel(action);
-			};
-			this.#selectList.onCancel = () => {
-				this.#screen = "chat";
-				this.#rebuild();
-			};
+			const selectedIndex = items.findIndex((item) => item.value === this.#selection?.selectedValue);
+			if (selectedIndex >= 0) this.#selectList.setSelectedIndex(selectedIndex);
+			this.#selectList.onSelect = (item) => this.#completeSelection(item.value);
+			this.#selectList.onCancel = () => this.#completeSelection(undefined);
 			selector.addChild(this.#selectList);
 			this.#editorContainer.addChild(selector);
 		} else {
@@ -399,41 +410,51 @@ export class ExperimentalClientTui implements Component {
 		this.#requestRender();
 	}
 
-	#modelItems(): SelectItem[] {
-		const feature =
-			this.#selectedServerId === undefined ? undefined : this.#modelSelections.get(this.#selectedServerId);
-		const state = feature?.models.state.value;
-		const selected = state?.configuration.model;
-		return (state?.catalog.availableModels ?? []).map((model) => {
-			const key = `model:${model.provider}:${model.modelId}`;
-			this.#modelActions.set(key, { provider: model.provider, modelId: model.modelId });
-			return {
-				value: key,
-				label:
-					selected?.provider === model.provider && selected.modelId === model.modelId
-						? `${model.name} (selected)`
-						: model.name,
-				description: `${model.provider}/${model.modelId}`,
-			};
+	#select(title: string, items: readonly SelectItem[], selectedValue?: string): Promise<string | undefined> {
+		if (this.#selection !== undefined) throw new Error("A slash command selector is already active");
+		return new Promise((resolve) => {
+			this.#selection = { title, items, ...(selectedValue === undefined ? {} : { selectedValue }), resolve };
+			this.#screen = "select";
+			this.#rebuild();
 		});
 	}
 
-	async #selectModel(action: ModelAction): Promise<void> {
-		if (this.#busy) return;
-		this.#busy = true;
-		try {
-			const feature =
-				this.#selectedServerId === undefined ? undefined : this.#modelSelections.get(this.#selectedServerId);
-			if (feature === undefined) throw new Error("No Session model selection is available");
-			await feature.models.select({ provider: action.provider, modelId: action.modelId }, BACKGROUND_CONTEXT);
-			this.#screen = "chat";
-			this.#status = `Selected ${action.provider}/${action.modelId}.`;
-		} catch (error) {
-			this.#status = `Error: ${message(error)}`;
-		} finally {
-			this.#busy = false;
-			this.#rebuild();
-		}
+	#completeSelection(value: string | undefined): void {
+		const selection = this.#selection;
+		if (selection === undefined) return;
+		this.#selection = undefined;
+		this.#screen = "chat";
+		selection.resolve(value);
+		if (!this.#closed) this.#rebuild();
+	}
+
+	#updateAutocomplete(): void {
+		const commands = this.#selectedSlashCommands()?.list() ?? [];
+		this.#chatInput.setAutocompleteProvider(
+			new CombinedAutocompleteProvider(
+				commands.map((command) => ({
+					name: command.name,
+					description: command.description,
+					...(command.argumentHint === undefined ? {} : { argumentHint: command.argumentHint }),
+					...(command.getArgumentCompletions === undefined
+						? {}
+						: {
+								getArgumentCompletions: async (prefix: string) => {
+									const items = await command.getArgumentCompletions!(prefix);
+									return items === null ? null : [...items];
+								},
+							}),
+				})),
+				process.cwd(),
+			),
+		);
+		this.#requestRender();
+	}
+
+	#selectedSlashCommands(): SlashCommands | undefined {
+		if (this.#selectedServerId !== undefined) return this.#slashCommands.get(this.#selectedServerId)?.commands;
+		if (this.#slashCommands.size === 1) return this.#slashCommands.values().next().value?.commands;
+		return undefined;
 	}
 
 	#handleConnectionState(serverId: string, state: ServerConnectionState): void {
@@ -516,40 +537,63 @@ export class ExperimentalClientTui implements Component {
 	async #runPrompt(messageText: string): Promise<void> {
 		const prompt = messageText.trim();
 		if (prompt.length === 0) return;
-		if (prompt === "/model") {
-			this.#showModels();
-			return;
-		}
-		const controller = this.#selectedController();
-		if (controller === undefined) {
-			this.#status = "No Session AgentController service is available.";
-			this.#rebuild();
+		if (prompt.startsWith("/")) {
+			const separator = prompt.indexOf(" ");
+			const name = prompt.slice(1, separator === -1 ? undefined : separator);
+			const args = separator === -1 ? "" : prompt.slice(separator + 1).trim();
+			await this.#executeSlashCommand(name, args);
 			return;
 		}
 		this.#chatInput.setText("");
 		try {
-			if (prompt === "/compact" || prompt.startsWith("/compact ")) {
-				const instructions = prompt.slice("/compact".length).trim();
-				this.#status = "Compacting…";
-				this.#rebuild();
-				this.#reportOperation(
-					await controller.compact(
-						{ customInstructions: instructions.length === 0 ? null : instructions },
-						BACKGROUND_CONTEXT,
-					),
-				);
-				return;
-			}
-			const operation = this.#laneReplica?.state().operation;
-			const running = operation !== null && operation !== undefined;
-			this.#status = running ? "Queueing steering message…" : "Running turn…";
-			this.#rebuild();
-			if (running) this.#reportQueue(await controller.steer({ message: prompt, images: null }, BACKGROUND_CONTEXT));
-			else this.#reportOperation(await controller.prompt({ message: prompt, images: null }, BACKGROUND_CONTEXT));
+			await this.#submitPrompt(prompt);
 		} catch (error) {
 			this.#status = `Error: ${message(error)}`;
 			this.#rebuild();
 		}
+	}
+
+	async #executeSlashCommand(name: string, args: string): Promise<void> {
+		const command = this.#selectedSlashCommands()
+			?.list()
+			.find((candidate) => candidate.name === name);
+		this.#chatInput.setText("");
+		if (command === undefined) {
+			this.#status = `Unknown slash command: /${name}`;
+			this.#rebuild();
+			return;
+		}
+		const context: SlashCommandExecutionContext = {
+			operation: BACKGROUND_CONTEXT,
+			select: (title, items, selectedValue) =>
+				this.#select(
+					title,
+					items.map((item) => ({ ...item })),
+					selectedValue,
+				),
+			submitPrompt: (message) => this.#submitPrompt(message),
+			showStatus: (status) => {
+				this.#status = status;
+				this.#rebuild();
+			},
+		};
+		try {
+			await command.run(args, context);
+		} catch (error) {
+			this.#status = `Error: ${message(error)}`;
+			this.#rebuild();
+		}
+	}
+
+	async #submitPrompt(prompt: string): Promise<void> {
+		const controller = this.#selectedController();
+		if (controller === undefined) throw new Error("No Session AgentController service is available");
+		const operation = this.#laneReplica?.state().operation;
+		const running = operation !== null && operation !== undefined;
+		this.#status = running ? "Queueing steering message…" : "Running turn…";
+		this.#rebuild();
+		if (running) this.#reportQueue(await controller.steer({ message: prompt, images: null }, BACKGROUND_CONTEXT));
+		else this.#reportOperation(await controller.prompt({ message: prompt, images: null }, BACKGROUND_CONTEXT));
 	}
 
 	async #queueFollowUp(text: string): Promise<void> {
@@ -591,19 +635,14 @@ export class ExperimentalClientTui implements Component {
 		});
 	}
 
-	#showModels(): void {
-		this.#screen = "models";
-		this.#rebuild();
-	}
-
 	#selectedController(): AgentController | undefined {
 		return this.#selectedServerId === undefined ? undefined : this.#agents.get(this.#selectedServerId)?.controller;
 	}
 
 	#footer(): string {
 		const snapshot = this.#laneReplica?.state();
-		if (!snapshot) return "/model · /compact";
-		return `${snapshot.configuration.model.provider}/${snapshot.configuration.model.modelId} · thinking:${snapshot.configuration.thinkingLevel} · ${snapshot.stats.messageCount} messages · /model · /compact`;
+		if (!snapshot) return "/model · /thinking · /compact";
+		return `${snapshot.configuration.model.provider}/${snapshot.configuration.model.modelId} · thinking:${snapshot.configuration.thinkingLevel} · ${snapshot.stats.messageCount} messages · /model · /thinking · /compact`;
 	}
 }
 

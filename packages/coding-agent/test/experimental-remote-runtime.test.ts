@@ -395,9 +395,16 @@ describe("experimental durable server composition", () => {
 		);
 		expect(secondModels.state.value).toEqual(firstModels.state.value);
 		const previousThinking = firstModels.state.value!.configuration.thinkingLevel;
+		const thinkingLevels = await firstModels.getThinkingLevels(BACKGROUND_CONTEXT);
+		expect(thinkingLevels).toContain(previousThinking);
 		await firstModels.cycleThinking(BACKGROUND_CONTEXT);
 		await vi.waitFor(() => {
 			expect(firstModels.state.value!.configuration.thinkingLevel).not.toBe(previousThinking);
+			expect(secondModels.state.value).toEqual(firstModels.state.value);
+		});
+		await firstModels.selectThinking(previousThinking, BACKGROUND_CONTEXT);
+		await vi.waitFor(() => {
+			expect(firstModels.state.value!.configuration.thinkingLevel).toBe(previousThinking);
 			expect(secondModels.state.value).toEqual(firstModels.state.value);
 		});
 		expect(errors).toEqual([]);

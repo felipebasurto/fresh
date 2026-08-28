@@ -98,6 +98,12 @@ describe("experimental client TUI", () => {
 					BACKGROUND_CONTEXT,
 				);
 			});
+			const selectThinking = vi.fn(async (thinkingLevel: "off" | "high") => {
+				modelsState.set(
+					{ ...modelsState.value, configuration: { ...modelsState.value.configuration, thinkingLevel } },
+					BACKGROUND_CONTEXT,
+				);
+			});
 			let watchListener: ((event: LaneEvent) => void | Promise<void>) | undefined;
 			const snapshot = laneSnapshot();
 			const watchSession = vi.fn(async (sessionId: string) => ({
@@ -176,8 +182,12 @@ describe("experimental client TUI", () => {
 			sessionProvider.provide(Models, {
 				state: modelsState,
 				async cycleThinking() {},
+				async getThinkingLevels() {
+					return ["off", "high"];
+				},
 				async refresh() {},
 				select,
+				selectThinking,
 			});
 			sessionProvider.provide(AgentController, createAgentController({ prompt } as unknown as AgentLane));
 
@@ -275,9 +285,19 @@ describe("experimental client TUI", () => {
 				expect(component.render(80).join("\n")).not.toContain("Experimental Sessions");
 				expect(component.render(80).join("\n")).not.toContain("Experimental Models");
 
+				component.handleInput("/");
+				await vi.waitFor(() => {
+					const rendered = component.render(80).join("\n");
+					expect(rendered).toContain("Select model");
+					expect(rendered).toContain("Set thinking level");
+					expect(rendered).toContain("Send a greeting from the example plugin");
+				});
 				component.handleInput("hello");
+				component.handleInput("\u001b");
 				component.handleInput("\r");
-				await vi.waitFor(() => expect(prompt).toHaveBeenCalledWith("hello", undefined, expect.anything()));
+				await vi.waitFor(() =>
+					expect(prompt).toHaveBeenCalledWith("Hello from the example plugin.", undefined, expect.anything()),
+				);
 				await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("remote answer"));
 				expect(component.render(80).join("\n")).toContain("hello");
 				expect(component.render(80).join("\n")).not.toContain("Operation run-1 completed");
@@ -301,6 +321,7 @@ describe("experimental client TUI", () => {
 				await vi.waitFor(() => expect(component.render(80).join("\n")).not.toContain("Reattaching"));
 
 				component.handleInput("/model");
+				component.handleInput("\u001b");
 				component.handleInput("\r");
 				await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("Select model:"));
 				component.handleInput("\u001b[B");
@@ -310,6 +331,15 @@ describe("experimental client TUI", () => {
 				);
 				expect(modelsState.value.configuration.model).toEqual({ provider: "test", modelId: "two" });
 				await vi.waitFor(() => expect(component.render(80).join("\n")).not.toContain("Select model:"));
+
+				component.handleInput("/thinking");
+				component.handleInput("\u001b");
+				component.handleInput("\r");
+				await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("Select thinking level:"));
+				component.handleInput("\u001b[B");
+				component.handleInput("\r");
+				await vi.waitFor(() => expect(selectThinking).toHaveBeenCalledWith("high", expect.anything()));
+				expect(modelsState.value.configuration.thinkingLevel).toBe("high");
 
 				component.handleInput("\u0003");
 				await vi.waitFor(() => expect(finished).toBe(true));
