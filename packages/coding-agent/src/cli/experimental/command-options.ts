@@ -1,4 +1,5 @@
 import { posix } from "node:path";
+import { isServerId, type ServerId } from "@earendil-works/pi-protocol";
 import { type Args, parseArgs } from "../args.ts";
 import { type CommandOption, type ParsedCommandInput, stringOption, valueOption } from "./command.ts";
 
@@ -11,7 +12,12 @@ interface UnixTransportAddress {
 	readonly path: string;
 }
 
-export type TransportAddress = UnixTransportAddress;
+interface RadiusTransportAddress {
+	readonly transport: "radius";
+	readonly serverId: ServerId;
+}
+
+export type TransportAddress = UnixTransportAddress | RadiusTransportAddress;
 
 export const authTokenOption = stringOption("--auth-token");
 export const authTokenFileOption = stringOption("--auth-token-file");
@@ -41,6 +47,25 @@ function parseTransportAddress(
 		url = new URL(value);
 	} catch {
 		return { error: `Invalid ${option} address "${value}"` };
+	}
+	if (url.protocol === "radius:") {
+		if (option !== "--connect") return { error: "Radius transport is only valid for --connect" };
+		if (
+			url.username ||
+			url.password ||
+			url.port ||
+			(url.pathname !== "" && url.pathname !== "/") ||
+			url.search ||
+			url.hash ||
+			value !== `radius://${url.hostname}${url.pathname}`
+		) {
+			return { error: `Invalid ${option} address "${value}"` };
+		}
+		const serverId = url.hostname;
+		if (!isServerId(serverId)) {
+			return { error: "Radius transport address requires a lowercase UUIDv4 server ID" };
+		}
+		return { address: { transport: "radius", serverId } };
 	}
 	if (url.protocol !== "unix:") return { error: `Unsupported ${option} transport "${url.protocol}"` };
 	if (url.hostname || url.port || url.username || url.password) {

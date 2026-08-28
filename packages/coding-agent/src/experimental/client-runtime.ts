@@ -2,8 +2,10 @@ import { basename } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import { Client } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
-import { isServerId } from "@earendil-works/pi-protocol";
+import { isServerId, type ServerId } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
+import { RadiusRelayAuthResolver } from "./radius-auth.ts";
+import { createRadiusClientTransportFactory, RadiusClientReconnect } from "./radius-relay.ts";
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
 import { AgentController } from "./services/agent-controller.ts";
 import {
@@ -15,8 +17,12 @@ import {
 import { Models } from "./services/models.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
 
+export type ClientRuntimeRoute =
+	| ({ readonly transport: "unix" } & UnixServerRoute)
+	| { readonly transport: "radius"; readonly serverId: ServerId };
+
 export interface ClientRuntimeServer {
-	readonly route: UnixServerRoute;
+	readonly route: ClientRuntimeRoute;
 	readonly client: Client;
 	readonly server: ServerServiceConnection;
 	readonly session: SessionServiceConnection;
@@ -44,7 +50,9 @@ export async function openClientRuntime(
 	command: ClientCommand,
 	options: OpenClientRuntimeOptions = {},
 ): Promise<ClientRuntime> {
-	if (command.auth !== undefined) throw new Error("Authentication is not supported by the experimental local server");
+	if (command.auth !== undefined && command.connect?.transport !== "radius") {
+		throw new Error("Authentication is only supported for experimental Radius connections");
+	}
 	if (command.provider !== undefined && command.model === undefined) {
 		throw new Error("Server model provider requires a model");
 	}
@@ -52,12 +60,16 @@ export async function openClientRuntime(
 		throw new Error("Model selection is only valid when automatically activating a new server");
 	}
 	const directory = resolveServerDirectory(options.directory);
-	let routes: UnixServerRoute[];
+	let routes: ClientRuntimeRoute[];
 	let activatedClient: Client | undefined;
 	if (command.connect) {
-		routes = [routeFromExplicitPath(command.connect.path)];
+		routes = [
+			command.connect.transport === "radius"
+				? { transport: "radius", serverId: command.connect.serverId }
+				: { transport: "unix", ...routeFromExplicitPath(command.connect.path) },
+		];
 	} else {
-		routes = await discoverUnixServers({ directory });
+		routes = (await discoverUnixServers({ directory })).map((route) => ({ transport: "unix", ...route }));
 		if (routes.length > 0 && command.model !== undefined) {
 			throw new Error("Model selection is only valid when automatically activating a new server");
 		}
@@ -69,23 +81,25 @@ export async function openClientRuntime(
 				provider: command.provider,
 				model: command.model,
 			});
-			routes = [activated.route];
+			routes = [{ transport: "unix", ...activated.route }];
 			activatedClient = activated.client;
 		}
 	}
 
 	const clients: Client[] = [];
+	const reconnectors: RadiusClientReconnect[] = [];
 	const serviceConnections: Array<ServerServiceConnection | SessionServiceConnection> = [];
 	const servers: ClientRuntimeServer[] = [];
 	let disposed = false;
 	const dispose = async (): Promise<void> => {
 		if (disposed) return;
 		disposed = true;
+		const reconnectResults = await Promise.allSettled(reconnectors.map((reconnector) => reconnector.dispose()));
 		const connectionResults = await Promise.allSettled(
 			serviceConnections.map((connection) => connection.dispose(BACKGROUND_CONTEXT)),
 		);
 		const clientResults = await Promise.allSettled(clients.map((client) => client.dispose()));
-		const errors = [...connectionResults, ...clientResults].flatMap((result) =>
+		const errors = [...reconnectResults, ...connectionResults, ...clientResults].flatMap((result) =>
 			result.status === "rejected" ? [result.reason] : [],
 		);
 		if (errors.length === 1) throw errors[0];
@@ -98,10 +112,17 @@ export async function openClientRuntime(
 				activatedClient ??
 				(await Client.connect({
 					serverId: route.serverId,
-					transportFactory: createUnixTransportFactory({ path: route.path }),
+					transportFactory:
+						route.transport === "unix"
+							? createUnixTransportFactory({ path: route.path })
+							: createRadiusClientTransportFactory({
+									serverId: route.serverId,
+									auth: new RadiusRelayAuthResolver(command.auth),
+								}),
 				}));
 			activatedClient = undefined;
 			clients.push(client);
+			if (route.transport === "radius") reconnectors.push(new RadiusClientReconnect(client));
 			const server = createServerServiceConnection(client);
 			const session = createSessionServiceConnection(client);
 			serviceConnections.push(server, session);

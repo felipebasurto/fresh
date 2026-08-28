@@ -25,7 +25,12 @@ import { combineFacetLoaders, type FacetLoader, type LoadedFacets } from "./face
 import { createFacetHost, defineFacet, type FacetHost } from "./facets.ts";
 import { type LaneReplica, type LaneWatchSource, openLaneReplica } from "./lane-replica.ts";
 import { AgentController, type AgentOperationResponse, type AgentQueueResponse } from "./services/agent-controller.ts";
-import type { ServerServiceConnection, SessionServiceConnection } from "./services/connection.ts";
+import type {
+	ServerConnectionState,
+	ServerServiceConnection,
+	SessionAttachmentState,
+	SessionServiceConnection,
+} from "./services/connection.ts";
 import { Models } from "./services/models.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
 
@@ -35,6 +40,7 @@ export interface RunClientTuiOptions extends OpenClientRuntimeOptions {
 
 export interface ClientTuiServer {
 	readonly serverId: string;
+	readonly radius: boolean;
 	readonly laneWatches: LaneWatchSource;
 	readonly server: ServerServiceConnection;
 	readonly session: SessionServiceConnection;
@@ -96,7 +102,9 @@ export class ExperimentalClientTui implements Component {
 	#sessionId: string | undefined;
 	#status = "Starting Session…";
 	#busy = false;
+	#closed = false;
 	#closePromise: Promise<void> | undefined;
+	#recoveryTransition: Promise<void> = Promise.resolve();
 	#laneReplica: LaneReplica | undefined;
 	#laneUnsubscribe: (() => void) | undefined;
 	#chatView: ExperimentalChatView | undefined;
@@ -215,22 +223,33 @@ export class ExperimentalClientTui implements Component {
 					const management = env.use(SessionManagement);
 					const models = env.use(Models);
 					const controller = env.use(AgentController);
+					const sessionFeature: SessionFeature = {
+						serverId: server.serverId,
+						directory,
+						management,
+						session: server.session,
+						laneWatches: server.laneWatches,
+					};
 					env.onActivate(() => {
-						env.own(
-							this.#register(this.#sessions, "Sessions", {
-								serverId: server.serverId,
-								directory,
-								management,
-								session: server.session,
-								laneWatches: server.laneWatches,
-							}),
-						);
+						env.own(this.#register(this.#sessions, "Sessions", sessionFeature));
 						env.own(
 							this.#register(this.#modelSelections, "Model selection", { serverId: server.serverId, models }),
 						);
 						env.own(this.#register(this.#agents, "Agent controller", { serverId: server.serverId, controller }));
 						env.own(directory.state.subscribe(() => this.#rebuild()));
 						env.own(models.state.subscribe(() => this.#rebuild()));
+						if (server.radius) {
+							env.own(
+								server.server.connection.subscribe((state) =>
+									this.#handleConnectionState(server.serverId, state),
+								),
+							);
+							env.own(
+								server.session.attachment.subscribe((state) =>
+									this.#handleAttachmentState(sessionFeature, state),
+								),
+							);
+						}
 					});
 				},
 			});
@@ -256,6 +275,9 @@ export class ExperimentalClientTui implements Component {
 			if (matches.length > 1) throw new Error(`Session ${command.sessionId} is available from more than one server`);
 			selected = matches[0];
 			if (selected === undefined) {
+				if (command.connect?.transport === "radius") {
+					throw new Error(`Remote server does not contain Session ${command.sessionId}`);
+				}
 				const feature = requireSingleServer(features);
 				selected = {
 					feature,
@@ -296,8 +318,10 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	async #close(): Promise<void> {
+		this.#closed = true;
 		const errors: unknown[] = [];
 		try {
+			await this.#recoveryTransition;
 			await this.#closeLane();
 		} catch (error) {
 			errors.push(error);
@@ -329,7 +353,11 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	#rebuild(): void {
-		this.#sessionHeading.setText(this.#sessionId === undefined ? "" : theme.fg("dim", this.#sessionId));
+		this.#sessionHeading.setText(
+			this.#sessionId === undefined || this.#selectedServerId === undefined
+				? ""
+				: theme.fg("dim", `Server: ${this.#selectedServerId}\nSession: ${this.#sessionId}`),
+		);
 		this.#statusContainer.clear();
 		if (this.#status.length > 0) {
 			this.#statusContainer.addChild(new Text(theme.fg("dim", this.#status), 1, 0));
@@ -398,6 +426,54 @@ export class ExperimentalClientTui implements Component {
 			this.#busy = false;
 			this.#rebuild();
 		}
+	}
+
+	#handleConnectionState(serverId: string, state: ServerConnectionState): void {
+		if (this.#closed || this.#selectedServerId !== serverId) return;
+		if (state.status === "connected") {
+			if (this.#laneReplica === undefined) {
+				this.#busy = true;
+				this.#status = "Reattaching Session…";
+				this.#rebuild();
+			}
+			return;
+		}
+		this.#busy = true;
+		this.#status = state.status === "connecting" ? "Reconnecting to Radius…" : "Radius disconnected; retrying…";
+		this.#queueRecovery(() => this.#closeLane());
+		this.#rebuild();
+	}
+
+	#handleAttachmentState(feature: SessionFeature, state: SessionAttachmentState): void {
+		if (this.#closed || this.#selectedServerId !== feature.serverId || this.#sessionId === undefined) return;
+		if (state.status === "attached" && state.sessionId === this.#sessionId) {
+			const sessionId = this.#sessionId;
+			this.#queueRecovery(async () => {
+				if (this.#laneReplica === undefined) await this.#openLane(feature, sessionId);
+				this.#busy = false;
+				this.#status = "";
+				this.#rebuild();
+			});
+			return;
+		}
+		if (state.status === "attaching" && state.sessionId === this.#sessionId) {
+			this.#busy = true;
+			this.#status = "Reattaching Session…";
+			this.#rebuild();
+		}
+	}
+
+	#queueRecovery(operation: () => Promise<void>): void {
+		this.#recoveryTransition = this.#recoveryTransition
+			.then(async () => {
+				if (!this.#closed) await operation();
+			})
+			.catch((error: unknown) => {
+				if (this.#closed) return;
+				this.#busy = true;
+				this.#status = `Reconnect error: ${message(error)}`;
+				this.#rebuild();
+			});
 	}
 
 	async #openLane(feature: SessionFeature, sessionId: string): Promise<void> {
@@ -569,6 +645,7 @@ export async function runClientTui(command: ClientCommand, options: RunClientTui
 			ui: tui,
 			servers: runtime.servers.map((server) => ({
 				serverId: server.route.serverId,
+				radius: server.route.transport === "radius",
 				laneWatches: server.client,
 				server: server.server,
 				session: server.session,

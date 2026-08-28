@@ -72,6 +72,7 @@ describe("experimental client TUI", () => {
 		async (_kind, command, sessionId, creates) => {
 			const directoryState = replicatedState<SessionDirectoryState>({ revision: 1, sessions: [session("one", 1)] });
 			const attachment = replicatedState<SessionAttachmentState>({ status: "detached" });
+			const connectionState = replicatedState<ServerConnectionState>({ status: "connected", since: "now" });
 			const modelsState = replicatedState<ModelsState>({
 				catalog: {
 					revision: 1,
@@ -187,7 +188,7 @@ describe("experimental client TUI", () => {
 			});
 			const serverServices: ServerServiceConnection = Object.assign(serverNamespace, {
 				acceptsUnavailableServices: false,
-				connection: replicatedState<ServerConnectionState>({ status: "connected", since: "now" }),
+				connection: connectionState,
 				async catalogue() {
 					return serverProvider.catalogue;
 				},
@@ -228,6 +229,7 @@ describe("experimental client TUI", () => {
 			});
 			const server: ClientTuiServer = {
 				serverId,
+				radius: true,
 				laneWatches: { watchSession },
 				server: serverServices,
 				session: sessionServices,
@@ -267,6 +269,8 @@ describe("experimental client TUI", () => {
 				expect(attachment.value).toEqual({ status: "attached", sessionId });
 				expect(watchSession).toHaveBeenCalledWith(sessionId);
 				expect(select).not.toHaveBeenCalled();
+				expect(component.render(80).join("\n")).toContain(`Server: ${serverId}`);
+				expect(component.render(80).join("\n")).toContain(`Session: ${sessionId}`);
 				expect(component.render(80).join("\n")).toContain("test/one");
 				expect(component.render(80).join("\n")).not.toContain("Experimental Sessions");
 				expect(component.render(80).join("\n")).not.toContain("Experimental Models");
@@ -277,6 +281,18 @@ describe("experimental client TUI", () => {
 				await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("remote answer"));
 				expect(component.render(80).join("\n")).toContain("hello");
 				expect(component.render(80).join("\n")).not.toContain("Operation run-1 completed");
+
+				attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);
+				connectionState.set(
+					{ status: "disconnected", since: "later", reason: "network lost", retryAt: null },
+					BACKGROUND_CONTEXT,
+				);
+				await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("retrying"));
+				connectionState.set({ status: "connecting", attempt: 1 }, BACKGROUND_CONTEXT);
+				connectionState.set({ status: "connected", since: "reconnected" }, BACKGROUND_CONTEXT);
+				attachment.set({ status: "attached", sessionId }, BACKGROUND_CONTEXT);
+				await vi.waitFor(() => expect(watchSession).toHaveBeenCalledTimes(2));
+				await vi.waitFor(() => expect(component.render(80).join("\n")).not.toContain("Reattaching"));
 
 				component.handleInput("/model");
 				component.handleInput("\r");

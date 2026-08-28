@@ -100,12 +100,22 @@ describe("experimental CLI commands", () => {
 		expect(result.command.options.unknownFlags.get("listen")).toBe("unix:///tmp/second.sock");
 	});
 
-	test("parses a client transport address", () => {
+	test("parses client transport addresses", () => {
 		expect(cli.parse(["client", "--connect", "unix:///tmp/pi.sock"])).toEqual({
 			ok: true,
 			command: {
 				command: "client",
 				connect: { transport: "unix", path: "/tmp/pi.sock" },
+			},
+		});
+		expect(
+			cli.parse(["client", "--connect", "radius://00000000-0000-4000-8000-000000000001", "--session-id", "demo-1"]),
+		).toEqual({
+			ok: true,
+			command: {
+				command: "client",
+				connect: { transport: "radius", serverId: "00000000-0000-4000-8000-000000000001" },
+				sessionId: "demo-1",
 			},
 		});
 	});
@@ -225,6 +235,8 @@ describe("experimental CLI commands", () => {
 			"The experimental server command does not support existing CLI options yet",
 		],
 		[["client", "--connect", "ws://localhost:8080"], 'Unsupported --connect transport "ws:"'],
+		[["client", "--connect", "radius://not-a-server"], "Radius transport address requires"],
+		[["server", "--listen", "radius://00000000-0000-4000-8000-000000000001"], "only valid for --connect"],
 		[["client", "--provider", "anthropic"], "--provider requires --model"],
 		[["client", "-c", "-r"], "--session-id, --continue, and --resume are mutually exclusive"],
 		[["server", "--provider", "anthropic"], "--provider requires --model"],

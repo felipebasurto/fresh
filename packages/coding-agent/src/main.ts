@@ -66,6 +66,7 @@ import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { runClient } from "./experimental/client.ts";
 import { runClientTui } from "./experimental/client-tui.ts";
+import type { RadiusRelayHostStatus } from "./experimental/radius-relay.ts";
 import { startForegroundServer } from "./experimental/server.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
@@ -582,16 +583,38 @@ async function waitForTermination(serverClosed: Promise<void>): Promise<void> {
 }
 
 async function runExperimentalServerCommand(command: ServerCommand): Promise<void> {
-	if (command.auth !== undefined) throw new Error("Authentication is not supported by the local demo server");
 	if (command.listen !== undefined) throw new Error("The local demo server uses its server-addressed Unix socket");
+	let previousRelayStatus = "";
+	let relayOutputReady = false;
+	let pendingRelayStatus: RadiusRelayHostStatus | undefined;
+	const reportRelayStatus = (status: RadiusRelayHostStatus): void => {
+		const description =
+			status.status === "connected"
+				? "connected"
+				: status.status === "not_authenticated"
+					? "not connected; local only"
+					: status.status === "retrying"
+						? `reconnecting: ${status.error}`
+						: "connecting";
+		if (description === previousRelayStatus || status.status === "connecting") return;
+		previousRelayStatus = description;
+		console.log(`Radius: ${description}`);
+	};
 	const runtime = await startForegroundServer({
 		serverId: command.serverId,
 		sessionDir: command.sessionDir,
 		provider: command.provider,
 		model: command.model,
+		relayAuth: command.auth,
+		onRelayStatus(status) {
+			if (relayOutputReady) reportRelayStatus(status);
+			else pendingRelayStatus = status;
+		},
 	});
 	console.log(`Server: ${runtime.serverId}`);
 	console.log(`Socket: ${runtime.socketPath}`);
+	relayOutputReady = true;
+	if (pendingRelayStatus !== undefined) reportRelayStatus(pendingRelayStatus);
 	try {
 		await waitForTermination(runtime.closed);
 	} finally {
@@ -600,12 +623,7 @@ async function runExperimentalServerCommand(command: ServerCommand): Promise<voi
 }
 
 async function runClientCommand(command: ClientCommand): Promise<void> {
-	if (
-		command.sessionId === undefined &&
-		command.prompt === undefined &&
-		process.stdin.isTTY === true &&
-		process.stdout.isTTY === true
-	) {
+	if (command.prompt === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true) {
 		await runClientTui(command);
 		return;
 	}

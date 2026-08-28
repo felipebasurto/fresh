@@ -15,6 +15,7 @@ import { isServerId, type ServerId, type SessionSummary } from "@earendil-works/
 import { type Server, type ServerHost, SessionAmbiguousError, SessionNotFoundError } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 import lockfile from "proper-lockfile";
+import type { AuthInput } from "../cli/experimental/command-options.ts";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { CoordinatorConnection, type CoordinatorStartupLease, ensureCoordinator } from "./coordinator.ts";
@@ -24,6 +25,8 @@ import {
 	spawnInternalProcess,
 	terminateInternalProcess,
 } from "./process.ts";
+import { RadiusRelayAuthResolver } from "./radius-auth.ts";
+import { RadiusRelayHost, type RadiusRelayHostStatus } from "./radius-relay.ts";
 import { createExperimentalServerServices } from "./services/server.ts";
 import { SessionWorkerManager } from "./session-worker-manager.ts";
 
@@ -322,6 +325,9 @@ export interface StartServerOptions {
 	readonly model?: string;
 	/** Hold the server open without client or Session demand. Defaults to true for foreground servers. */
 	readonly keepAlive?: boolean;
+	/** Optional explicit Radius credential. Stored Radius auth is used when omitted. */
+	readonly relayAuth?: AuthInput;
+	readonly onRelayStatus?: (status: RadiusRelayHostStatus) => void;
 }
 
 interface StartServerBackendOptions {
@@ -463,6 +469,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 	let coordinator: CoordinatorConnection | undefined;
 	let startupLease: CoordinatorStartupLease | undefined;
 	let workers: SessionWorkerManager | undefined;
+	let relay: RadiusRelayHost | undefined;
 	let released = false;
 	try {
 		await ensurePrivateServerDirectory(directory);
@@ -486,14 +493,23 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 		startupLease = undefined;
 		await workers.discover(coordinator.peerIds);
 		await backend.refreshSessions();
+		relay = new RadiusRelayHost({
+			serverId,
+			server: backend.server,
+			auth: new RadiusRelayAuthResolver(options.relayAuth),
+			onStatus: options.onRelayStatus,
+		});
+		relay.start();
 
 		const activeBackend = backend;
 		const activeCoordinator = coordinator;
 		const activeWorkers = workers;
+		const activeRelay = relay;
 		void activeCoordinator.replaced
 			.then(async () => {
 				lifetime.stop();
 				activeWorkers.detach();
+				await activeRelay.close();
 				await activeBackend.close();
 			})
 			.finally(() => activeCoordinator.close())
@@ -505,11 +521,12 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 			socketPath,
 			server: activeBackend.server,
 			workerPids: activeWorkers.workerPids,
-			closed: activeBackend.closed,
+			closed: activeBackend.closed.finally(() => activeRelay.close()),
 			close() {
 				lifetime.stop();
 				closePromise ??= (async () => {
 					try {
+						await activeRelay.close();
 						await activeBackend.close();
 					} finally {
 						try {
@@ -534,6 +551,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 		startupLease?.close();
 		if (coordinator?.wasReplaced) workers?.detach();
 		const cleanup = await Promise.allSettled([
+			relay?.close(),
 			backend?.close(),
 			coordinator?.wasReplaced ? undefined : workers?.shutdown(),
 			Promise.resolve(coordinator?.close()),
