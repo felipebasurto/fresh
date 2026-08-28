@@ -17,6 +17,10 @@
 - Added assistant request recovery, durable retry waits, deferred suspension, and missing-identity suspension to `AgentHarness`.
 - Added durable tool planning, context-bound sequential and parallel execution, ordered result settlement, and safe tool replay recovery to `AgentHarness`.
 
+### Fixed
+
+- Fixed Windows `NodeExecutionEnv` aborts crashing when `taskkill.exe` is unavailable on `PATH` ([#6596](https://github.com/earendil-works/pi/issues/6596)).
+
 ### Removed
 
 - Removed the withdrawn manual-drive configuration, action inspection methods, action outcomes, and snapshot action field from `AgentHarness`.

@@ -10,6 +10,7 @@ export interface InteractiveTuiOptions {
 	readonly logDirectory: string;
 	readonly terminal?: Terminal;
 	readonly onRightClickPaste?: () => void;
+	readonly fullscreenCopyOnSelect?: boolean;
 }
 
 /** Composition root shared by coding-agent presentations. */
@@ -25,6 +26,7 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 			searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
 			openUrl: openBrowser,
 			onRightClickPaste: options.onRightClickPaste,
+			copyOnSelect: options.fullscreenCopyOnSelect,
 			copySelection: async (text) => {
 				try {
 					await copyToClipboard(text);
