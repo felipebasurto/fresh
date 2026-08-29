@@ -1,12 +1,12 @@
 import {
 	type Context,
 	createRemoteServiceBinding,
-	type FacetConnection,
 	type JsonValue,
 	type MutableReplicatedState,
 	type RemoteServiceBinding,
-	type RemoteServiceConnection,
+	type RemoteServiceSource,
 	type RemoteServices,
+	type RemoteServiceTransport,
 	type ReplicatedState,
 	replicatedState,
 	type Service,
@@ -30,12 +30,12 @@ export type SessionAttachmentState =
 	| { status: "detached" }
 	| { status: "attaching" | "attached" | "degraded"; sessionId: string };
 
-export interface ServerServiceConnection extends FacetConnection {
+export interface ServerServiceSource extends RemoteServiceSource {
 	readonly connection: ReplicatedState<ServerConnectionState>;
 	dispose(context: Context): Promise<void>;
 }
 
-export interface SessionServiceConnection extends FacetConnection {
+export interface SessionServiceSource extends RemoteServiceSource {
 	readonly attachment: ReplicatedState<SessionAttachmentState>;
 	/** Wait for the exact current attachment generation to finish hydrating. */
 	whenAttached(sessionId: string, context: Context): Promise<void>;
@@ -44,11 +44,11 @@ export interface SessionServiceConnection extends FacetConnection {
 	dispose(context: Context): Promise<void>;
 }
 
-export interface ServiceConnectionOptions {
+export interface ServiceSourceOptions {
 	readonly onError?: (error: Error) => void;
 }
 
-export interface ServiceBindingOptions extends ServiceConnectionOptions {
+export interface ServiceBindingOptions extends ServiceSourceOptions {
 	readonly services: readonly { readonly id: string }[];
 }
 
@@ -62,7 +62,7 @@ class RoutedServiceBinding implements RemoteServices {
 
 	constructor(options: {
 		readonly services: readonly { readonly id: string }[];
-		readonly connection: RemoteServiceConnection;
+		readonly transport: RemoteServiceTransport;
 		readonly getBound: () => boolean;
 		readonly assertAccess: () => void;
 		readonly onError: (error: Error) => void;
@@ -71,7 +71,7 @@ class RoutedServiceBinding implements RemoteServices {
 	}) {
 		this.#services = createRemoteServiceBinding({
 			services: options.services,
-			connection: options.connection,
+			transport: options.transport,
 			bound: false,
 			assertAccess: options.assertAccess,
 			onError: options.onError,
@@ -115,11 +115,11 @@ class RoutedServiceBinding implements RemoteServices {
 	}
 }
 
-class ServerServiceConnectionImpl implements ServerServiceConnection {
+class ServerServiceSourceImpl implements ServerServiceSource {
 	readonly acceptsUnavailableServices = false;
 	readonly connection: ReplicatedState<ServerConnectionState>;
 	readonly #client: Client;
-	readonly #remoteConnection: RemoteServiceConnection;
+	readonly #transport: RemoteServiceTransport;
 	readonly #bindings = new Set<RoutedServiceBinding>();
 	readonly #removeConnectionListener: () => void;
 	readonly #onError: (error: Error) => void;
@@ -127,9 +127,9 @@ class ServerServiceConnectionImpl implements ServerServiceConnection {
 	#connectionAttempt: number;
 	#disposed = false;
 
-	constructor(client: Client, options: ServiceConnectionOptions) {
+	constructor(client: Client, options: ServiceSourceOptions) {
 		this.#client = client;
-		this.#remoteConnection = createRemoteServiceConnection(client, () => ({ serverId: client.serverId }));
+		this.#transport = createRemoteServiceTransport(client, () => ({ serverId: client.serverId }));
 		this.#onError = options.onError ?? (() => {});
 		this.#connectionAttempt = client.connectionState === "connecting" ? 1 : 0;
 		const connectionState = replicatedState<ServerConnectionState>(
@@ -162,11 +162,11 @@ class ServerServiceConnectionImpl implements ServerServiceConnection {
 		assertAccess(): void;
 		onError(error: Error): void;
 	}): RemoteServices {
-		if (this.#disposed) throw new Error("Server service connection is disposed");
+		if (this.#disposed) throw new Error("Server service source is disposed");
 		let binding!: RoutedServiceBinding;
 		binding = new RoutedServiceBinding({
 			services: options.services,
-			connection: this.#remoteConnection,
+			transport: this.#transport,
 			getBound: () => this.#client.connected,
 			assertAccess: options.assertAccess,
 			onError: options.onError,
@@ -184,14 +184,14 @@ class ServerServiceConnectionImpl implements ServerServiceConnection {
 		const bindings = [...this.#bindings];
 		this.#bindings.clear();
 		const results = await Promise.allSettled(bindings.map((binding) => binding.dispose(context)));
-		throwFailures(results, "Failed to dispose server service connection");
+		throwFailures(results, "Failed to dispose server service source");
 	}
 }
 
-class SessionServiceConnectionImpl implements SessionServiceConnection {
+class SessionServiceSourceImpl implements SessionServiceSource {
 	readonly attachment: ReplicatedState<SessionAttachmentState>;
 	readonly #client: Client;
-	readonly #remoteConnection: RemoteServiceConnection;
+	readonly #transport: RemoteServiceTransport;
 	readonly #attachmentState: MutableReplicatedState<SessionAttachmentState>;
 	readonly #bindings = new Set<RoutedServiceBinding>();
 	readonly #removeAttachmentListener: () => void;
@@ -205,9 +205,9 @@ class SessionServiceConnectionImpl implements SessionServiceConnection {
 		return this.#client.attachment === undefined && this.#catalogue === undefined;
 	}
 
-	constructor(client: Client, options: ServiceConnectionOptions) {
+	constructor(client: Client, options: ServiceSourceOptions) {
 		this.#client = client;
-		this.#remoteConnection = createRemoteServiceConnection(client, () => client.attachment);
+		this.#transport = createRemoteServiceTransport(client, () => client.attachment);
 		this.#onError = options.onError ?? (() => {});
 		this.#attachmentState = replicatedState<SessionAttachmentState>(
 			client.attachment === undefined
@@ -271,11 +271,11 @@ class SessionServiceConnectionImpl implements SessionServiceConnection {
 		assertAccess(): void;
 		onError(error: Error): void;
 	}): RemoteServices {
-		if (this.#disposed) throw new Error("Session service connection is disposed");
+		if (this.#disposed) throw new Error("Session service source is disposed");
 		let binding!: RoutedServiceBinding;
 		binding = new RoutedServiceBinding({
 			services: options.services,
-			connection: this.#remoteConnection,
+			transport: this.#transport,
 			getBound: () => this.#client.attachment !== undefined,
 			onActivate: async (context) => {
 				const attachment = this.#client.attachment;
@@ -311,7 +311,7 @@ class SessionServiceConnectionImpl implements SessionServiceConnection {
 		const bindings = [...this.#bindings];
 		this.#bindings.clear();
 		const results = await Promise.allSettled(bindings.map((binding) => binding.dispose(context)));
-		throwFailures(results, "Failed to dispose Session service connection");
+		throwFailures(results, "Failed to dispose Session service source");
 	}
 
 	async #rebind(bound: boolean, context: Context): Promise<void> {
@@ -354,9 +354,9 @@ class SessionServiceConnectionImpl implements SessionServiceConnection {
 export function createServerServiceBinding(
 	client: Client,
 	options: ServiceBindingOptions,
-): ServerServiceConnection & RemoteServices {
-	const connection = createServerServiceConnection(client, options);
-	const services = connection.open({
+): ServerServiceSource & RemoteServices {
+	const source = createServerServiceSource(client, options);
+	const services = source.open({
 		services: options.services,
 		assertAccess() {},
 		onError: options.onError ?? (() => {}),
@@ -368,15 +368,15 @@ export function createServerServiceBinding(
 		await services.ready(context);
 	};
 	return {
-		acceptsUnavailableServices: connection.acceptsUnavailableServices,
-		connection: connection.connection,
-		catalogue: (context) => connection.catalogue(context),
-		open: (openOptions) => connection.open(openOptions),
+		acceptsUnavailableServices: source.acceptsUnavailableServices,
+		connection: source.connection,
+		catalogue: (context) => source.catalogue(context),
+		open: (openOptions) => source.open(openOptions),
 		use: (service) => services.use(service),
 		observe: (service, handler) => services.observe(service, handler),
 		ready,
 		async dispose(context) {
-			const results = await Promise.allSettled([services.dispose(context), connection.dispose(context)]);
+			const results = await Promise.allSettled([services.dispose(context), source.dispose(context)]);
 			throwFailures(results, "Failed to dispose server service binding");
 		},
 	};
@@ -386,9 +386,9 @@ export function createServerServiceBinding(
 export function createSessionServiceBinding(
 	client: Client,
 	options: ServiceBindingOptions,
-): SessionServiceConnection & RemoteServices {
-	const connection = createSessionServiceConnection(client, options);
-	const services = connection.open({
+): SessionServiceSource & RemoteServices {
+	const source = createSessionServiceSource(client, options);
+	const services = source.open({
 		services: options.services,
 		assertAccess() {},
 		onError: options.onError ?? (() => {}),
@@ -397,49 +397,40 @@ export function createSessionServiceBinding(
 	void activation.catch(options.onError ?? (() => {}));
 	const ready = async (context: Context): Promise<void> => {
 		await activation;
-		const attachment = connection.attachment.value;
-		if (attachment?.status === "detached") await connection.whenDetached(context);
-		else if (attachment !== undefined) await connection.whenAttached(attachment.sessionId, context);
+		const attachment = source.attachment.value;
+		if (attachment?.status === "detached") await source.whenDetached(context);
+		else if (attachment !== undefined) await source.whenAttached(attachment.sessionId, context);
 	};
 	return {
 		get acceptsUnavailableServices() {
-			return connection.acceptsUnavailableServices;
+			return source.acceptsUnavailableServices;
 		},
-		attachment: connection.attachment,
-		catalogue: (context) => connection.catalogue(context),
-		open: (openOptions) => connection.open(openOptions),
+		attachment: source.attachment,
+		catalogue: (context) => source.catalogue(context),
+		open: (openOptions) => source.open(openOptions),
 		use: (service) => services.use(service),
 		observe: (service, handler) => services.observe(service, handler),
 		ready,
-		whenAttached: (sessionId, context) => connection.whenAttached(sessionId, context),
-		whenDetached: (context) => connection.whenDetached(context),
+		whenAttached: (sessionId, context) => source.whenAttached(sessionId, context),
+		whenDetached: (context) => source.whenDetached(context),
 		async dispose(context) {
-			const results = await Promise.allSettled([services.dispose(context), connection.dispose(context)]);
+			const results = await Promise.allSettled([services.dispose(context), source.dispose(context)]);
 			throwFailures(results, "Failed to dispose Session service binding");
 		},
 	};
 }
 
-/** Create the server-scoped service connection for one presentation client. */
-export function createServerServiceConnection(
-	client: Client,
-	options: ServiceConnectionOptions = {},
-): ServerServiceConnection {
-	return new ServerServiceConnectionImpl(client, options);
+/** Create the server-scoped remote service source for one presentation client. */
+export function createServerServiceSource(client: Client, options: ServiceSourceOptions = {}): ServerServiceSource {
+	return new ServerServiceSourceImpl(client, options);
 }
 
-/** Create the selected-Session service connection for one presentation client. */
-export function createSessionServiceConnection(
-	client: Client,
-	options: ServiceConnectionOptions = {},
-): SessionServiceConnection {
-	return new SessionServiceConnectionImpl(client, options);
+/** Create the selected-Session remote service source for one presentation client. */
+export function createSessionServiceSource(client: Client, options: ServiceSourceOptions = {}): SessionServiceSource {
+	return new SessionServiceSourceImpl(client, options);
 }
 
-function createRemoteServiceConnection(
-	client: Client,
-	getTarget: () => RpcTarget | undefined,
-): RemoteServiceConnection {
+function createRemoteServiceTransport(client: Client, getTarget: () => RpcTarget | undefined): RemoteServiceTransport {
 	return {
 		invoke: async (call, context) => {
 			const target = getTarget();

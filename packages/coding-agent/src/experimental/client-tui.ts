@@ -36,9 +36,9 @@ import helloPluginFacet from "./plugins/hello.ts";
 import { AgentController, type AgentOperationResponse, type AgentQueueResponse } from "./services/agent-controller.ts";
 import type {
 	ServerConnectionState,
-	ServerServiceConnection,
+	ServerServiceSource,
 	SessionAttachmentState,
-	SessionServiceConnection,
+	SessionServiceSource,
 } from "./services/connection.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
 import { type SlashCommandExecutionContext, SlashCommands } from "./services/slash-commands.ts";
@@ -55,15 +55,15 @@ export interface ClientTuiServer {
 	readonly serverId: string;
 	readonly radius: boolean;
 	readonly laneWatches: LaneWatchSource;
-	readonly server: ServerServiceConnection;
-	readonly session: SessionServiceConnection;
+	readonly server: ServerServiceSource;
+	readonly session: SessionServiceSource;
 }
 
 interface SessionFeature {
 	readonly serverId: string;
 	readonly directory: SessionDirectory;
 	readonly management: SessionManagement;
-	readonly session: SessionServiceConnection;
+	readonly session: SessionServiceSource;
 	readonly laneWatches: LaneWatchSource;
 }
 
@@ -284,7 +284,7 @@ export class ExperimentalClientTui implements Component {
 					createBuiltInSlashCommandsFacet(),
 					...this.#loadedFacets.facets,
 				],
-				connections: [server.server, server.session],
+				serviceSources: [server.server, server.session],
 			});
 			this.#facetHosts.push(facetHost);
 		}

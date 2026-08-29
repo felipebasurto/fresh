@@ -12,7 +12,7 @@ import { activateServer, type RunningServer, startServer } from "../src/experime
 import {
 	createServerServiceBinding,
 	createSessionServiceBinding,
-	createSessionServiceConnection,
+	createSessionServiceSource,
 	type SessionAttachmentState,
 } from "../src/experimental/services/connection.ts";
 import { Models } from "../src/experimental/services/models.ts";
@@ -543,7 +543,7 @@ describe("experimental durable server composition", () => {
 		const { runtime } = await makeServer();
 		const client = await attachClient(runtime, "demo-1");
 		const errors: Error[] = [];
-		const services = createSessionServiceConnection(client, {
+		const services = createSessionServiceSource(client, {
 			onError: (error) => errors.push(error),
 		});
 		await expect(services.catalogue(BACKGROUND_CONTEXT)).resolves.toContainEqual({
@@ -559,7 +559,7 @@ describe("experimental durable server composition", () => {
 				});
 			},
 		});
-		const facetHost = await createFacetHost({ facets: [consumer], connections: [services] });
+		const facetHost = await createFacetHost({ facets: [consumer], serviceSources: [services] });
 
 		expect(services.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });
 		await vi.waitFor(() => expect(observed).toHaveLength(1));

@@ -36,11 +36,13 @@ The design has a few connected pieces:
   ordered updates, and become unready on disconnect or replacement until they
   are rehydrated.
 
-- **Remote connections** carry logical service calls and subscriptions through
-  an application-supplied adapter. Chord requires strict-JSON arguments,
-  results, snapshots, updates, and catalogues, but does not prescribe framing,
-  routing, transport, or an application wire envelope. Symmetric RPC peers are
-  planned as one optional implementation of this boundary.
+- **Remote service sources** advertise services available outside a facet host
+  and open bindings for the services its facets require. Bindings carry logical
+  calls and subscriptions through an application-supplied adapter. Chord
+  requires strict-JSON arguments, results, snapshots, updates, and catalogues,
+  but does not prescribe framing, routing, transport, or an application wire
+  envelope. Symmetric RPC peers are planned as one optional implementation of
+  this boundary.
 
 - **Context** Chord provides a Go-like context system for cancellation and
   invocation-scoped application values. Applications can carry permissions or

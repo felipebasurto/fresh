@@ -2,8 +2,8 @@ import {
 	createRemoteServiceBinding,
 	defineFacet,
 	type FacetLoader,
-	type RemoteServiceConnection,
 	RemoteServiceProvider,
+	type RemoteServiceTransport,
 	replicatedState,
 } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -16,9 +16,9 @@ import { AgentController } from "../src/experimental/services/agent-controller.t
 import { createAgentController } from "../src/experimental/services/agent-controller-provider.ts";
 import type {
 	ServerConnectionState,
-	ServerServiceConnection,
+	ServerServiceSource,
 	SessionAttachmentState,
-	SessionServiceConnection,
+	SessionServiceSource,
 } from "../src/experimental/services/connection.ts";
 import { Models, type ModelsState } from "../src/experimental/services/models.ts";
 import {
@@ -34,7 +34,7 @@ function session(sessionId: string, createdAt: number): SessionSummary {
 	return { serverId, sessionId, createdAt };
 }
 
-function createLoopbackServiceConnection(provider: RemoteServiceProvider): RemoteServiceConnection {
+function createLoopbackServiceTransport(provider: RemoteServiceProvider): RemoteServiceTransport {
 	return {
 		invoke: (call, context) => provider.invoke(call, context),
 		subscribe: async (serviceId, mode, listener) => {
@@ -207,11 +207,11 @@ describe("experimental client TUI", () => {
 
 			const serverNamespace = createRemoteServiceBinding({
 				services: [SessionDirectory, SessionManagement],
-				connection: createLoopbackServiceConnection(serverProvider),
+				transport: createLoopbackServiceTransport(serverProvider),
 				bound: false,
 			});
 			const serverNamespaceReady = serverNamespace.ready.bind(serverNamespace);
-			const serverServices: ServerServiceConnection = Object.assign(serverNamespace, {
+			const serverServices: ServerServiceSource = Object.assign(serverNamespace, {
 				acceptsUnavailableServices: false,
 				connection: connectionState,
 				async catalogue() {
@@ -227,10 +227,10 @@ describe("experimental client TUI", () => {
 			});
 			const sessionNamespace = createRemoteServiceBinding({
 				services: [Models, AgentController],
-				connection: createLoopbackServiceConnection(sessionProvider),
+				transport: createLoopbackServiceTransport(sessionProvider),
 				bound: false,
 			});
-			const sessionServices: SessionServiceConnection = Object.assign(sessionNamespace, {
+			const sessionServices: SessionServiceSource = Object.assign(sessionNamespace, {
 				acceptsUnavailableServices: true,
 				attachment,
 				async catalogue() {

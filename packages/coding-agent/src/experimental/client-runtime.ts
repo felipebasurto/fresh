@@ -9,10 +9,10 @@ import { createRadiusClientTransportFactory, RadiusClientReconnect } from "./rad
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
 import { AgentController } from "./services/agent-controller.ts";
 import {
-	createServerServiceConnection,
-	createSessionServiceConnection,
-	type ServerServiceConnection,
-	type SessionServiceConnection,
+	createServerServiceSource,
+	createSessionServiceSource,
+	type ServerServiceSource,
+	type SessionServiceSource,
 } from "./services/connection.ts";
 import { Models } from "./services/models.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
@@ -24,8 +24,8 @@ export type ClientRuntimeRoute =
 export interface ClientRuntimeServer {
 	readonly route: ClientRuntimeRoute;
 	readonly client: Client;
-	readonly server: ServerServiceConnection;
-	readonly session: SessionServiceConnection;
+	readonly server: ServerServiceSource;
+	readonly session: SessionServiceSource;
 }
 
 export interface ActivatedClientRuntimeServer extends ClientRuntimeServer {
@@ -88,18 +88,18 @@ export async function openClientRuntime(
 
 	const clients: Client[] = [];
 	const reconnectors: RadiusClientReconnect[] = [];
-	const serviceConnections: Array<ServerServiceConnection | SessionServiceConnection> = [];
+	const serviceSources: Array<ServerServiceSource | SessionServiceSource> = [];
 	const servers: ClientRuntimeServer[] = [];
 	let disposed = false;
 	const dispose = async (): Promise<void> => {
 		if (disposed) return;
 		disposed = true;
 		const reconnectResults = await Promise.allSettled(reconnectors.map((reconnector) => reconnector.dispose()));
-		const connectionResults = await Promise.allSettled(
-			serviceConnections.map((connection) => connection.dispose(BACKGROUND_CONTEXT)),
+		const sourceResults = await Promise.allSettled(
+			serviceSources.map((source) => source.dispose(BACKGROUND_CONTEXT)),
 		);
 		const clientResults = await Promise.allSettled(clients.map((client) => client.dispose()));
-		const errors = [...reconnectResults, ...connectionResults, ...clientResults].flatMap((result) =>
+		const errors = [...reconnectResults, ...sourceResults, ...clientResults].flatMap((result) =>
 			result.status === "rejected" ? [result.reason] : [],
 		);
 		if (errors.length === 1) throw errors[0];
@@ -123,9 +123,9 @@ export async function openClientRuntime(
 			activatedClient = undefined;
 			clients.push(client);
 			if (route.transport === "radius") reconnectors.push(new RadiusClientReconnect(client));
-			const server = createServerServiceConnection(client);
-			const session = createSessionServiceConnection(client);
-			serviceConnections.push(server, session);
+			const server = createServerServiceSource(client);
+			const session = createSessionServiceSource(client);
+			serviceSources.push(server, session);
 			servers.push({ route, client, server, session });
 		}
 		return { servers, dispose };

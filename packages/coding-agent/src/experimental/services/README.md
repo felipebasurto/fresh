@@ -1,6 +1,6 @@
 # Experimental client/server service slices
 
-Facet setup generates each host's RPC service catalogue from its provided non-local tokens. Connections exchange those catalogues and bind only services required by consuming facets; there is no handwritten built-in service inventory. With no selected Session, its deferred connection admits unresolved requirements as unavailable and keeps their handles disconnected. Attachment validates them against the worker's generated catalogue, which is cached for later detached generations. A built-in token is either implemented end to end or registered with an explicit `ServiceSliceNotImplemented` provider. Framed callers receive the stable `service_not_implemented` code. Keyed services hydrate as an empty directory until their owning feature spawns an instance.
+Facet setup generates each host's RPC service catalogue from its provided non-local tokens. Remote service sources obtain those catalogues and bind only services required by consuming facets; there is no handwritten built-in service inventory. With no selected Session, its deferred source admits unresolved requirements as unavailable and keeps their handles disconnected. Attachment validates them against the worker's generated catalogue, which is cached for later detached generations. A built-in token is either implemented end to end or registered with an explicit `ServiceSliceNotImplemented` provider. Framed callers receive the stable `service_not_implemented` code. Keyed services hydrate as an empty directory until their owning feature spawns an instance.
 
 | Scope | Service | Current slice | Continuation point |
 |---|---|---|---|
@@ -12,7 +12,7 @@ Facet setup generates each host's RPC service catalogue from its provided non-lo
 | session | `Transcript` | authoritative snapshot declared but throws | implement snapshot projection and remove the compatibility lane watch |
 | presentation | `SlashCommands` | process-local contribution registry with model, thinking, compact, and example hello commands | add more presentation hookpoints only as concrete plugin slices require them |
 
-`ServerServiceConnection.connection` and `SessionServiceConnection.attachment` are implemented local control states.
+`ServerServiceSource.connection` and `SessionServiceSource.attachment` are implemented local control states.
 
 With `PI_EXPERIMENTAL=1`, an interactive `pi client` creates and attaches a Session before opening the service-only chat TUI. `pi client -c` and `pi client -r` attach the newest existing Session instead, preserving its durable model and thinking configuration. Model selection is available on demand through `/model`; it is never a startup screen. The presentation always uses the stable coding agent's alternate-screen renderer and shared transcript/dock viewport. It loads configured theme resources and uses the stable terminal light/dark detection and appearance-change notifications. Its replicated state feeds the stable editor, message, tool, status, theme, and tool-renderer components. The presentation drives the worker-owned main lane through `AgentController` and renders a coherent lane-watch replica with the Harness reducer while controller calls are pending. `Transcript` remains reserved for a later service-owned live-delta replacement of that compatibility watch.
 
