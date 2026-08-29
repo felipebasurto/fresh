@@ -58,6 +58,7 @@ class RoutedServiceBinding implements RemoteServices {
 	readonly #onActivate: (context: Context) => Promise<void>;
 	readonly #remove: () => void;
 	#activated = false;
+	#activationComplete = false;
 
 	constructor(options: {
 		readonly services: readonly { readonly id: string }[];
@@ -88,20 +89,19 @@ class RoutedServiceBinding implements RemoteServices {
 		return this.#services.observe(service, handler);
 	}
 
-	setAccessGuard(assertAccess: () => void): void {
-		this.#services.setAccessGuard(assertAccess);
-	}
-
-	async activate(context: Context): Promise<void> {
+	async ready(context: Context): Promise<void> {
 		if (!this.#activated) {
 			this.#activated = true;
 			await this.#services.rebind(this.#getBound(), context);
 		}
-		await this.#services.ready(context);
-		await this.#onActivate(context);
+		await this.serviceReady(context);
+		if (!this.#activationComplete) {
+			await this.#onActivate(context);
+			this.#activationComplete = true;
+		}
 	}
 
-	ready(context: Context): Promise<void> {
+	serviceReady(context: Context): Promise<void> {
 		return this.#services.ready(context);
 	}
 
@@ -323,7 +323,7 @@ class SessionServiceConnectionImpl implements SessionServiceConnection {
 
 	async #whenAttached(attachment: SessionTarget, revision: number, context: Context): Promise<void> {
 		try {
-			await Promise.all([...this.#bindings].map((binding) => binding.ready(context)));
+			await Promise.all([...this.#bindings].map((binding) => binding.serviceReady(context)));
 		} catch (error) {
 			if (this.#attachmentRevision === revision && sameAttachment(this.#client.attachment, attachment)) {
 				this.#attachmentState.set({ status: "degraded", sessionId: attachment.sessionId }, context);
@@ -340,7 +340,7 @@ class SessionServiceConnectionImpl implements SessionServiceConnection {
 	}
 
 	async #whenDetached(revision: number, context: Context): Promise<void> {
-		await Promise.all([...this.#bindings].map((binding) => binding.ready(context)));
+		await Promise.all([...this.#bindings].map((binding) => binding.serviceReady(context)));
 		if (this.#attachmentRevision !== revision || this.#client.attachment !== undefined) {
 			throw new Error("The Session attachment changed while detaching");
 		}
@@ -361,7 +361,7 @@ export function createServerServiceBinding(
 		assertAccess() {},
 		onError: options.onError ?? (() => {}),
 	});
-	const activation = services.activate(BACKGROUND_CONTEXT);
+	const activation = services.ready(BACKGROUND_CONTEXT);
 	void activation.catch(options.onError ?? (() => {}));
 	const ready = async (context: Context): Promise<void> => {
 		await activation;
@@ -374,9 +374,7 @@ export function createServerServiceBinding(
 		open: (openOptions) => connection.open(openOptions),
 		use: (service) => services.use(service),
 		observe: (service, handler) => services.observe(service, handler),
-		activate: ready,
 		ready,
-		setAccessGuard: (assertAccess) => services.setAccessGuard(assertAccess),
 		async dispose(context) {
 			const results = await Promise.allSettled([services.dispose(context), connection.dispose(context)]);
 			throwFailures(results, "Failed to dispose server service binding");
@@ -395,7 +393,7 @@ export function createSessionServiceBinding(
 		assertAccess() {},
 		onError: options.onError ?? (() => {}),
 	});
-	const activation = services.activate(BACKGROUND_CONTEXT);
+	const activation = services.ready(BACKGROUND_CONTEXT);
 	void activation.catch(options.onError ?? (() => {}));
 	const ready = async (context: Context): Promise<void> => {
 		await activation;
@@ -412,9 +410,7 @@ export function createSessionServiceBinding(
 		open: (openOptions) => connection.open(openOptions),
 		use: (service) => services.use(service),
 		observe: (service, handler) => services.observe(service, handler),
-		activate: ready,
 		ready,
-		setAccessGuard: (assertAccess) => services.setAccessGuard(assertAccess),
 		whenAttached: (sessionId, context) => connection.whenAttached(sessionId, context),
 		whenDetached: (context) => connection.whenDetached(context),
 		async dispose(context) {

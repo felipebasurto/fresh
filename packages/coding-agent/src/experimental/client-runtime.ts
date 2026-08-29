@@ -173,7 +173,7 @@ export async function activateBuiltinClientServices(
 	};
 	const models = sessionServices.use(Models);
 	const agent = sessionServices.use(AgentController);
-	await Promise.all([serverServices.activate(BACKGROUND_CONTEXT), sessionServices.activate(BACKGROUND_CONTEXT)]);
+	await Promise.all([serverServices.ready(BACKGROUND_CONTEXT), sessionServices.ready(BACKGROUND_CONTEXT)]);
 	return { ...server, directory, management, models, agent };
 }
 

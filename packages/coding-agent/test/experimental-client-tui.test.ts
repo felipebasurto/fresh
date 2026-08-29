@@ -1,8 +1,8 @@
 import {
-	createLoopbackServiceConnection,
 	createRemoteServiceBinding,
 	defineFacet,
 	type FacetLoader,
+	type RemoteServiceConnection,
 	RemoteServiceProvider,
 	replicatedState,
 } from "@earendil-works/chord";
@@ -32,6 +32,20 @@ const serverId = "00000000-0000-4000-8000-000000000001";
 
 function session(sessionId: string, createdAt: number): SessionSummary {
 	return { serverId, sessionId, createdAt };
+}
+
+function createLoopbackServiceConnection(provider: RemoteServiceProvider): RemoteServiceConnection {
+	return {
+		invoke: (call, context) => provider.invoke(call, context),
+		subscribe: async (serviceId, mode, listener) => {
+			const subscription = provider.subscribe(serviceId, mode, (update) => listener(update, BACKGROUND_CONTEXT));
+			return {
+				snapshot: subscription.snapshot,
+				activate: () => subscription.activate(),
+				close: () => subscription.close(),
+			};
+		},
+	};
 }
 
 function laneSnapshot(): LaneSnapshot {
@@ -196,6 +210,7 @@ describe("experimental client TUI", () => {
 				connection: createLoopbackServiceConnection(serverProvider),
 				bound: false,
 			});
+			const serverNamespaceReady = serverNamespace.ready.bind(serverNamespace);
 			const serverServices: ServerServiceConnection = Object.assign(serverNamespace, {
 				acceptsUnavailableServices: false,
 				connection: connectionState,
@@ -205,9 +220,9 @@ describe("experimental client TUI", () => {
 				open() {
 					return serverNamespace;
 				},
-				async activate() {
+				async ready() {
 					await serverNamespace.rebind(true, BACKGROUND_CONTEXT);
-					await serverNamespace.ready(BACKGROUND_CONTEXT);
+					await serverNamespaceReady(BACKGROUND_CONTEXT);
 				},
 			});
 			const sessionNamespace = createRemoteServiceBinding({
@@ -223,9 +238,6 @@ describe("experimental client TUI", () => {
 				},
 				open() {
 					return sessionNamespace;
-				},
-				async activate() {
-					await sessionNamespace.ready(BACKGROUND_CONTEXT);
 				},
 				async whenAttached(sessionId: string) {
 					await sessionNamespace.rebind(true, BACKGROUND_CONTEXT);
