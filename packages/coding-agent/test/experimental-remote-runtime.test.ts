@@ -570,24 +570,22 @@ describe("experimental durable server composition", () => {
 		const cancellation = new Error("cancel probe wait");
 		cancellable.cancel(cancellation);
 		await expect(waiting).rejects.toBe(cancellation);
-		await expect(stale.replace("second", BACKGROUND_CONTEXT)).resolves.toBeUndefined();
+		const staleReplace = stale.replace;
+		await expect(staleReplace("second", BACKGROUND_CONTEXT)).resolves.toBeUndefined();
 		await vi.waitFor(() => expect(observed).toHaveLength(2));
 		expect(observed[0]!.context.abortSignal?.aborted).toBe(true);
 		expect(observed[1]!.value).toBe("second");
-		await expect(stale.replace("late", BACKGROUND_CONTEXT)).rejects.toMatchObject({
-			code: "service_stale_instance",
-		});
+		expect(() => staleReplace("late", BACKGROUND_CONTEXT)).toThrow("observation is closed");
 
 		const replaced = observed[1]!.service;
+		const replacedReplace = replaced.replace;
 		await expect(client.attachSession("demo-2")).resolves.toMatchObject({ sessionId: "demo-2" });
 		await services.whenAttached("demo-2", BACKGROUND_CONTEXT);
 		expect(observed).toHaveLength(3);
 		expect(services.attachment.value).toEqual({ status: "attached", sessionId: "demo-2" });
 		expect(observed[1]!.context.abortSignal?.aborted).toBe(true);
 		expect(observed[2]!.value).toBe("first");
-		await expect(replaced.replace("late", BACKGROUND_CONTEXT)).rejects.toMatchObject({
-			code: "service_stale_instance",
-		});
+		expect(() => replacedReplace("late", BACKGROUND_CONTEXT)).toThrow("observation is closed");
 		expect(errors).toEqual([]);
 
 		await facetHost.dispose();
