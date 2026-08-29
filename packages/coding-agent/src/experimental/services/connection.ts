@@ -1,9 +1,7 @@
 import {
-	BACKGROUND_CONTEXT,
 	type Context,
 	createRemoteServiceBinding,
 	type FacetConnection,
-	freshDeliveryContext,
 	type JsonValue,
 	type MutableReplicatedState,
 	type RemoteServiceBinding,
@@ -13,6 +11,7 @@ import {
 	replicatedState,
 	type Service,
 } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Client } from "@earendil-works/pi-client";
 import type {
 	ProtocolRpcCall,
@@ -464,7 +463,7 @@ function createRemoteServiceConnection(
 				target,
 				serviceId,
 				mode,
-				(update: ServiceProviderUpdate) => listener(update, freshDeliveryContext()),
+				(update: ServiceProviderUpdate) => listener(update, BACKGROUND_CONTEXT),
 				context.abortSignal,
 			);
 			return {

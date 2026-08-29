@@ -1,6 +1,7 @@
 import { lstat, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { BACKGROUND_CONTEXT, type Context, createFacetHost, defineFacet, withCancel } from "@earendil-works/chord";
+import { type Context, createFacetHost, defineFacet } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import { Client } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";

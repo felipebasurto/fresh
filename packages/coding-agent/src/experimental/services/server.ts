@@ -1,11 +1,11 @@
 import {
-	BACKGROUND_CONTEXT,
 	type Context,
 	type ServiceProviderUpdate as CoreServiceProviderUpdate,
 	RemoteServiceProvider,
 	replicatedState,
 	type ServiceSubscription,
 } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	decodeServiceControlCall,
 	type JsonValue,

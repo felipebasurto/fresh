@@ -1,4 +1,5 @@
-import { BACKGROUND_CONTEXT, createFacetHost } from "@earendil-works/chord";
+import { createFacetHost } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { describe, expect, test } from "vitest";
 import {
 	accountsServiceFacet,

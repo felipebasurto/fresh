@@ -1,10 +1,5 @@
-import {
-	BACKGROUND_CONTEXT,
-	type Context,
-	defineFacet,
-	type Facet,
-	type MutableReplicatedState,
-} from "@earendil-works/chord";
+import { type Context, defineFacet, type Facet, type MutableReplicatedState } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AgentLane, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "../../core/model-runtime.ts";

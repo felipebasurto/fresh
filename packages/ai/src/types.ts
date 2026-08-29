@@ -1,4 +1,4 @@
-import type { JsonValue } from "@earendil-works/chord/types";
+import type { JsonValue } from "@earendil-works/chord";
 import type { TelemetryContext } from "@earendil-works/pi-telemetry";
 import type { AnthropicOptions } from "./api/anthropic-messages.ts";
 import type { AzureOpenAIResponsesOptions } from "./api/azure-openai-responses.ts";
@@ -405,7 +405,7 @@ export interface Usage {
 
 export type StopReason = "pending" | "stop" | "length" | "toolUse" | "error" | "aborted" | "deferred";
 
-export type { JsonValue } from "@earendil-works/chord/types";
+export type { JsonValue } from "@earendil-works/chord";
 
 export interface DeferredHandle {
 	provider: string;

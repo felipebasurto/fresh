@@ -48,9 +48,10 @@ The design has a few connected pieces:
 
 The current runtime exports service tokens, singleton and keyed providers,
 remote bindings, replicated state, facet hosts, and facet loaders from
-`@earendil-works/chord`. All public functions are collected in
-`@earendil-works/chord/api`, while all public types are collected in
-`@earendil-works/chord/types`; both are re-exported from the main entry point.
+`@earendil-works/chord`. Import public types and general runtime APIs from the
+package root. Context constants and functions live in
+`@earendil-works/chord/context` because their generic names should not pollute
+the root API.
 Chord-owned identifiers use the `chord.*` namespace and its reserved service
 prefix is `$chord.*`.
 

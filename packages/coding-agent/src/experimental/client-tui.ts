@@ -1,5 +1,4 @@
 import {
-	BACKGROUND_CONTEXT,
 	combineFacetLoaders,
 	createFacetHost,
 	createStaticFacetLoader,
@@ -8,6 +7,7 @@ import {
 	type FacetLoader,
 	type LoadedFacets,
 } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { SessionSummary } from "@earendil-works/pi-protocol";
 import {
 	CombinedAutocompleteProvider,

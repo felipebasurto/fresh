@@ -1,5 +1,4 @@
 import {
-	BACKGROUND_CONTEXT,
 	createLoopbackServiceConnection,
 	createRemoteServiceBinding,
 	defineFacet,
@@ -7,6 +6,7 @@ import {
 	RemoteServiceProvider,
 	replicatedState,
 } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AgentLane } from "@earendil-works/pi-agent-core";
 import type { LaneEvent, LaneSnapshot, SessionSummary } from "@earendil-works/pi-protocol";
 import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
