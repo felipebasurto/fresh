@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 import { isAbsolute } from "node:path";
+import { RemoteServiceError } from "@earendil-works/chord";
 import {
 	AgentHarness,
 	type AgentHarness as AgentHarnessInstance,
@@ -12,8 +13,6 @@ import {
 	createWriteTool,
 	type JsonlSessionMetadata,
 	JsonlSessionRepo,
-	RemoteServiceError,
-	ServiceSliceNotImplemented,
 	type Session,
 	TODO_CONTEXT,
 	withCancel,
@@ -739,8 +738,13 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 				response: { type: "operation_result", requestId: request.requestId, scope: request.scope, result },
 			});
 		} catch (error) {
-			const code: ServiceErrorCode | undefined =
-				error instanceof RemoteServiceError || error instanceof ServiceSliceNotImplemented ? error.code : undefined;
+			let code: ServiceErrorCode | undefined;
+			if (error instanceof RemoteServiceError) {
+				code = error.code;
+			} else if (error instanceof Error && "code" in error) {
+				const candidate = error.code;
+				if (Check(ServiceErrorCodeSchema, candidate)) code = candidate;
+			}
 			await control.send({
 				type: "operation_response",
 				token,

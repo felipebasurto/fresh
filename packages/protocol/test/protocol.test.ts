@@ -20,8 +20,6 @@ import {
 	encodeServiceRpcCall,
 	FrameDecoder,
 	isSupportedProtocolVersion,
-	type JsonValue,
-	JsonValueSchema,
 	type LaneSnapshot,
 	PROTOCOL_VERSION,
 	PromptArgumentsSchema,
@@ -274,8 +272,7 @@ describe("protocol validation", () => {
 				mode: "singleton",
 				instances: [
 					{
-						members: [{ name: "state", kind: "state" }],
-						states: { state: { sequence: 0, value: { revision: 1 } } },
+						members: [{ name: "state", kind: "state", sequence: 0, value: { revision: 1 } }],
 					},
 				],
 			}),
@@ -284,8 +281,7 @@ describe("protocol validation", () => {
 			mode: "singleton",
 			instances: [
 				{
-					members: [{ name: "state", kind: "state" }],
-					states: { state: { sequence: 0, value: { revision: 1 } } },
+					members: [{ name: "state", kind: "state", sequence: 0, value: { revision: 1 } }],
 				},
 			],
 		});
@@ -314,7 +310,7 @@ describe("protocol validation", () => {
 				subscriptionId: "subscription-1",
 				update: {
 					type: "replaced",
-					snapshot: { members: [{ name: "select", kind: "method" }], states: {} },
+					snapshot: { members: [{ name: "select", kind: "method" }] },
 				},
 			}),
 		).toMatchObject({ update: { type: "replaced", snapshot: { members: [{ name: "select" }] } } });
@@ -395,38 +391,6 @@ describe("protocol validation", () => {
 		expect(parseClientMessage(cancel)).toEqual(cancel);
 		expect(() => parseClientMessage({ ...cancel, id: "" })).toThrow(ProtocolValidationError);
 		expect(() => parseClientMessage({ ...cancel, extra: true })).toThrow(ProtocolValidationError);
-	});
-
-	test("validates recursively nested JSON values", () => {
-		const values = [
-			null,
-			true,
-			1,
-			"value",
-			[1, { nested: [false] }],
-			{ nested: { value: "ok" } },
-		] satisfies JsonValue[];
-		for (const value of values) expect(Check(JsonValueSchema, value)).toBe(true);
-	});
-
-	test.each([undefined, 1n, Symbol("value"), () => {}])("rejects non-JSON value %s", (value) => {
-		expect(Check(JsonValueSchema, value)).toBe(false);
-	});
-
-	test.each([
-		["CBOR byte array", decodeCbor(encodeCbor(new Uint8Array([1, 2, 3])))],
-		["date", new Date(0)],
-		["map", new Map([["key", "value"]])],
-		["class instance", new (class JsonValueTestClass {})()],
-		["nested class instance", { nested: new (class JsonValueTestClass {})() }],
-	] as const)("rejects non-plain JSON value: %s", (_label, value) => {
-		expect(Check(JsonValueSchema, value)).toBe(false);
-	});
-
-	test("rejects cyclic JSON values", () => {
-		const value: { self?: unknown } = {};
-		value.self = value;
-		expect(Check(JsonValueSchema, value)).toBe(false);
 	});
 
 	test.each([
@@ -620,28 +584,6 @@ describe("protocol validation", () => {
 		{ ok: false, error: { _tag: "Closed", message: "closed", extra: true } },
 	] as const)("rejects malformed structural Harness RunResult", (result) => {
 		expect(Check(RunResultSchema, result)).toBe(false);
-	});
-
-	test.each([
-		["bigint", 1n],
-		["byte array", new Uint8Array([1, 2, 3])],
-		["date", new Date(0)],
-	] as const)("rejects non-protocol %s nested in Harness DTOs", (_label, details) => {
-		expect(
-			Check(RunResultSchema, {
-				ok: true,
-				value: {
-					operationId: "run-1",
-					kind: "run",
-					status: "failed",
-					fromTipId: null,
-					tipId: "leaf-1",
-					startedAt: 1,
-					endedAt: 2,
-					error: { code: "provider", message: "failed", details },
-				},
-			}),
-		).toBe(false);
 	});
 
 	test.each([

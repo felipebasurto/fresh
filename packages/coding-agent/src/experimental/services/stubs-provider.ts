@@ -1,7 +1,15 @@
-import { ServiceSliceNotImplemented } from "@earendil-works/pi-agent-core";
-import { defineFacet } from "../facets.ts";
+import { defineFacet } from "@earendil-works/chord";
 import { Accounts, type AccountsState } from "./accounts.ts";
 import { Transcript } from "./transcript.ts";
+
+export class ServiceSliceNotImplemented extends Error {
+	readonly code = "service_not_implemented" as const;
+
+	constructor(operation: string) {
+		super(`${operation} is not implemented until its later facet-service slice`);
+		this.name = "ServiceSliceNotImplemented";
+	}
+}
 
 /** Documented built-in surfaces whose implementations belong to later service slices. */
 export const accountsServiceFacet = defineFacet({

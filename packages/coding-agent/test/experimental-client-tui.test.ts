@@ -1,17 +1,17 @@
 import {
-	type AgentLane,
 	BACKGROUND_CONTEXT,
 	createLoopbackServiceConnection,
-	RemoteServiceNamespace,
+	createRemoteServiceBinding,
+	defineFacet,
+	type FacetLoader,
 	RemoteServiceProvider,
 	replicatedState,
-} from "@earendil-works/pi-agent-core";
+} from "@earendil-works/chord";
+import type { AgentLane } from "@earendil-works/pi-agent-core";
 import type { LaneEvent, LaneSnapshot, SessionSummary } from "@earendil-works/pi-protocol";
 import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { type ClientTuiServer, ExperimentalClientTui } from "../src/experimental/client-tui.ts";
-import type { FacetLoader } from "../src/experimental/facet-loader.ts";
-import { defineFacet } from "../src/experimental/facets.ts";
 import { AgentController } from "../src/experimental/services/agent-controller.ts";
 import { createAgentController } from "../src/experimental/services/agent-controller-provider.ts";
 import type {
@@ -191,7 +191,7 @@ describe("experimental client TUI", () => {
 			});
 			sessionProvider.provide(AgentController, createAgentController({ prompt } as unknown as AgentLane));
 
-			const serverNamespace = new RemoteServiceNamespace({
+			const serverNamespace = createRemoteServiceBinding({
 				services: [SessionDirectory, SessionManagement],
 				connection: createLoopbackServiceConnection(serverProvider),
 				bound: false,
@@ -210,7 +210,7 @@ describe("experimental client TUI", () => {
 					await serverNamespace.ready(BACKGROUND_CONTEXT);
 				},
 			});
-			const sessionNamespace = new RemoteServiceNamespace({
+			const sessionNamespace = createRemoteServiceBinding({
 				services: [Models, AgentController],
 				connection: createLoopbackServiceConnection(sessionProvider),
 				bound: false,

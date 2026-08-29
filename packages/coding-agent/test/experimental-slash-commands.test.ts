@@ -1,5 +1,5 @@
+import { createFacetHost, defineFacet } from "@earendil-works/chord";
 import { describe, expect, test, vi } from "vitest";
-import { createFacetHost, defineFacet } from "../src/experimental/facets.ts";
 import helloPluginFacet from "../src/experimental/plugins/hello.ts";
 import { SlashCommands } from "../src/experimental/services/slash-commands.ts";
 import {

@@ -1,14 +1,14 @@
 import {
-	type AgentLane,
 	BACKGROUND_CONTEXT,
 	type Context,
+	defineFacet,
+	type Facet,
 	type MutableReplicatedState,
-	type ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+} from "@earendil-works/chord";
+import type { AgentLane, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "../../core/model-runtime.ts";
 import type { SettingsManager } from "../../core/settings-manager.ts";
-import { defineFacet, type Facet } from "../facets.ts";
 import { Models, type Models as ModelsService, type ModelsState } from "./models.ts";
 
 export interface ModelsServiceRuntime {

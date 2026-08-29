@@ -1,18 +1,17 @@
 import { lstat, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { BACKGROUND_CONTEXT, type Context, withCancel } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, type Context, createFacetHost, defineFacet, withCancel } from "@earendil-works/chord";
 import { Client } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { runClient } from "../src/experimental/client.ts";
 import { activateBuiltinClientServices, openClientRuntime } from "../src/experimental/client-runtime.ts";
-import { createFacetHost, defineFacet } from "../src/experimental/facets.ts";
 import * as processRuntime from "../src/experimental/process.ts";
 import { activateServer, type RunningServer, startServer } from "../src/experimental/server.ts";
 import {
-	createServerServiceNamespace,
+	createServerServiceBinding,
+	createSessionServiceBinding,
 	createSessionServiceConnection,
-	createSessionServiceNamespace,
 	type SessionAttachmentState,
 } from "../src/experimental/services/connection.ts";
 import { Models } from "../src/experimental/services/models.ts";
@@ -299,11 +298,11 @@ describe("experimental durable server composition", () => {
 		clients.add(firstClient);
 		clients.add(secondClient);
 		const errors: Error[] = [];
-		const firstServices = createServerServiceNamespace(firstClient, {
+		const firstServices = createServerServiceBinding(firstClient, {
 			services: [SessionDirectory, SessionManagement],
 			onError: (error) => errors.push(error),
 		});
-		const secondServices = createServerServiceNamespace(secondClient, {
+		const secondServices = createServerServiceBinding(secondClient, {
 			services: [SessionDirectory, SessionManagement],
 			onError: (error) => errors.push(error),
 		});
@@ -370,11 +369,11 @@ describe("experimental durable server composition", () => {
 		const firstClient = await attachClient(runtime, "demo-1");
 		const secondClient = await attachClient(runtime, "demo-1");
 		const errors: Error[] = [];
-		const firstServices = createSessionServiceNamespace(firstClient, {
+		const firstServices = createSessionServiceBinding(firstClient, {
 			services: [Models],
 			onError: (error) => errors.push(error),
 		});
-		const secondServices = createSessionServiceNamespace(secondClient, {
+		const secondServices = createSessionServiceBinding(secondClient, {
 			services: [Models],
 			onError: (error) => errors.push(error),
 		});
@@ -418,7 +417,7 @@ describe("experimental durable server composition", () => {
 		const runtime = await startServer({ directory });
 		servers.add(runtime);
 		const firstClient = await attachClient(runtime, "demo-1");
-		const firstServices = createSessionServiceNamespace(firstClient, { services: [Models] });
+		const firstServices = createSessionServiceBinding(firstClient, { services: [Models] });
 		const firstModels = firstServices.use(Models);
 		await firstServices.ready(BACKGROUND_CONTEXT);
 		await firstModels.select({ provider: "anthropic", modelId: "claude-opus-4-6" }, BACKGROUND_CONTEXT);
@@ -428,7 +427,7 @@ describe("experimental durable server composition", () => {
 		await expect.poll(() => runtime.workerPids.has("demo-1")).toBe(false);
 
 		const secondClient = await attachClient(runtime, "demo-2");
-		const secondServices = createSessionServiceNamespace(secondClient, { services: [Models] });
+		const secondServices = createSessionServiceBinding(secondClient, { services: [Models] });
 		const secondModels = secondServices.use(Models);
 		await secondServices.ready(BACKGROUND_CONTEXT);
 		expect(secondModels.state.value?.configuration.model).toEqual({
@@ -466,7 +465,7 @@ describe("experimental durable server composition", () => {
 		});
 		clients.add(client);
 		const errors: Error[] = [];
-		const services = createSessionServiceNamespace(client, {
+		const services = createSessionServiceBinding(client, {
 			services: [Models],
 			onError: (error) => errors.push(error),
 		});
@@ -517,7 +516,7 @@ describe("experimental durable server composition", () => {
 	test("routes explicit later-slice errors across the framed service boundary", async () => {
 		const { runtime } = await makeServer();
 		const client = await attachClient(runtime, "demo-1");
-		const services = createSessionServiceNamespace(client, { services: [Transcript] });
+		const services = createSessionServiceBinding(client, { services: [Transcript] });
 		const transcript = services.use(Transcript);
 
 		await expect(transcript.snapshot(BACKGROUND_CONTEXT)).rejects.toMatchObject({

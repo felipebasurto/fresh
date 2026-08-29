@@ -1,5 +1,5 @@
+import { defineFacet, type Facet } from "@earendil-works/chord";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { defineFacet, type Facet } from "../facets.ts";
 import { AgentController, type AgentOperationResponse } from "./agent-controller.ts";
 import { type ModelSummary, Models, type Models as ModelsService } from "./models.ts";
 import { type SlashCommandContribution, type SlashCommandExecutionContext, SlashCommands } from "./slash-commands.ts";

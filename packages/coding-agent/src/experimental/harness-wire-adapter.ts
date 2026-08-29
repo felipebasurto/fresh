@@ -22,21 +22,19 @@ import type {
 	Usage,
 	UserMessage,
 } from "@earendil-works/pi-ai";
-import {
-	type AssistantMessageFrame,
-	type JsonValue,
-	JsonValueSchema,
-	type LaneEntry,
-	type LaneEvent,
-	type LaneSnapshot,
-	type OperationResultRecord,
-	type PromptArguments,
-	type PromptImage,
-	type PromptMessage,
-	type RunResult,
-	type ToolOutput,
+import type {
+	AssistantMessageFrame,
+	JsonValue,
+	LaneEntry,
+	LaneEvent,
+	LaneSnapshot,
+	OperationResultRecord,
+	PromptArguments,
+	PromptImage,
+	PromptMessage,
+	RunResult,
+	ToolOutput,
 } from "@earendil-works/pi-protocol";
-import { Check } from "typebox/value";
 
 type HarnessPromptArguments =
 	| [text: string]
@@ -272,9 +270,7 @@ function toWireOperationResult(value: NonNullable<HarnessLaneSnapshot["lastResul
 		error: {
 			code: value.error.code,
 			message: value.error.message,
-			...(value.error.details === undefined
-				? {}
-				: { details: toWireJsonValue(value.error.details, "operation error details") }),
+			...(value.error.details === undefined ? {} : { details: toWireJsonValue(value.error.details) }),
 		},
 	};
 }
@@ -326,10 +322,7 @@ function toWireAssistantMessage(message: AssistantMessage): WireAssistantMessage
 						id: content.id,
 						name: content.name,
 						arguments: Object.fromEntries(
-							Object.entries(content.arguments).map(([key, value]) => [
-								key,
-								toWireJsonValue(value, `tool argument ${key}`),
-							]),
+							Object.entries(content.arguments).map(([key, value]) => [key, toWireJsonValue(value)]),
 						),
 						...(content.thoughtSignature === undefined ? {} : { thoughtSignature: content.thoughtSignature }),
 						...(content.namespace === undefined ? {} : { namespace: content.namespace }),
@@ -363,10 +356,7 @@ function toWireAssistantMessage(message: AssistantMessage): WireAssistantMessage
 							? {}
 							: {
 									details: Object.fromEntries(
-										Object.entries(diagnostic.details).map(([key, value]) => [
-											key,
-											toWireJsonValue(value, `diagnostic detail ${key}`),
-										]),
+										Object.entries(diagnostic.details).map(([key, value]) => [key, toWireJsonValue(value)]),
 									),
 								}),
 					})),
@@ -389,13 +379,12 @@ function toWireDeferred(deferred: DeferredHandle): WireAssistantMessage["deferre
 		id: deferred.id,
 		...(deferred.expiresAt === undefined ? {} : { expiresAt: deferred.expiresAt }),
 		...(deferred.pollAfterMs === undefined ? {} : { pollAfterMs: deferred.pollAfterMs }),
-		...(deferred.data === undefined ? {} : { data: toWireJsonValue(deferred.data, "deferred data") }),
+		...(deferred.data === undefined ? {} : { data: toWireJsonValue(deferred.data) }),
 	};
 }
 
-function toWireJsonValue(value: unknown, field: string): JsonValue {
-	if (!Check(JsonValueSchema, value)) throw new TypeError(`Harness ${field} is not JSON-serializable`);
-	return value;
+function toWireJsonValue(value: unknown): JsonValue {
+	return value as JsonValue;
 }
 
 function toWireMessage(message: AgentMessage): PromptMessage {
@@ -435,9 +424,7 @@ function toWireMessage(message: AgentMessage): PromptMessage {
 							}
 						: { type: "image" as const, data: content.data, mimeType: content.mimeType },
 				),
-				...(message.details === undefined
-					? {}
-					: { details: toWireJsonValue(message.details, "tool result details") }),
+				...(message.details === undefined ? {} : { details: toWireJsonValue(message.details) }),
 				...(message.usage === undefined ? {} : { usage: toHarnessUsage(message.usage) }),
 				...(message.addedToolNames === undefined ? {} : { addedToolNames: [...message.addedToolNames] }),
 				isError: message.isError,
@@ -474,9 +461,7 @@ function toWireMessage(message: AgentMessage): PromptMessage {
 									: { type: "image" as const, data: content.data, mimeType: content.mimeType },
 							),
 				display: message.display,
-				...(message.details === undefined
-					? {}
-					: { details: toWireJsonValue(message.details, "custom message details") }),
+				...(message.details === undefined ? {} : { details: toWireJsonValue(message.details) }),
 				timestamp: message.timestamp,
 			};
 		case "branchSummary":
@@ -552,7 +537,7 @@ function toWireToolOutput(result: AgentToolResult<unknown>): ToolOutput {
 					}
 				: { type: "image" as const, data: content.data, mimeType: content.mimeType },
 		),
-		...(result.details === undefined ? {} : { details: toWireJsonValue(result.details, "tool output details") }),
+		...(result.details === undefined ? {} : { details: toWireJsonValue(result.details) }),
 		...(result.usage === undefined ? {} : { usage: toHarnessUsage(result.usage) }),
 	};
 }
@@ -581,10 +566,7 @@ function toWireFrame(frame: AiAssistantMessageFrame): AssistantMessageFrame {
 				toolCall: {
 					...frame.toolCall,
 					arguments: Object.fromEntries(
-						Object.entries(frame.toolCall.arguments).map(([key, value]) => [
-							key,
-							toWireJsonValue(value, `tool argument ${key}`),
-						]),
+						Object.entries(frame.toolCall.arguments).map(([key, value]) => [key, toWireJsonValue(value)]),
 					),
 				},
 			};
@@ -592,10 +574,7 @@ function toWireFrame(frame: AiAssistantMessageFrame): AssistantMessageFrame {
 			return {
 				...frame,
 				arguments: Object.fromEntries(
-					Object.entries(frame.arguments).map(([key, value]) => [
-						key,
-						toWireJsonValue(value, `tool argument ${key}`),
-					]),
+					Object.entries(frame.arguments).map(([key, value]) => [key, toWireJsonValue(value)]),
 				),
 			};
 		default:
@@ -650,7 +629,7 @@ export function toWireLaneSnapshot(snapshot: HarnessLaneSnapshot): LaneSnapshot 
 						runningTools: snapshot.operation.runningTools.map((tool) => ({
 							toolCallId: tool.toolCallId,
 							toolName: tool.toolName,
-							args: toWireJsonValue(tool.args, "running tool arguments"),
+							args: toWireJsonValue(tool.args),
 							...(tool.partialResult === undefined
 								? {}
 								: { partialResult: toWireToolOutput(tool.partialResult) }),
@@ -667,7 +646,7 @@ function toWireOperationError(error: Extract<HarnessEvent, { type: "run_end" }>[
 	return {
 		code: error.code,
 		message: error.message,
-		...(error.details === undefined ? {} : { details: toWireJsonValue(error.details, "operation error details") }),
+		...(error.details === undefined ? {} : { details: toWireJsonValue(error.details) }),
 	};
 }
 
@@ -720,7 +699,7 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 		case "tool_start":
 			return {
 				...event,
-				args: toWireJsonValue(event.args, "tool arguments"),
+				args: toWireJsonValue(event.args),
 				...base,
 				lane: event.lane,
 			};
@@ -750,9 +729,7 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 				row: {
 					...event.row,
 					usage: toHarnessUsage(event.row.usage),
-					...(event.row.details === undefined
-						? {}
-						: { details: toWireJsonValue(event.row.details, "usage details") }),
+					...(event.row.details === undefined ? {} : { details: toWireJsonValue(event.row.details) }),
 				},
 				totals: toHarnessUsage(event.totals),
 			};
@@ -767,8 +744,8 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 					return {
 						type: "config_update",
 						property: event.property,
-						value: toWireJsonValue(event.value, `config ${event.property}`),
-						previous: toWireJsonValue(event.previous, `previous config ${event.property}`),
+						value: toWireJsonValue(event.value),
+						previous: toWireJsonValue(event.previous),
 						...base,
 						lane: event.lane,
 					};
@@ -780,8 +757,8 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 					return {
 						type: "config_update",
 						property: event.property,
-						value: toWireJsonValue(event.value, `config ${event.property}`),
-						previous: toWireJsonValue(event.previous, `previous config ${event.property}`),
+						value: toWireJsonValue(event.value),
+						previous: toWireJsonValue(event.previous),
 					};
 				default:
 					return assertNever(event);

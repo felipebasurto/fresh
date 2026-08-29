@@ -1,16 +1,19 @@
 import {
 	BACKGROUND_CONTEXT,
 	type Context,
-	type ServiceProviderUpdate as CoreServiceProviderUpdate,
+	createRemoteServiceBinding,
+	type FacetConnection,
 	freshDeliveryContext,
-	isJsonValue,
+	type JsonValue,
 	type MutableReplicatedState,
+	type RemoteServiceBinding,
 	type RemoteServiceConnection,
-	RemoteServiceNamespace,
+	type RemoteServiceInstance,
 	type RemoteServices,
 	type ReplicatedState,
 	replicatedState,
-} from "@earendil-works/pi-agent-core";
+	type Service,
+} from "@earendil-works/chord";
 import type { Client } from "@earendil-works/pi-client";
 import type {
 	ProtocolRpcCall,
@@ -19,7 +22,6 @@ import type {
 	ServiceProviderUpdate,
 	SessionTarget,
 } from "@earendil-works/pi-protocol";
-import type { FacetConnection } from "../facets.ts";
 
 export type ServerConnectionState =
 	| { status: "connecting"; attempt: number }
@@ -48,11 +50,12 @@ export interface ServiceConnectionOptions {
 	readonly onError?: (error: Error) => void;
 }
 
-export interface ServiceNamespaceOptions extends ServiceConnectionOptions {
+export interface ServiceBindingOptions extends ServiceConnectionOptions {
 	readonly services: readonly { readonly id: string }[];
 }
 
-class RoutedServiceBinding extends RemoteServiceNamespace {
+class RoutedServiceBinding implements RemoteServices {
+	readonly #services: RemoteServiceBinding;
 	readonly #getBound: () => boolean;
 	readonly #onActivate: (context: Context) => Promise<void>;
 	readonly #remove: () => void;
@@ -67,7 +70,7 @@ class RoutedServiceBinding extends RemoteServiceNamespace {
 		readonly onActivate?: (context: Context) => Promise<void>;
 		readonly remove: () => void;
 	}) {
-		super({
+		this.#services = createRemoteServiceBinding({
 			services: options.services,
 			connection: options.connection,
 			bound: false,
@@ -79,22 +82,41 @@ class RoutedServiceBinding extends RemoteServiceNamespace {
 		this.#remove = options.remove;
 	}
 
-	override async activate(context: Context): Promise<void> {
+	use<T>(service: Service<T>): T {
+		return this.#services.use(service);
+	}
+
+	observe<T>(
+		service: Service<T>,
+		handler: (instance: RemoteServiceInstance<T>, context: Context) => void | Promise<void>,
+	): () => void {
+		return this.#services.observe(service, handler);
+	}
+
+	setAccessGuard(assertAccess: () => void): void {
+		this.#services.setAccessGuard(assertAccess);
+	}
+
+	async activate(context: Context): Promise<void> {
 		if (!this.#activated) {
 			this.#activated = true;
-			await this.rebind(this.#getBound(), context);
+			await this.#services.rebind(this.#getBound(), context);
 		}
-		await this.ready(context);
+		await this.#services.ready(context);
 		await this.#onActivate(context);
 	}
 
-	updateBound(bound: boolean, context: Context): Promise<void> {
-		return this.#activated ? this.rebind(bound, context) : Promise.resolve();
+	ready(context: Context): Promise<void> {
+		return this.#services.ready(context);
 	}
 
-	override async dispose(context: Context): Promise<void> {
+	updateBound(bound: boolean, context: Context): Promise<void> {
+		return this.#activated ? this.#services.rebind(bound, context) : Promise.resolve();
+	}
+
+	async dispose(context: Context): Promise<void> {
 		this.#remove();
-		await super.dispose(context);
+		await this.#services.dispose(context);
 	}
 }
 
@@ -333,10 +355,10 @@ class SessionServiceConnectionImpl implements SessionServiceConnection {
 	}
 }
 
-/** Create an explicitly bound server-service namespace outside a facet host. */
-export function createServerServiceNamespace(
+/** Create an explicitly bound server-service binding outside a facet host. */
+export function createServerServiceBinding(
 	client: Client,
-	options: ServiceNamespaceOptions,
+	options: ServiceBindingOptions,
 ): ServerServiceConnection & RemoteServices {
 	const connection = createServerServiceConnection(client, options);
 	const services = connection.open({
@@ -362,15 +384,15 @@ export function createServerServiceNamespace(
 		setAccessGuard: (assertAccess) => services.setAccessGuard(assertAccess),
 		async dispose(context) {
 			const results = await Promise.allSettled([services.dispose(context), connection.dispose(context)]);
-			throwFailures(results, "Failed to dispose server service namespace");
+			throwFailures(results, "Failed to dispose server service binding");
 		},
 	};
 }
 
-/** Create an explicitly bound selected-Session namespace outside a facet host. */
-export function createSessionServiceNamespace(
+/** Create an explicitly bound selected-Session service binding outside a facet host. */
+export function createSessionServiceBinding(
 	client: Client,
-	options: ServiceNamespaceOptions,
+	options: ServiceBindingOptions,
 ): SessionServiceConnection & RemoteServices {
 	const connection = createSessionServiceConnection(client, options);
 	const services = connection.open({
@@ -402,7 +424,7 @@ export function createSessionServiceNamespace(
 		whenDetached: (context) => connection.whenDetached(context),
 		async dispose(context) {
 			const results = await Promise.allSettled([services.dispose(context), connection.dispose(context)]);
-			throwFailures(results, "Failed to dispose Session service namespace");
+			throwFailures(results, "Failed to dispose Session service binding");
 		},
 	};
 }
@@ -437,9 +459,7 @@ function createRemoteServiceConnection(
 				member: call.member,
 				args: [...call.args],
 			};
-			const result = await client.request(target, wireCall, context.abortSignal);
-			if (result !== undefined && !isJsonValue(result)) throw new Error("Service returned a non-JSON result");
-			return result;
+			return client.request(target, wireCall, context.abortSignal) as Promise<JsonValue | undefined>;
 		},
 		subscribe: async (serviceId, mode, listener, context) => {
 			const target = getTarget();
@@ -448,8 +468,7 @@ function createRemoteServiceConnection(
 				target,
 				serviceId,
 				mode,
-				(update: ServiceProviderUpdate) =>
-					listener(update as unknown as CoreServiceProviderUpdate, freshDeliveryContext()),
+				(update: ServiceProviderUpdate) => listener(update, freshDeliveryContext()),
 				context.abortSignal,
 			);
 			return {

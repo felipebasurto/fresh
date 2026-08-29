@@ -1,4 +1,4 @@
-import { type Context, defineService } from "@earendil-works/pi-agent-core";
+import { type Context, defineService } from "@earendil-works/chord";
 import type { PromptImage } from "@earendil-works/pi-protocol";
 
 export interface AgentPromptRequest {

@@ -121,22 +121,23 @@ export const ProtocolRpcCallSchema = StrictObject({
 export type ProtocolRpcCall = Static<typeof ProtocolRpcCallSchema>;
 export type ProtocolRpcResult = JsonValue | undefined;
 
-export const ServiceMemberDescriptionSchema = StrictObject({
-	name: IdSchema,
-	kind: Type.Union([Type.Literal("method"), Type.Literal("state")]),
-});
-export type ServiceMemberDescription = Static<typeof ServiceMemberDescriptionSchema>;
-
-export const ServiceStateSnapshotSchema = StrictObject({
-	sequence: Type.Integer({ minimum: 0 }),
-	value: JsonValueSchema,
-});
-export type ServiceStateSnapshot = Static<typeof ServiceStateSnapshotSchema>;
+export const ServiceMemberSnapshotSchema = Type.Union([
+	StrictObject({
+		name: IdSchema,
+		kind: Type.Literal("method"),
+	}),
+	StrictObject({
+		name: IdSchema,
+		kind: Type.Literal("state"),
+		sequence: Type.Integer({ minimum: 0 }),
+		value: JsonValueSchema,
+	}),
+]);
+export type ServiceMemberSnapshot = Static<typeof ServiceMemberSnapshotSchema>;
 
 export const ServiceInstanceSnapshotSchema = StrictObject({
 	instance: Type.Optional(ServiceInstanceAddressSchema),
-	members: Type.Array(ServiceMemberDescriptionSchema),
-	states: Type.Record(Type.String(), ServiceStateSnapshotSchema),
+	members: Type.Array(ServiceMemberSnapshotSchema),
 });
 export type ServiceInstanceSnapshot = Static<typeof ServiceInstanceSnapshotSchema>;
 
@@ -180,7 +181,8 @@ export const ServiceProviderUpdateSchema = Type.Union([
 ]);
 export type ServiceProviderUpdate = Static<typeof ServiceProviderUpdateSchema>;
 
-export const SERVICE_CONTROL_ID = "$pi.service";
+// TODO: check if this should be part of Chord.
+export const SERVICE_CONTROL_ID = "$chord.service";
 export const SERVICE_CATALOGUE_MEMBER = "catalogue";
 export const SERVICE_SUBSCRIBE_MEMBER = "subscribe";
 export const SERVICE_UNSUBSCRIBE_MEMBER = "unsubscribe";

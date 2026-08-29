@@ -3,7 +3,7 @@ import { createConnection, type Socket } from "node:net";
 import {
 	type ClientMessage,
 	encodeClientMessage,
-	isJsonValue,
+	type JsonValue,
 	PROTOCOL_VERSION,
 	type ProtocolRpcCall,
 	type ResponseEnvelope,
@@ -15,7 +15,7 @@ import { Deferred } from "./host.ts";
 
 interface TestRpcCall {
 	readonly method: string;
-	readonly args: unknown;
+	readonly args: JsonValue[];
 }
 
 interface MessageWaiter {
@@ -88,9 +88,6 @@ export class ProtocolTestClient {
 	}
 
 	private routeLegacyCall(serverId: string, call: TestRpcCall): { target: RpcTarget; call: ProtocolRpcCall } {
-		if (!Array.isArray(call.args) || !call.args.every(isJsonValue)) {
-			throw new Error(`Test call ${call.method} requires JSON array arguments`);
-		}
 		const sessionOperation = ["prompt", "watch", "startWatch", "resnapshotWatch", "stopWatch"].includes(call.method);
 		let target: RpcTarget = { serverId };
 		let args = call.args;

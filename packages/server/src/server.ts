@@ -1,11 +1,5 @@
-import {
-	BACKGROUND_CONTEXT,
-	RemoteServiceError,
-	ServiceSliceNotImplemented,
-	type SessionMetadata,
-	TODO_CONTEXT,
-	withAbortSignal,
-} from "@earendil-works/pi-agent-core";
+import { RemoteServiceError } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT, type SessionMetadata, TODO_CONTEXT, withAbortSignal } from "@earendil-works/pi-agent-core";
 import {
 	type CancelEnvelope,
 	type ClientHello,
@@ -467,11 +461,10 @@ export class Server<TMetadata extends SessionMetadata = SessionMetadata> {
 	}
 
 	private toProtocolError(error: unknown): ProtocolError {
-		if (
-			error instanceof ServerError ||
-			error instanceof RemoteServiceError ||
-			error instanceof ServiceSliceNotImplemented
-		) {
+		if (error instanceof ServerError || error instanceof RemoteServiceError) {
+			return { code: error.code, message: error.message };
+		}
+		if (error instanceof Error && "code" in error && error.code === "service_not_implemented") {
 			return { code: error.code, message: error.message };
 		}
 		if (error instanceof ProtocolValidationError) {

@@ -1,9 +1,9 @@
-import { type Context, defineService, type RemoteJson } from "@earendil-works/pi-agent-core";
+import { type Context, defineService } from "@earendil-works/chord";
 import type { LaneSnapshot } from "@earendil-works/pi-protocol";
 
 export interface TranscriptSnapshot {
 	revision: number;
-	lane: RemoteJson<LaneSnapshot>;
+	lane: LaneSnapshot;
 }
 
 export interface Transcript {

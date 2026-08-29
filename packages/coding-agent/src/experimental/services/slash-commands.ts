@@ -1,4 +1,4 @@
-import { type Context, defineService } from "@earendil-works/pi-agent-core";
+import { type Context, defineService } from "@earendil-works/chord";
 
 export interface SlashCommandCompletion {
 	readonly value: string;

@@ -371,7 +371,7 @@ describe("Client service operations", () => {
 			type: "request",
 			target,
 			call: {
-				serviceId: "$pi.service",
+				serviceId: "$chord.service",
 				member: "subscribe",
 				args: ["service-1", "pi.models", "singleton"],
 			},
@@ -392,22 +392,23 @@ describe("Client service operations", () => {
 				mode: "singleton",
 				instances: [
 					{
-						members: [{ name: "state", kind: "state" }],
-						states: { state: { sequence: 0, value: { revision: 0 } } },
+						members: [{ name: "state", kind: "state", sequence: 0, value: { revision: 0 } }],
 					},
 				],
 			},
 		});
 		const subscription = await opening;
 		expect(updates).toEqual([]);
-		expect(subscription.snapshot.instances[0]?.states.state?.value).toEqual({ revision: 0 });
+		expect(subscription.snapshot.instances[0]?.members).toEqual([
+			{ name: "state", kind: "state", sequence: 0, value: { revision: 0 } },
+		]);
 		subscription.start();
 		await vi.waitFor(() => expect(updates).toEqual(["state"]));
 
 		const disposing = subscription.dispose();
 		await server.waitForMessages(4);
 		expect(server.messages[3]).toMatchObject({
-			call: { serviceId: "$pi.service", member: "unsubscribe", args: ["service-1"] },
+			call: { serviceId: "$chord.service", member: "unsubscribe", args: ["service-1"] },
 		});
 		server.send({ type: "response", id: "request-3", ok: true });
 		await disposing;

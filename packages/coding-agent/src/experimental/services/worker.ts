@@ -1,11 +1,17 @@
-import type {
-	AgentHarness,
-	AgentLane,
-	Context,
-	ServiceProviderUpdate as CoreServiceProviderUpdate,
-	ServiceCatalogueEntry,
-	ServiceProviderSubscription,
-} from "@earendil-works/pi-agent-core";
+import {
+	type Context,
+	type ServiceProviderUpdate as CoreServiceProviderUpdate,
+	combineFacetLoaders,
+	createFacetHost,
+	createStaticFacetLoader,
+	defineFacet,
+	type Facet,
+	type FacetHost,
+	type FacetLoader,
+	type ServiceCatalogueEntry,
+	type ServiceSubscription,
+} from "@earendil-works/chord";
+import type { AgentHarness, AgentLane } from "@earendil-works/pi-agent-core";
 import {
 	decodeServiceControlCall,
 	type JsonValue,
@@ -18,8 +24,6 @@ import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import type { ModelRuntime } from "../../core/model-runtime.ts";
 import type { SettingsManager } from "../../core/settings-manager.ts";
-import { combineFacetLoaders, createStaticFacetLoader, type FacetLoader } from "../facet-loader.ts";
-import { createFacetHost, defineFacet, type Facet, type FacetHost } from "../facets.ts";
 import { AgentController } from "./agent-controller.ts";
 import { createAgentController } from "./agent-controller-provider.ts";
 import { createModelsServiceFacet } from "./models-provider.ts";
@@ -46,7 +50,7 @@ export interface WorkerServiceScope {
 
 interface WorkerServiceSubscription {
 	readonly scope: WorkerServiceScope;
-	readonly subscription: ServiceProviderSubscription;
+	readonly subscription: ServiceSubscription;
 }
 
 export interface SessionWorkerServices {
@@ -159,8 +163,7 @@ function scopedSubscriptionKey(scope: WorkerServiceScope, subscriptionId: string
 }
 
 function toProtocolJson(value: unknown): JsonValue {
-	if (!Check(JsonValueSchema, value)) throw new Error("Service control value is not strict JSON");
-	return value;
+	return value as JsonValue;
 }
 
 function toProtocolServiceUpdate(update: CoreServiceProviderUpdate): ProtocolServiceProviderUpdate {

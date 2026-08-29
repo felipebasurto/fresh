@@ -1,4 +1,4 @@
-import { defineFacet } from "../facets.ts";
+import { defineFacet } from "@earendil-works/chord";
 import { SlashCommands } from "../services/slash-commands.ts";
 
 /** Example presentation facet. A future plugin build emits this facet as one standalone bundle. */

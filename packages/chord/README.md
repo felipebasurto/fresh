@@ -1,10 +1,10 @@
 # @earendil-works/chord
 
 Chord is an application-composition runtime for systems assembled from
-plugins/extensions.  It is built on services, replicated state, and automatic
-RPC.  It is being developed as a standalone package in the Pi monorepo, but it
-is not a Pi package: it does not depend on any other Pi workspace package and is
-built to also be usable by unrelated applications.
+plugins/extensions. It provides facets, services, replicated state, and a
+pluggable remote-service boundary. It is developed as a standalone package in
+the Pi monorepo, but it is not a Pi package: it does not depend on any other Pi
+workspace package and can be used by unrelated applications.
 
 ## What Chord is for
 
@@ -36,17 +36,20 @@ The design has a few connected pieces:
   ordered updates, and become unready on disconnect or replacement until they
   are rehydrated.
 
-- **RPC** connects two symmetric peers over an application-supplied duplex
-  transport.  Either peer may provide and consume services.  Remote calls,
-  state snapshots, updates, catalogues, and control messages use strict JSON and
-  support cancellation.
+- **Remote connections** carry logical service calls and subscriptions through
+  an application-supplied adapter. Chord requires strict-JSON arguments,
+  results, snapshots, updates, and catalogues, but does not prescribe framing,
+  routing, transport, or an application wire envelope. Symmetric RPC peers are
+  planned as one optional implementation of this boundary.
 
 - **Context** Chord provides a Go-like context system for cancellation and
   invocation-scoped application values. Applications can carry permissions or
   telemetry through those values without Chord depending on either.
 
-Chord bundles application-declared plugin-module facets into independently
-loadable Node ESM artifacts.
+The current runtime exports service tokens, singleton and keyed providers,
+remote bindings, replicated state, facet hosts, and facet loaders from
+`@earendil-works/chord`. Chord-owned identifiers use the `chord.*` namespace and
+its reserved service prefix is `$chord.*`.
 
-See [PLANNING.md](PLANNING.md) for the architecture, implementation order,
-migration boundary, and conformance criteria.
+See [PLANNING.md](PLANNING.md) for the broader RPC, generation-loading, and
+bundling architecture.

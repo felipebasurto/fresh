@@ -1,4 +1,13 @@
-import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
+import {
+	BACKGROUND_CONTEXT,
+	combineFacetLoaders,
+	createFacetHost,
+	createStaticFacetLoader,
+	defineFacet,
+	type FacetHost,
+	type FacetLoader,
+	type LoadedFacets,
+} from "@earendil-works/chord";
 import type { SessionSummary } from "@earendil-works/pi-protocol";
 import {
 	CombinedAutocompleteProvider,
@@ -22,8 +31,6 @@ import { InteractiveThemeController } from "../modes/interactive/theme/theme-con
 import { createInteractiveTui } from "../modes/interactive/tui-renderer.ts";
 import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runtime.ts";
 import { ExperimentalChatView } from "./client-tui-chat.ts";
-import { combineFacetLoaders, createStaticFacetLoader, type FacetLoader, type LoadedFacets } from "./facet-loader.ts";
-import { createFacetHost, defineFacet, type FacetHost } from "./facets.ts";
 import { type LaneReplica, type LaneWatchSource, openLaneReplica } from "./lane-replica.ts";
 import helloPluginFacet from "./plugins/hello.ts";
 import { AgentController, type AgentOperationResponse, type AgentQueueResponse } from "./services/agent-controller.ts";

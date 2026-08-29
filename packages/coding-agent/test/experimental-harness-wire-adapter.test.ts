@@ -10,7 +10,6 @@ import {
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
-	type JsonValue,
 	LaneEventSchema,
 	LaneSnapshotSchema,
 	type PromptArguments,
@@ -254,24 +253,5 @@ describe("Harness wire adapter", () => {
 			message: partial,
 			frame: { type: "text_delta", contentIndex: 0, delta: "swer" },
 		});
-	});
-
-	test("rejects non-JSON values in Harness output", () => {
-		const details = { when: null } satisfies JsonValue;
-		Object.defineProperty(details, "when", { value: new Date(0) });
-		const result: HarnessRunResult = {
-			ok: true,
-			value: {
-				operationId: "run-1",
-				kind: "run",
-				status: "failed",
-				error: { code: "provider", message: "failed", details },
-				fromTipId: null,
-				tipId: "leaf-1",
-				startedAt: 1,
-				endedAt: 2,
-			},
-		};
-		expect(() => toWireRunResult(result)).toThrow(/not JSON-serializable/);
 	});
 });

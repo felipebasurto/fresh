@@ -4,12 +4,11 @@ import {
 	type ServiceProviderUpdate as CoreServiceProviderUpdate,
 	RemoteServiceProvider,
 	replicatedState,
-	type ServiceProviderSubscription,
-} from "@earendil-works/pi-agent-core";
+	type ServiceSubscription,
+} from "@earendil-works/chord";
 import {
 	decodeServiceControlCall,
 	type JsonValue,
-	JsonValueSchema,
 	type ServiceProviderUpdate as ProtocolServiceProviderUpdate,
 	ServiceProviderUpdateSchema,
 	type SessionCreateOptions,
@@ -105,7 +104,7 @@ function createProviderAttachment(
 	provider: RemoteServiceProvider,
 	onRelease: () => void,
 ): RoutedServerServiceAttachment {
-	const subscriptions = new Map<string, ServiceProviderSubscription>();
+	const subscriptions = new Map<string, ServiceSubscription>();
 	let released = false;
 	return {
 		async invokeService(call, publish, context) {
@@ -146,8 +145,7 @@ function createProviderAttachment(
 }
 
 function toProtocolJson(value: unknown): JsonValue {
-	if (!Check(JsonValueSchema, value)) throw new Error("Service control value is not strict JSON");
-	return value;
+	return value as JsonValue;
 }
 
 function toProtocolServiceUpdate(update: CoreServiceProviderUpdate): ProtocolServiceProviderUpdate {

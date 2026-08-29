@@ -1,7 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
-const chordSrcIndex = fileURLToPath(new URL("../chord/src/index.ts", import.meta.url));
 const telemetrySrcIndex = fileURLToPath(new URL("../telemetry/src/index.ts", import.meta.url));
 const aiSrcIndex = fileURLToPath(new URL("../ai/src/index.ts", import.meta.url));
 const aiSrcCompat = fileURLToPath(new URL("../ai/src/compat.ts", import.meta.url));
@@ -16,12 +15,13 @@ export default defineConfig({
 		silent: "passed-only",
 	},
 	resolve: {
+		conditions: ["source"],
 		alias: [
-			{ find: /^@earendil-works\/chord$/, replacement: chordSrcIndex },
 			{ find: /^@earendil-works\/pi-telemetry$/, replacement: telemetrySrcIndex },
 			{ find: /^@earendil-works\/pi-agent-core$/, replacement: agentSrcIndex },
 			{ find: /^@earendil-works\/pi-ai$/, replacement: aiSrcIndex },
 			{ find: /^@earendil-works\/pi-ai\/compat$/, replacement: aiSrcCompat },
 		],
 	},
+	ssr: { resolve: { conditions: ["source"] } },
 });
