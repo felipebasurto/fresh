@@ -48,8 +48,11 @@ The design has a few connected pieces:
 
 The current runtime exports service tokens, singleton and keyed providers,
 remote bindings, replicated state, facet hosts, and facet loaders from
-`@earendil-works/chord`. Chord-owned identifiers use the `chord.*` namespace and
-its reserved service prefix is `$chord.*`.
+`@earendil-works/chord`. All public functions are collected in
+`@earendil-works/chord/api`, while all public types are collected in
+`@earendil-works/chord/types`; both are re-exported from the main entry point.
+Chord-owned identifiers use the `chord.*` namespace and its reserved service
+prefix is `$chord.*`.
 
 See [PLANNING.md](PLANNING.md) for the broader RPC, generation-loading, and
 bundling architecture.
