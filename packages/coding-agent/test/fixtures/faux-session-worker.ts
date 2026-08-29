@@ -37,7 +37,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
 				const spawn = (value: string): void => {
 					const state = env.replicatedState({ value });
 					let close = (): void => {};
-					close = probes.add("probe", {
+					close = probes.spawn("probe", {
 						state,
 						async replace(next) {
 							close();

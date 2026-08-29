@@ -8,7 +8,6 @@ import {
 	type MutableReplicatedState,
 	type RemoteServiceBinding,
 	type RemoteServiceConnection,
-	type RemoteServiceInstance,
 	type RemoteServices,
 	type ReplicatedState,
 	replicatedState,
@@ -86,10 +85,7 @@ class RoutedServiceBinding implements RemoteServices {
 		return this.#services.use(service);
 	}
 
-	observe<T>(
-		service: Service<T>,
-		handler: (instance: RemoteServiceInstance<T>, context: Context) => void | Promise<void>,
-	): () => void {
+	observe<T>(service: Service<T>, handler: (service: T, context: Context) => void | Promise<void>): () => void {
 		return this.#services.observe(service, handler);
 	}
 

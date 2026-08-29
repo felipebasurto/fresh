@@ -553,8 +553,8 @@ describe("experimental durable server composition", () => {
 		const consumer = defineFacet({
 			id: "@test/keyed-probe-consumer",
 			setup(env) {
-				env.observe(KeyedProbe, (instance, context) => {
-					observed.push({ service: instance.service, context, value: instance.service.state.value?.value });
+				env.observe(KeyedProbe, (service, context) => {
+					observed.push({ service, context, value: service.state.value?.value });
 				});
 			},
 		});
