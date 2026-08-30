@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import type { LaneEvent, PromptMessage, SessionAddress } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
@@ -65,6 +66,13 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 				await match.management.create({ id: selectedSessionId }, BACKGROUND_CONTEXT);
 			}
 		}
+		await match.plugins.prepareSession(
+			{
+				sessionId,
+				packagePaths: command.pluginPackages?.map((packagePath) => resolve(packagePath)) ?? null,
+			},
+			BACKGROUND_CONTEXT,
+		);
 		await match.management.attach(sessionId, BACKGROUND_CONTEXT);
 		if (command.prompt === undefined) {
 			return { kind: "attached", serverId: match.route.serverId, sessionId };

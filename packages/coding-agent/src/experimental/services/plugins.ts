@@ -1,8 +1,12 @@
 import { type Context, defineService } from "@earendil-works/chord";
 import type { JsonValue } from "@earendil-works/pi-protocol";
 
-/** Server-owned plugin bundle generations available to presentations. */
+/** Server-built plugin generations available to presentations. */
 export interface PresentationPlugins {
+	prepareSession(
+		request: { readonly sessionId: string; readonly packagePaths: readonly string[] | null },
+		context: Context,
+	): Promise<JsonValue>;
 	reload(context: Context): Promise<JsonValue>;
 }
 

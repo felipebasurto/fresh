@@ -2,7 +2,7 @@
 
 Runtime-neutral schemas, types, CBOR encoding, and byte-stream framing for the experimental Pi protocol.
 
-Protocol version `4` carries the current server- and Session-scoped facet-service slice:
+Protocol version `5` carries the current server- and Session-scoped facet-service slice, including Session-branch plugin preparation:
 
 - a version handshake that identifies the logical `serverId` and can carry application bootstrap data;
 - explicit server and Session request targets;

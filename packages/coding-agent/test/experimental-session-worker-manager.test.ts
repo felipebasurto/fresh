@@ -42,6 +42,7 @@ class FakeCoordinator {
 				sessionId: metadata.id,
 				pid: 123,
 				metadata,
+				pluginManifestPaths: [],
 			},
 		});
 	}
@@ -95,6 +96,27 @@ async function createAttachedWorker(): Promise<{
 }
 
 describe("Session worker lifecycle failures", () => {
+	test("adopts a discovered worker with its existing Session plugin selection", async () => {
+		const coordinator = new FakeCoordinator();
+		const workers = new SessionWorkerManager(coordinator, "/tmp", undefined, undefined, [
+			"/tmp/plugin/chord-facets.json",
+		]);
+		await workers.discover(new Set(["worker-1"]));
+		expect(coordinator.sent).not.toContainEqual({ peerId: "worker-1", payload: { type: "shutdown" } });
+		expect(workers.workerPids.size).toBe(1);
+		expect(() => workers.assertSessionPluginManifestPaths(metadata, [])).not.toThrow();
+		workers.detach();
+	});
+
+	test("rejects a different plugin selection for an active Session without stopping it", async () => {
+		const { workers } = await createAttachedWorker();
+		expect(() => workers.assertSessionPluginManifestPaths(metadata, ["/tmp/plugin/chord-facets.json"])).toThrow(
+			"active with a different plugin selection",
+		);
+		expect(workers.workerPids.size).toBe(1);
+		workers.detach();
+	});
+
 	test("compensates a timed-out attachment before rejecting it", async () => {
 		vi.useFakeTimers();
 		const coordinator = new FakeCoordinator();

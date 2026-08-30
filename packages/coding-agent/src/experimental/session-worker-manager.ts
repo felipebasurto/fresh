@@ -45,11 +45,19 @@ const WORKER_SHUTDOWN_TIMEOUT_MS = 10_000;
 const WORKER_DISCOVERY_TIMEOUT_MS = 5_000;
 const WORKER_DEMAND_TIMEOUT_MS = 5_000;
 
+export class SessionPluginSelectionConflictError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "SessionPluginSelectionConflictError";
+	}
+}
+
 interface WorkerRecord {
 	readonly peerId: string;
 	readonly metadata: JsonlSessionMetadata;
 	readonly pid: number;
 	readonly token: string;
+	readonly pluginManifestPaths: readonly string[];
 	readonly terminated: Promise<Error | undefined>;
 	resolveTerminated(error: Error | undefined): void;
 	readonly attachmentIds: Set<string>;
@@ -94,6 +102,7 @@ interface PendingLaunch {
 	readonly sessionKey: string;
 	readonly peerId: string;
 	readonly token: string;
+	readonly pluginManifestPaths: readonly string[];
 	readonly child: ChildProcess;
 	readonly timer: NodeJS.Timeout;
 	readonly promise: Promise<WorkerRecord>;
@@ -119,6 +128,7 @@ export class SessionWorkerManager {
 	readonly #serviceSubscriptions = new Map<string, WorkerServiceSubscription>();
 	readonly #removeListener: () => void;
 	readonly #onWorkerCountChanged: ((count: number) => void) | undefined;
+	readonly #pluginManifestPaths: readonly string[];
 	#discoveryPeers?: Set<string>;
 	#resolveDiscovery?: () => void;
 	#detached = false;
@@ -132,16 +142,33 @@ export class SessionWorkerManager {
 		sessionDir: string,
 		model?: { readonly provider?: string; readonly model: string },
 		onWorkerCountChanged?: (count: number) => void,
+		pluginManifestPaths: readonly string[] = [],
 	) {
 		this.#coordinator = coordinator;
 		this.#sessionDir = sessionDir;
 		this.#model = model;
 		this.#onWorkerCountChanged = onWorkerCountChanged;
+		this.#pluginManifestPaths = Object.freeze([...pluginManifestPaths]);
 		this.#removeListener = coordinator.onEvent((event) => this.#handleCoordinatorEvent(event));
 	}
 
 	get trackedSessions(): readonly JsonlSessionMetadata[] {
 		return [...this.#workersBySession.values()].map((worker) => worker.metadata);
+	}
+
+	assertSessionPluginManifestPaths(metadata: JsonlSessionMetadata, manifestPaths: readonly string[]): void {
+		const existing = this.#workersBySession.get(metadata.path);
+		if (existing !== undefined && !sameStrings(existing.pluginManifestPaths, manifestPaths)) {
+			throw new SessionPluginSelectionConflictError(
+				`Session ${metadata.id} is active with a different plugin selection`,
+			);
+		}
+		const pending = this.#pending.get(metadata.path);
+		if (pending !== undefined && !sameStrings(pending.pluginManifestPaths, manifestPaths)) {
+			throw new SessionPluginSelectionConflictError(
+				`Session ${metadata.id} is starting with a different plugin selection`,
+			);
+		}
 	}
 
 	async discover(peerIds: ReadonlySet<string>): Promise<void> {
@@ -168,13 +195,18 @@ export class SessionWorkerManager {
 		this.#resolveDiscovery = undefined;
 	}
 
-	async openSession(metadata: JsonlSessionMetadata, context: Context): Promise<RoutedSessionHandle> {
+	async openSession(
+		metadata: JsonlSessionMetadata,
+		context: Context,
+		pluginManifestPaths: readonly string[] = this.#pluginManifestPaths,
+	): Promise<RoutedSessionHandle> {
 		if (this.#detached || this.#shuttingDown) throw new Error("Experimental server is shutting down");
+		this.assertSessionPluginManifestPaths(metadata, pluginManifestPaths);
 		const existing = this.#workersBySession.get(metadata.path);
 		if (existing) return this.#routedHandle(existing);
 		const pending = this.#pending.get(metadata.path);
 		if (pending) return this.#routedHandle(await pending.promise);
-		return this.#routedHandle(await this.#launch(metadata, context));
+		return this.#routedHandle(await this.#launch(metadata, context, pluginManifestPaths));
 	}
 
 	async closeSession(metadata: JsonlSessionMetadata, context: Context): Promise<void> {
@@ -495,7 +527,11 @@ export class SessionWorkerManager {
 		this.#detachState();
 	}
 
-	#launch(metadata: JsonlSessionMetadata, _context: Context): Promise<WorkerRecord> {
+	#launch(
+		metadata: JsonlSessionMetadata,
+		_context: Context,
+		pluginManifestPaths: readonly string[],
+	): Promise<WorkerRecord> {
 		const sessionKey = metadata.path;
 		const peerId = `worker-${randomUUID()}`;
 		const token = randomUUID();
@@ -505,6 +541,7 @@ export class SessionWorkerManager {
 				sessionDir: this.#sessionDir,
 				metadata,
 				...(this.#model ?? {}),
+				...(pluginManifestPaths.length === 0 ? {} : { pluginManifestPaths: [...pluginManifestPaths] }),
 			};
 			child = spawnInternalProcess("session-worker", [JSON.stringify(options)], {
 				env: {
@@ -528,7 +565,17 @@ export class SessionWorkerManager {
 			WORKER_STARTUP_TIMEOUT_MS,
 		);
 		timer.unref();
-		const pending = { sessionKey, peerId, token, child, timer, promise, resolve, reject };
+		const pending = {
+			sessionKey,
+			peerId,
+			token,
+			pluginManifestPaths: Object.freeze([...pluginManifestPaths]),
+			child,
+			timer,
+			promise,
+			resolve,
+			reject,
+		};
 		this.#pending.set(sessionKey, pending);
 		this.#notifyWorkerCountChanged();
 		child.once("error", (error) => this.#failPending(sessionKey, error));
@@ -711,12 +758,16 @@ export class SessionWorkerManager {
 			return;
 		}
 		this.#markDiscovered(peerId);
+		const pending = this.#pending.get(message.sessionKey);
+		if (pending?.peerId === peerId && !sameStrings(message.pluginManifestPaths, pending.pluginManifestPaths)) {
+			this.#failPending(message.sessionKey, new Error("Session worker started with stale plugin packages"));
+			return;
+		}
 		const existing = this.#workersBySession.get(message.sessionKey);
 		if (existing && existing.peerId !== peerId) {
 			void this.#coordinator.send(peerId, { type: "shutdown" }).catch(() => {});
 			return;
 		}
-		const pending = this.#pending.get(message.sessionKey);
 		if (
 			pending &&
 			(pending.peerId !== peerId || pending.token !== message.token || pending.child.pid !== message.pid)
@@ -733,6 +784,7 @@ export class SessionWorkerManager {
 			metadata: message.metadata,
 			pid: message.pid,
 			token: message.token,
+			pluginManifestPaths: Object.freeze([...message.pluginManifestPaths]),
 			terminated,
 			resolveTerminated,
 			attachmentIds: new Set(),
@@ -890,6 +942,10 @@ export class SessionWorkerManager {
 		this.#resolveDiscovery?.();
 		this.#resolveDiscovery = undefined;
 	}
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function sameScope(left: WorkerOperationScope, right: WorkerOperationScope): boolean {

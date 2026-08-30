@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import type { FacetLoader } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Client } from "@earendil-works/pi-client";
+import { Client, ServerError } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
 import { isServerId, type ServerId } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
@@ -17,6 +17,7 @@ import {
 	type SessionServiceSource,
 } from "./services/connection.ts";
 import { Models } from "./services/models.ts";
+import { PresentationPlugins } from "./services/plugins.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
 
 export type ClientRuntimeRoute =
@@ -34,6 +35,7 @@ export interface ClientRuntimeServer {
 export interface ActivatedClientRuntimeServer extends ClientRuntimeServer {
 	readonly directory: SessionDirectory;
 	readonly management: SessionManagement;
+	readonly plugins: PresentationPlugins;
 	readonly models: Models;
 	readonly agent: AgentController;
 }
@@ -62,6 +64,9 @@ export async function openClientRuntime(
 	if (command.connect && command.model !== undefined) {
 		throw new Error("Model selection is only valid when automatically activating a new server");
 	}
+	if (command.connect?.transport === "radius" && command.pluginPackages !== undefined) {
+		throw new Error("Plugin package paths can only be configured on a local Unix server");
+	}
 	const directory = resolveServerDirectory(options.directory);
 	let routes: ClientRuntimeRoute[];
 	let activatedClient: Client | undefined;
@@ -88,6 +93,9 @@ export async function openClientRuntime(
 			activatedClient = activated.client;
 		}
 	}
+	if (command.pluginPackages !== undefined && routes.length !== 1) {
+		throw new Error("Plugin selection requires exactly one local server");
+	}
 
 	const clients: Client[] = [];
 	const reconnectors: RadiusClientReconnect[] = [];
@@ -111,24 +119,44 @@ export async function openClientRuntime(
 
 	try {
 		for (const route of routes) {
-			const client =
-				activatedClient ??
-				(await Client.connect({
-					serverId: route.serverId,
-					transportFactory:
-						route.transport === "unix"
-							? createUnixTransportFactory({ path: route.path })
-							: createRadiusClientTransportFactory({
-									serverId: route.serverId,
-									auth: new RadiusRelayAuthResolver(command.auth),
-								}),
-				}));
+			let client = activatedClient;
+			if (client === undefined) {
+				try {
+					client = await Client.connect({
+						serverId: route.serverId,
+						transportFactory:
+							route.transport === "unix"
+								? createUnixTransportFactory({ path: route.path })
+								: createRadiusClientTransportFactory({
+										serverId: route.serverId,
+										auth: new RadiusRelayAuthResolver(command.auth),
+									}),
+					});
+				} catch (error) {
+					if (
+						command.connect !== undefined ||
+						route.transport !== "unix" ||
+						!(error instanceof ServerError) ||
+						error.code !== "version"
+					) {
+						throw error;
+					}
+					client = (
+						await activateServer({
+							directory,
+							requestedServerId: route.serverId,
+							sessionDir: resolveSessionDirectory(),
+						})
+					).client;
+				}
+			}
 			activatedClient = undefined;
 			clients.push(client);
 			if (route.transport === "radius") reconnectors.push(new RadiusClientReconnect(client));
 			const server = createServerServiceSource(client);
+			serviceSources.push(server);
 			const session = createSessionServiceSource(client);
-			serviceSources.push(server, session);
+			serviceSources.push(session);
 			servers.push({
 				route,
 				client,
@@ -153,7 +181,7 @@ export async function activateBuiltinClientServices(
 	server: ClientRuntimeServer,
 ): Promise<ActivatedClientRuntimeServer> {
 	const serverServices = server.server.open({
-		services: [SessionDirectory, SessionManagement],
+		services: [SessionDirectory, SessionManagement, PresentationPlugins],
 		assertAccess() {},
 		onError() {},
 	});
@@ -180,10 +208,11 @@ export async function activateBuiltinClientServices(
 			await server.session.whenDetached(context);
 		},
 	};
+	const plugins = serverServices.use(PresentationPlugins);
 	const models = sessionServices.use(Models);
 	const agent = sessionServices.use(AgentController);
 	await Promise.all([serverServices.ready(BACKGROUND_CONTEXT), sessionServices.ready(BACKGROUND_CONTEXT)]);
-	return { ...server, directory, management, models, agent };
+	return { ...server, directory, management, plugins, models, agent };
 }
 
 function routeFromExplicitPath(path: string): UnixServerRoute {

@@ -1,12 +1,15 @@
-import { lstat, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { type Context, createFacetHost, defineFacet } from "@earendil-works/chord";
+import { fileURLToPath } from "node:url";
+import { type Context, createFacetHost, defineFacet, defineService } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
-import { Client } from "@earendil-works/pi-client";
+import { Client, ServerError as ClientServerError } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { ExampleFacetService } from "../examples/plugins/pi-example-plugin/src/contract.ts";
 import { runClient } from "../src/experimental/client.ts";
 import { activateBuiltinClientServices, openClientRuntime } from "../src/experimental/client-runtime.ts";
+import { createPresentationFacetLoaders } from "../src/experimental/plugins/bundled.ts";
 import * as processRuntime from "../src/experimental/process.ts";
 import { activateServer, type RunningServer, startServer } from "../src/experimental/server.ts";
 import {
@@ -32,6 +35,7 @@ const directories = new Set<string>();
 const fauxWorkerEntryUrl = new URL("fixtures/faux-session-worker.ts", import.meta.url);
 const realSpawnInternalProcess = processRuntime.spawnInternalProcess;
 const sessionWorkerModel = { provider: "anthropic", model: "claude-sonnet-4-5" } as const;
+const SecondPluginService = defineService<{ read(context: Context): Promise<string> }>("test.second-plugin");
 let agentDir: string;
 
 beforeEach(async () => {
@@ -192,6 +196,20 @@ describe("experimental durable server composition", () => {
 		).rejects.toThrow("Model selection is only valid when automatically activating a new server");
 	});
 
+	test("rechecks an auto-discovered server after a version mismatch", async () => {
+		const { directory, runtime } = await makeServer();
+		const connect = Client.connect.bind(Client);
+		vi.spyOn(Client, "connect")
+			.mockRejectedValueOnce(new ClientServerError({ code: "version", message: "stale server" }))
+			.mockImplementation((options) => connect(options));
+		const clientRuntime = await openClientRuntime({ command: "client" }, { directory });
+		try {
+			expect(clientRuntime.servers.map(({ route }) => route.serverId)).toEqual([runtime.serverId]);
+		} finally {
+			await clientRuntime.dispose();
+		}
+	});
+
 	test("serializes concurrent cold activation and retires after both clients leave", async () => {
 		const directory = await mkdtemp(join("/tmp", "pi-auto-server-"));
 		directories.add(directory);
@@ -219,6 +237,44 @@ describe("experimental durable server composition", () => {
 		expect(await pathExists(join(directory, `${serverId}.sock`))).toBe(true);
 		await expect.poll(() => pathExists(join(directory, `${serverId}.sock`)), { timeout: 5_000 }).toBe(false);
 		await expect.poll(() => pathExists(join(directory, `control-${serverId}.sock`)), { timeout: 5_000 }).toBe(false);
+	});
+
+	test("passes client plugin packages to a cold server and restores them for its next generation", async () => {
+		const directory = await mkdtemp(join("/tmp", "pi-auto-plugin-"));
+		directories.add(directory);
+		const serverId = "00000000-0000-4000-8000-000000000001";
+		const packagePath = fileURLToPath(new URL("../examples/plugins/pi-example-plugin", import.meta.url));
+		vi.stubEnv("PI_SERVER_DIR", directory);
+		vi.stubEnv("PI_SERVER_ID", serverId);
+
+		const first = await openClientRuntime({ command: "client", ...sessionWorkerModel });
+		try {
+			const activated = await activateBuiltinClientServices(first.servers[0]!);
+			const presentationPlugins = await activated.plugins.prepareSession(
+				{ sessionId: "demo-1", packagePaths: [packagePath] },
+				BACKGROUND_CONTEXT,
+			);
+			await activated.management.attach("demo-1", BACKGROUND_CONTEXT);
+			const loaded = await createPresentationFacetLoaders(presentationPlugins)[0]!.load();
+			expect(loaded.facets.map(({ id }) => id)).toEqual(["@earendil-works/pi-example-plugin/tui"]);
+			await loaded.dispose();
+		} finally {
+			await first.dispose();
+		}
+		await expect.poll(() => pathExists(join(directory, `${serverId}.sock`)), { timeout: 5_000 }).toBe(false);
+
+		const second = await openClientRuntime({ command: "client", ...sessionWorkerModel });
+		try {
+			const activated = await activateBuiltinClientServices(second.servers[0]!);
+			const presentationPlugins = await activated.plugins.prepareSession(
+				{ sessionId: "demo-1", packagePaths: null },
+				BACKGROUND_CONTEXT,
+			);
+			await activated.management.attach("demo-1", BACKGROUND_CONTEXT);
+			expect(createPresentationFacetLoaders(presentationPlugins)).toHaveLength(1);
+		} finally {
+			await second.dispose();
+		}
 	});
 
 	test("retires a cold server after its only Session attachment disconnects", async () => {
@@ -414,6 +470,79 @@ describe("experimental durable server composition", () => {
 		await Promise.all([firstServices.dispose(BACKGROUND_CONTEXT), secondServices.dispose(BACKGROUND_CONTEXT)]);
 	});
 
+	test("loads conventional Session facets from multiple configured plugin packages", async () => {
+		const directory = await mkdtemp(join("/tmp", "pes-plugin-"));
+		directories.add(directory);
+		const secondPackagePath = join(directory, "second-plugin");
+		await mkdir(join(secondPackagePath, "src"), { recursive: true });
+		await Promise.all([
+			writeFile(
+				join(secondPackagePath, "package.json"),
+				`${JSON.stringify({
+					name: "@earendil-works/second-session-plugin",
+					version: "1.0.0",
+					peerDependencies: { "@earendil-works/chord": "^0.84.4" },
+				})}\n`,
+			),
+			writeFile(
+				join(secondPackagePath, "src", "session.ts"),
+				'import { defineFacet, defineService } from "@earendil-works/chord"; const Service = defineService("test.second-plugin"); export default defineFacet({ id: "second-session-plugin", setup(env) { env.provide(Service, { async read() { return "second"; } }); } });\n',
+			),
+		]);
+		const runtime = await startServer({ ...sessionWorkerModel, directory });
+		servers.add(runtime);
+		await attachClient(runtime, "demo-2");
+		const unrelatedWorkerPid = runtime.workerPids.get("demo-2");
+		const clientRuntime = await openClientRuntime(
+			{
+				command: "client",
+				pluginPackages: [
+					fileURLToPath(new URL("../examples/plugins/pi-example-plugin", import.meta.url)),
+					secondPackagePath,
+				],
+			},
+			{ directory },
+		);
+		const activated = await activateBuiltinClientServices(clientRuntime.servers[0]!);
+		const selectedPackagePaths = [
+			fileURLToPath(new URL("../examples/plugins/pi-example-plugin", import.meta.url)),
+			secondPackagePath,
+		];
+		await expect(
+			activated.plugins.prepareSession(
+				{ sessionId: "demo-2", packagePaths: selectedPackagePaths },
+				BACKGROUND_CONTEXT,
+			),
+		).rejects.toThrow("active with a different plugin selection");
+		expect(runtime.workerPids.get("demo-2")).toBe(unrelatedWorkerPid);
+		await activated.plugins.prepareSession(
+			{
+				sessionId: "demo-1",
+				packagePaths: selectedPackagePaths,
+			},
+			BACKGROUND_CONTEXT,
+		);
+		await activated.management.attach("demo-1", BACKGROUND_CONTEXT);
+		const client = clientRuntime.servers[0]!.client;
+		const services = createSessionServiceBinding(client, {
+			services: [ExampleFacetService, SecondPluginService],
+		});
+		try {
+			await services.ready(BACKGROUND_CONTEXT);
+			const example = services.use(ExampleFacetService);
+			await expect(example.greet({ name: "Armin" }, BACKGROUND_CONTEXT)).resolves.toEqual({
+				message: "Hello Armin from the bundled Session worker facet!!!",
+				workerActivations: 1,
+			});
+			expect(example.workerActivations.value).toBe(1);
+			await expect(services.use(SecondPluginService).read(BACKGROUND_CONTEXT)).resolves.toBe("second");
+			expect(runtime.workerPids.get("demo-2")).toBe(unrelatedWorkerPid);
+		} finally {
+			await services.dispose(BACKGROUND_CONTEXT);
+			await clientRuntime.dispose();
+		}
+	});
+
 	test("uses the most recently selected model for a new Session", async () => {
 		const directory = await mkdtemp(join("/tmp", "pes-model-default-"));
 		directories.add(directory);
@@ -448,6 +577,7 @@ describe("experimental durable server composition", () => {
 		});
 		try {
 			const server = await activateBuiltinClientServices(clientRuntime.servers[0]!);
+			await server.plugins.prepareSession({ sessionId: "demo-1", packagePaths: null }, BACKGROUND_CONTEXT);
 			await server.management.attach("demo-1", BACKGROUND_CONTEXT);
 
 			expect(server.session.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });

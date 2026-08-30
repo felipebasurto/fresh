@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import {
 	combineFacetLoaders,
 	createFacetHost,
@@ -41,6 +42,7 @@ import type {
 	SessionAttachmentState,
 	SessionServiceSource,
 } from "./services/connection.ts";
+import { PresentationPlugins } from "./services/plugins.ts";
 import { PresentationUI } from "./services/presentation-ui.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
 import { SlashCommands } from "./services/slash-commands.ts";
@@ -78,6 +80,12 @@ interface SlashCommandFeature {
 interface AgentFeature {
 	readonly serverId: string;
 	readonly controller: AgentController;
+}
+
+interface PreparedClientSession {
+	readonly serverId: string;
+	readonly summary: SessionSummary;
+	readonly presentationPlugins: JsonValue;
 }
 
 interface PendingSelection {
@@ -169,14 +177,15 @@ export class ExperimentalClientTui implements Component {
 		requestRender(): void;
 		finish(): void;
 	}): Promise<ExperimentalClientTui> {
+		const prepared = await prepareClientSession(options.command, options.servers);
 		const loadedFacets = await combineFacetLoaders([
 			createStaticFacetLoader([helloPluginFacet]),
 			...(options.facetLoader === undefined ? [] : [options.facetLoader]),
 		]).load();
 		const component = new ExperimentalClientTui(options.ui, options.requestRender, options.finish, loadedFacets);
 		try {
-			await component.#start(options.servers);
-			await component.#openInitialSession(options.command);
+			await component.#start(options.servers, prepared);
+			await component.#openPreparedSession(prepared);
 			return component;
 		} catch (error) {
 			try {
@@ -244,9 +253,13 @@ export class ExperimentalClientTui implements Component {
 		return this.#closePromise;
 	}
 
-	async #start(servers: readonly ClientTuiServer[]): Promise<void> {
+	async #start(servers: readonly ClientTuiServer[], prepared: PreparedClientSession): Promise<void> {
 		for (const server of servers) {
-			let presentationFacets = await combineFacetLoaders(server.presentationFacetLoaders ?? []).load();
+			const presentationFacetLoaders =
+				server.serverId === prepared.serverId
+					? createPresentationFacetLoaders(prepared.presentationPlugins)
+					: (server.presentationFacetLoaders ?? []);
+			let presentationFacets = await combineFacetLoaders(presentationFacetLoaders).load();
 			this.#loadedFacetGenerations.add(presentationFacets);
 			let facetHost!: FacetHost;
 			const reloadState = { tail: Promise.resolve() };
@@ -336,58 +349,14 @@ export class ExperimentalClientTui implements Component {
 		}
 	}
 
-	async #openInitialSession(command: ClientCommand): Promise<void> {
-		const features = [...this.#sessions.values()];
-		if (features.length === 0) throw new Error("No Session service is available");
-		let selected: { feature: SessionFeature; summary: SessionSummary } | undefined;
-
-		if (command.sessionId !== undefined) {
-			const matches = features.flatMap((feature) =>
-				(feature.directory.state.value?.sessions ?? [])
-					.filter((session) => session.sessionId === command.sessionId)
-					.map((summary) => ({ feature, summary })),
-			);
-			if (matches.length > 1) throw new Error(`Session ${command.sessionId} is available from more than one server`);
-			selected = matches[0];
-			if (selected === undefined) {
-				if (command.connect?.transport === "radius") {
-					throw new Error(`Remote server does not contain Session ${command.sessionId}`);
-				}
-				const feature = requireSingleServer(features);
-				selected = {
-					feature,
-					summary: await feature.management.create({ id: command.sessionId }, BACKGROUND_CONTEXT),
-				};
-			}
-		} else if (command.continue === true || command.resume === true) {
-			selected = features
-				.flatMap((feature) =>
-					(feature.directory.state.value?.sessions ?? []).map((summary) => ({ feature, summary })),
-				)
-				.sort(
-					(left, right) =>
-						right.summary.createdAt - left.summary.createdAt ||
-						left.summary.serverId.localeCompare(right.summary.serverId) ||
-						left.summary.sessionId.localeCompare(right.summary.sessionId),
-				)[0];
-		}
-
-		if (selected === undefined) {
-			const feature = requireSingleServer(features);
-			selected = { feature, summary: await feature.management.create({}, BACKGROUND_CONTEXT) };
-		}
-		await this.#attachSession(selected.feature, selected.summary);
-	}
-
-	async #attachSession(feature: SessionFeature, summary: SessionSummary): Promise<void> {
-		this.#status = `Attaching ${summary.sessionId}…`;
-		this.#rebuild();
-		await feature.management.attach(summary.sessionId, BACKGROUND_CONTEXT);
-		await feature.session.whenAttached(summary.sessionId, BACKGROUND_CONTEXT);
+	async #openPreparedSession(prepared: PreparedClientSession): Promise<void> {
+		const feature = this.#sessions.get(prepared.serverId);
+		if (feature === undefined) throw new Error(`No Session service is available for ${prepared.serverId}`);
+		await feature.session.whenAttached(prepared.summary.sessionId, BACKGROUND_CONTEXT);
 		this.#selectedServerId = feature.serverId;
-		this.#sessionId = summary.sessionId;
+		this.#sessionId = prepared.summary.sessionId;
 		this.#updateAutocomplete();
-		await this.#openLane(feature, summary.sessionId);
+		await this.#openLane(feature, prepared.summary.sessionId);
 		this.#screen = "chat";
 		this.#status = "";
 		this.#rebuild();
@@ -691,6 +660,104 @@ export class ExperimentalClientTui implements Component {
 	}
 }
 
+async function prepareClientSession(
+	command: ClientCommand,
+	servers: readonly ClientTuiServer[],
+): Promise<PreparedClientSession> {
+	const opened = servers.map((server) => ({
+		server,
+		services: server.server.open({
+			services: [SessionDirectory, SessionManagement, PresentationPlugins],
+			assertAccess() {},
+			onError() {},
+		}),
+	}));
+	try {
+		const features = opened.map(({ server, services }) => ({
+			server,
+			directory: services.use(SessionDirectory),
+			management: services.use(SessionManagement),
+			plugins: services.use(PresentationPlugins),
+		}));
+		await Promise.all(opened.map(({ services }) => services.ready(BACKGROUND_CONTEXT)));
+		let selected:
+			| {
+					readonly server: ClientTuiServer;
+					readonly management: SessionManagement;
+					readonly plugins: PresentationPlugins;
+					readonly summary: SessionSummary;
+			  }
+			| undefined;
+		if (command.sessionId !== undefined) {
+			const matches = features.flatMap((feature) =>
+				(feature.directory.state.value?.sessions ?? [])
+					.filter((session) => session.sessionId === command.sessionId)
+					.map((summary) => ({
+						server: feature.server,
+						management: feature.management,
+						plugins: feature.plugins,
+						summary,
+					})),
+			);
+			if (matches.length > 1) throw new Error(`Session ${command.sessionId} is available from more than one server`);
+			selected = matches[0];
+			if (selected === undefined) {
+				if (command.connect?.transport === "radius") {
+					throw new Error(`Remote server does not contain Session ${command.sessionId}`);
+				}
+				const feature = requireSingleServer(features);
+				selected = {
+					server: feature.server,
+					management: feature.management,
+					plugins: feature.plugins,
+					summary: await feature.management.create({ id: command.sessionId }, BACKGROUND_CONTEXT),
+				};
+			}
+		} else if (command.continue === true || command.resume === true) {
+			selected = features
+				.flatMap((feature) =>
+					(feature.directory.state.value?.sessions ?? []).map((summary) => ({
+						server: feature.server,
+						management: feature.management,
+						plugins: feature.plugins,
+						summary,
+					})),
+				)
+				.sort(
+					(left, right) =>
+						right.summary.createdAt - left.summary.createdAt ||
+						left.summary.serverId.localeCompare(right.summary.serverId) ||
+						left.summary.sessionId.localeCompare(right.summary.sessionId),
+				)[0];
+		}
+		if (selected === undefined) {
+			const feature = requireSingleServer(features);
+			selected = {
+				server: feature.server,
+				management: feature.management,
+				plugins: feature.plugins,
+				summary: await feature.management.create({}, BACKGROUND_CONTEXT),
+			};
+		}
+		const presentationPlugins = await selected.plugins.prepareSession(
+			{
+				sessionId: selected.summary.sessionId,
+				packagePaths: command.pluginPackages?.map((packagePath) => resolve(packagePath)) ?? null,
+			},
+			BACKGROUND_CONTEXT,
+		);
+		await selected.management.attach(selected.summary.sessionId, BACKGROUND_CONTEXT);
+		await selected.server.session.whenAttached(selected.summary.sessionId, BACKGROUND_CONTEXT);
+		return {
+			serverId: selected.server.serverId,
+			summary: selected.summary,
+			presentationPlugins,
+		};
+	} finally {
+		await Promise.allSettled(opened.map(({ services }) => services.dispose(BACKGROUND_CONTEXT)));
+	}
+}
+
 export async function runClientTui(command: ClientCommand, options: RunClientTuiOptions = {}): Promise<void> {
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
@@ -763,7 +830,7 @@ export async function runClientTui(command: ClientCommand, options: RunClientTui
 	}
 }
 
-function requireSingleServer(features: readonly SessionFeature[]): SessionFeature {
+function requireSingleServer<T>(features: readonly T[]): T {
 	if (features.length !== 1) throw new Error("Starting a Session requires exactly one server");
 	return features[0]!;
 }

@@ -13,7 +13,7 @@ import {
 	type RpcResultUnion,
 } from "./rpc.ts";
 
-export const PROTOCOL_VERSION = 4 as const;
+export const PROTOCOL_VERSION = 5 as const;
 
 const IdSchema = Type.String({ minLength: 1 });
 const TimestampSchema = Type.Integer({ minimum: 0 });

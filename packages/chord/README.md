@@ -60,20 +60,45 @@ prefix is `$chord.*`.
 ## Bundling and loading facets
 
 `@earendil-works/chord/bundler` uses esbuild to turn opaque application entry
-names into independent, content-addressed ESM files. It bundles dependencies by
-default and always externalizes Chord so every facet shares the host's runtime
-and service branding:
+names into independent, content-addressed ESM files. The package-level API reads
+plugin identity and build configuration from `package.json`, then applies facet
+path conventions supplied by the host application:
+
+```json
+{
+  "name": "@example/my-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "peerDependencies": {
+    "@earendil-works/chord": "^0.84.4"
+  },
+  "chord": {
+    "facets": {
+      "worker": "./src/custom-worker.ts",
+      "presentation": false
+    }
+  }
+}
+```
 
 ```ts
-import { bundleFacets } from "@earendil-works/chord/bundler";
+import { bundleFacetPackage } from "@earendil-works/chord/bundler";
 
-await bundleFacets({
-	plugin: { id: "example-plugin", version: "1.0.0" },
-	entries: { worker: "src/worker.ts", presentation: "src/presentation.ts" },
-	outdir: "dist/facets",
-	sourceMap: true,
+await bundleFacetPackage({
+	packagePath: "/path/to/my-plugin",
+	outdir: "/application-owned/plugin-builds/my-plugin",
+	defaultFacets: {
+		worker: "src/worker.ts",
+		presentation: "src/presentation.ts",
+	},
 });
 ```
+
+Existing conventional files become entries unless `chord.facets` overrides or
+disables them. Peer dependencies are externalized and resolved against the host
+when loading. Chord never installs dependencies or runs package lifecycle
+scripts. `bundleFacets()` remains available as the lower-level API for callers
+that already have explicit plugin identity and entry mappings.
 
 The output directory contains one `.js` file per entry plus
 `chord-facets.json`. Load one application-selected entry through the Node-only
@@ -83,8 +108,9 @@ loader:
 import { createFacetBundleLoader } from "@earendil-works/chord/node";
 
 const loader = createFacetBundleLoader({
-	manifestPath: "dist/facets/chord-facets.json",
+	manifestPath: "/application-owned/plugin-builds/my-plugin/chord-facets.json",
 	entry: "worker",
+	resolveExternal: (specifier) => import.meta.resolve(specifier),
 });
 const loaded = await loader.load();
 ```

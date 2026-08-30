@@ -79,6 +79,16 @@ describe("experimental CLI commands", () => {
 		});
 	});
 
+	test("parses repeatable server plugin packages", () => {
+		expect(cli.parse(["server", "-e", "./first-plugin", "-e=./second-plugin"])).toEqual({
+			ok: true,
+			command: {
+				command: "server",
+				pluginPackages: ["./first-plugin", "./second-plugin"],
+			},
+		});
+	});
+
 	test("leaves experimental-looking existing option values with the existing parser", () => {
 		expect(cli.parse(["--system-prompt", "--listen", "unix:///tmp/pi.sock"])).toMatchObject({
 			ok: true,
@@ -173,6 +183,16 @@ describe("experimental CLI commands", () => {
 		});
 	});
 
+	test("parses repeatable client plugin packages", () => {
+		expect(cli.parse(["client", "-e", "./first-plugin", "-e", "./second-plugin"])).toEqual({
+			ok: true,
+			command: {
+				command: "client",
+				pluginPackages: ["./first-plugin", "./second-plugin"],
+			},
+		});
+	});
+
 	test.each([
 		[["--auth-token", "secret"], { type: "token", token: "secret" }],
 		[["--auth-token-file", "/tmp/token"], { type: "file", path: "/tmp/token" }],
@@ -243,6 +263,7 @@ describe("experimental CLI commands", () => {
 		[["server", "--server-id", "not-a-uuid"], "Invalid --server-id"],
 		[["server", "--server-id"], "--server-id requires a value"],
 		[["server", "--session-dir"], "--session-dir requires a value"],
+		[["client", "-e"], "-e requires a value"],
 		[
 			["server", "--session-dir", "/tmp/first", "--session-dir=/tmp/second"],
 			"--session-dir may only be specified once",

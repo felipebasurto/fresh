@@ -47,7 +47,7 @@ import {
 	toWireLaneSnapshot,
 	toWireRunResult,
 } from "./harness-wire-adapter.ts";
-import { createConfiguredFacetBundleLoader } from "./plugins/bundled.ts";
+import { createConfiguredPluginFacetLoader } from "./plugins/bundled.ts";
 import {
 	consumeInternalProcessRole,
 	encodeControlLine,
@@ -87,6 +87,7 @@ export const SessionWorkerOptionsSchema = StrictObject({
 	metadata: SessionWorkerMetadataSchema,
 	provider: Type.Optional(Type.String({ minLength: 1 })),
 	model: Type.Optional(Type.String({ minLength: 1 })),
+	pluginManifestPaths: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 });
 export type SessionWorkerOptions = Static<typeof SessionWorkerOptionsSchema>;
 
@@ -184,6 +185,7 @@ export const SessionWorkerEventSchema = Type.Union([
 		sessionId: Type.String(),
 		pid: Type.Integer({ minimum: 1 }),
 		metadata: SessionWorkerMetadataSchema,
+		pluginManifestPaths: Type.Array(Type.String({ minLength: 1 })),
 	}),
 	Type.Object({
 		type: Type.Literal("worker_failed"),
@@ -568,6 +570,7 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 	const token = process.env[SESSION_WORKER_CONTROL_TOKEN_ENV]!;
 	const sessionKey = Buffer.from(process.env[SESSION_WORKER_SESSION_KEY_ENV]!, "base64url").toString();
 	failureControl = control;
+	const pluginManifestPaths = options.pluginManifestPaths ?? [];
 	const releaseOwnership = await lockfile.lock(metadata.path, {
 		realpath: true,
 		stale: 2_000,
@@ -777,6 +780,7 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 				sessionId,
 				pid: process.pid,
 				metadata,
+				pluginManifestPaths: [...pluginManifestPaths],
 			})
 			.catch(() => closeAndExit());
 	};
@@ -844,7 +848,15 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 
 	try {
 		ready = true;
-		await control.send({ type: "worker_ready", token, sessionKey, sessionId, pid: process.pid, metadata });
+		await control.send({
+			type: "worker_ready",
+			token,
+			sessionKey,
+			sessionId,
+			pid: process.pid,
+			metadata,
+			pluginManifestPaths: [...pluginManifestPaths],
+		});
 	} catch (error) {
 		try {
 			await close();
@@ -946,7 +958,7 @@ async function createCodingAgentHarness(
 			lane,
 			modelRuntime,
 			settingsManager,
-			facetLoader: createConfiguredFacetBundleLoader("session"),
+			facetLoader: createConfiguredPluginFacetLoader("session", options.pluginManifestPaths ?? []),
 		};
 	} catch (error) {
 		try {

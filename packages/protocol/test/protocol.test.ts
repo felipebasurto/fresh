@@ -207,11 +207,11 @@ describe("RPC manifest", () => {
 });
 
 describe("protocol validation", () => {
-	test("negotiates protocol version 4", () => {
-		expect(PROTOCOL_VERSION).toBe(4);
-		expect(isSupportedProtocolVersion(4)).toBe(true);
-		expect(isSupportedProtocolVersion(3)).toBe(false);
-		expect(isSupportedProtocolVersion(4.5)).toBe(false);
+	test("negotiates protocol version 5", () => {
+		expect(PROTOCOL_VERSION).toBe(5);
+		expect(isSupportedProtocolVersion(5)).toBe(true);
+		expect(isSupportedProtocolVersion(4)).toBe(false);
+		expect(isSupportedProtocolVersion(5.5)).toBe(false);
 	});
 
 	test.each([0, PROTOCOL_VERSION, PROTOCOL_VERSION + 1])(

@@ -606,6 +606,7 @@ async function runExperimentalServerCommand(command: ServerCommand): Promise<voi
 		sessionDir: command.sessionDir,
 		provider: command.provider,
 		model: command.model,
+		pluginPackages: command.pluginPackages ?? [],
 		relayAuth: command.auth,
 		onRelayStatus(status) {
 			if (relayOutputReady) reportRelayStatus(status);

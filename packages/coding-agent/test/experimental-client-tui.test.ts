@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
 import {
 	createRemoteServiceBinding,
 	defineFacet,
@@ -89,6 +90,7 @@ describe("experimental client TUI", () => {
 	test.each([
 		["new", { command: "client" as const }, "two", 1],
 		["continued", { command: "client" as const, continue: true }, "one", 0],
+		["plugin-selected", { command: "client" as const, pluginPackages: ["./example-plugin"] }, "two", 1],
 	] as const)(
 		"opens a %s Session directly and renders a Harness-backed turn",
 		async (_kind, command, sessionId, creates) => {
@@ -204,11 +206,15 @@ describe("experimental client TUI", () => {
 			};
 			const reloadData = createPresentationFacetHelloData([reloadArtifact]);
 			if (reloadData === undefined) throw new Error("Expected presentation reload data");
+			const prepareSessionPlugins = vi.fn(async () => reloadData);
 			const reloadPresentationPlugins = vi.fn(async () => reloadData);
 			const reloadSessionPlugins = vi.fn(async () => {});
 			const serverProvider = new RemoteServiceProvider([SessionDirectory, SessionManagement, PresentationPlugins]);
 			serverProvider.provide(SessionDirectory, { state: directoryState });
-			serverProvider.provide(PresentationPlugins, { reload: reloadPresentationPlugins });
+			serverProvider.provide(PresentationPlugins, {
+				prepareSession: prepareSessionPlugins,
+				reload: reloadPresentationPlugins,
+			});
 			serverProvider.provide(SessionManagement, {
 				create,
 				async remove() {},
@@ -246,7 +252,15 @@ describe("experimental client TUI", () => {
 					return serverProvider.catalogue;
 				},
 				open() {
-					return serverNamespace;
+					return {
+						use: serverNamespace.use.bind(serverNamespace),
+						observe: serverNamespace.observe.bind(serverNamespace),
+						async ready() {
+							await serverNamespace.rebind(true, BACKGROUND_CONTEXT);
+							await serverNamespaceReady(BACKGROUND_CONTEXT);
+						},
+						async dispose() {},
+					};
 				},
 				async ready() {
 					await serverNamespace.rebind(true, BACKGROUND_CONTEXT);
@@ -265,7 +279,12 @@ describe("experimental client TUI", () => {
 					return [];
 				},
 				open() {
-					return sessionNamespace;
+					return {
+						use: sessionNamespace.use.bind(sessionNamespace),
+						observe: sessionNamespace.observe.bind(sessionNamespace),
+						ready: sessionNamespace.ready.bind(sessionNamespace),
+						async dispose() {},
+					};
 				},
 				async whenAttached(sessionId: string) {
 					await sessionNamespace.rebind(true, BACKGROUND_CONTEXT);
@@ -316,6 +335,16 @@ describe("experimental client TUI", () => {
 			});
 			try {
 				expect(create).toHaveBeenCalledTimes(creates);
+				expect(prepareSessionPlugins).toHaveBeenCalledWith(
+					{
+						sessionId,
+						packagePaths:
+							"pluginPackages" in command
+								? command.pluginPackages.map((packagePath) => resolve(packagePath))
+								: null,
+					},
+					expect.anything(),
+				);
 				expect(attachment.value).toEqual({ status: "attached", sessionId });
 				expect(watchSession).toHaveBeenCalledWith(sessionId);
 				expect(select).not.toHaveBeenCalled();
@@ -394,7 +423,7 @@ describe("experimental client TUI", () => {
 				await vi.waitFor(() => expect(finished).toBe(true));
 
 				await component.close();
-				expect(disposeLoadedFacets).toHaveBeenCalledOnce();
+				expect(disposeLoadedFacets).not.toHaveBeenCalled();
 				const rendersAfterClose = requestRender.mock.calls.length;
 				directoryState.set({ revision: 3, sessions: [] }, BACKGROUND_CONTEXT);
 				attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);

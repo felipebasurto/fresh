@@ -2,7 +2,7 @@ import { defineFacet } from "@earendil-works/chord";
 import { AgentController } from "../services/agent-controller.ts";
 import { SlashCommands } from "../services/slash-commands.ts";
 
-/** Static example presentation facet; examples/facets demonstrates the bundled plugin path. */
+/** Static example presentation facet; examples/plugins/pi-example-plugin demonstrates packaged plugins. */
 const helloPluginFacet = defineFacet({
 	id: "@pi/example-hello",
 	setup(env) {

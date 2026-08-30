@@ -29,7 +29,12 @@ export async function createExperimentalServerServices(options: {
 	list(context: Context): Promise<SessionSummary[]>;
 	create(createOptions: SessionCreateOptions, context: Context): Promise<SessionSummary>;
 	remove(sessionId: string, context: Context): Promise<void>;
-	reloadPresentationPlugins(context: Context): Promise<JsonValue>;
+	prepareSessionPlugins(
+		sessionId: string,
+		packagePaths: readonly string[] | undefined,
+		context: Context,
+	): Promise<{ readonly packagePaths: readonly string[]; readonly presentationPlugins: JsonValue }>;
+	reloadPresentationPlugins(packagePaths: readonly string[], context: Context): Promise<JsonValue>;
 }): Promise<ExperimentalServerServices> {
 	let revision = 1;
 	const directory = replicatedState<SessionDirectoryState>({
@@ -56,6 +61,7 @@ export async function createExperimentalServerServices(options: {
 	return {
 		host: {
 			attachClient(presentation) {
+				let preparedPluginPackagePaths: readonly string[] | undefined;
 				const provider = new RemoteServiceProvider([
 					{ service: SessionDirectory, mode: "singleton" },
 					{ service: SessionManagement, mode: "singleton" },
@@ -63,7 +69,23 @@ export async function createExperimentalServerServices(options: {
 				]);
 				provider.provide(SessionDirectory, { state: directory });
 				provider.provide(PresentationPlugins, {
-					reload: (_context) => options.reloadPresentationPlugins(_context),
+					prepareSession: ({ sessionId, packagePaths }, context) =>
+						serialize(async () => {
+							const selected = await options.prepareSessionPlugins(
+								sessionId,
+								packagePaths ?? undefined,
+								context,
+							);
+							preparedPluginPackagePaths = selected.packagePaths;
+							return selected.presentationPlugins;
+						}),
+					reload: (context) =>
+						serialize(() => {
+							if (preparedPluginPackagePaths === undefined) {
+								throw new Error("No Session plugin selection is prepared");
+							}
+							return options.reloadPresentationPlugins(preparedPluginPackagePaths, context);
+						}),
 				});
 				provider.provide(SessionManagement, {
 					create: (createOptions, context) =>
@@ -85,6 +107,7 @@ export async function createExperimentalServerServices(options: {
 					detach: (context) =>
 						serialize(async () => {
 							await presentation.detachSession(context);
+							preparedPluginPackagePaths = undefined;
 						}),
 				});
 				const attachment = createProviderAttachment(provider, () => attachments.delete(attachment));

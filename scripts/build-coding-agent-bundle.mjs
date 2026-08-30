@@ -17,6 +17,7 @@ const banner = {
 };
 const allowedExternalPackages = new Set([
 	"@earendil-works/chord",
+	"@earendil-works/chord/bundler",
 	"@earendil-works/chord/context",
 	"@earendil-works/chord/node",
 	"@silvia-odwyer/photon-node",

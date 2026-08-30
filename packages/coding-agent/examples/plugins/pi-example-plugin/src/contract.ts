@@ -10,4 +10,4 @@ export interface ExampleFacetService {
 	greet(input: { readonly name: string }, context: Context): Promise<ExampleFacetReply>;
 }
 
-export const ExampleFacetService = defineService<ExampleFacetService>("pi.example.bundled-facet");
+export const ExampleFacetService = defineService<ExampleFacetService>("pi.example-plugin.greeting");

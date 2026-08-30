@@ -19,6 +19,7 @@ export interface ClientCommand {
 	readonly resume?: boolean;
 	readonly provider?: string;
 	readonly model?: string;
+	readonly pluginPackages?: readonly string[];
 	readonly prompt?: string;
 }
 
@@ -30,12 +31,14 @@ const connectOption = transportOption("--connect");
 const sessionIdOption = stringOption("--session-id");
 const providerOption = stringOption("--provider");
 const modelOption = stringOption("--model");
+const pluginPackageOption = stringOption("-e", { repeatable: true });
 
 export const clientCommand = new Command<ClientCommand, ClientCommandContext>("client")
 	.option(connectOption)
 	.option(sessionIdOption)
 	.option(providerOption)
 	.option(modelOption)
+	.option(pluginPackageOption)
 	.option(authTokenOption)
 	.option(authTokenFileOption)
 	.build((input) => {
@@ -44,6 +47,7 @@ export const clientCommand = new Command<ClientCommand, ClientCommandContext>("c
 		const sessionId = input.value(sessionIdOption);
 		const provider = input.value(providerOption);
 		const model = input.value(modelOption);
+		const pluginPackages = input.values(pluginPackageOption);
 		const promptArgs = input.remainingArgs[0] === "--" ? input.remainingArgs.slice(1) : input.remainingArgs;
 		const prompt =
 			promptArgs.length === 1 &&
@@ -77,6 +81,7 @@ export const clientCommand = new Command<ClientCommand, ClientCommandContext>("c
 				...(options.resume === true ? { resume: true } : {}),
 				...(provider === undefined ? {} : { provider }),
 				...(model === undefined ? {} : { model }),
+				...(pluginPackages.length === 0 ? {} : { pluginPackages }),
 				...(prompt === undefined ? {} : { prompt }),
 			},
 		};

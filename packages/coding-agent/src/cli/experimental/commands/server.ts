@@ -17,6 +17,7 @@ export interface ServerCommand {
 	readonly listen?: readonly TransportAddress[];
 	readonly provider?: string;
 	readonly model?: string;
+	readonly pluginPackages?: readonly string[];
 	readonly serverId?: ServerId;
 	readonly sessionDir?: string;
 }
@@ -34,6 +35,7 @@ const serverIdOption = valueOption("--server-id", (value) =>
 const sessionDirOption = stringOption("--session-dir");
 const providerOption = stringOption("--provider");
 const modelOption = stringOption("--model");
+const pluginPackageOption = stringOption("-e", { repeatable: true });
 
 export const serverCommand = new Command<ServerCommand, ServerCommandContext>("server")
 	.option(listenOption)
@@ -41,6 +43,7 @@ export const serverCommand = new Command<ServerCommand, ServerCommandContext>("s
 	.option(sessionDirOption)
 	.option(providerOption)
 	.option(modelOption)
+	.option(pluginPackageOption)
 	.option(authTokenOption)
 	.option(authTokenFileOption)
 	.build((input) => {
@@ -50,6 +53,7 @@ export const serverCommand = new Command<ServerCommand, ServerCommandContext>("s
 		const sessionDir = input.value(sessionDirOption);
 		const provider = input.value(providerOption);
 		const model = input.value(modelOption);
+		const pluginPackages = input.values(pluginPackageOption);
 		const { errors: optionErrors } = parseLegacyOptions(input);
 		const modelErrors = provider !== undefined && model === undefined ? ["--provider requires --model"] : [];
 		const errors = [...authErrors, ...optionErrors, ...modelErrors, ...unsupportedLegacyOptions("server", input)];
@@ -62,6 +66,7 @@ export const serverCommand = new Command<ServerCommand, ServerCommandContext>("s
 				...(listen.length === 0 ? {} : { listen }),
 				...(provider === undefined ? {} : { provider }),
 				...(model === undefined ? {} : { model }),
+				...(pluginPackages.length === 0 ? {} : { pluginPackages }),
 				...(serverId === undefined ? {} : { serverId }),
 				...(sessionDir === undefined ? {} : { sessionDir }),
 			},
