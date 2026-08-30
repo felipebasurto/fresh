@@ -333,19 +333,9 @@ describe("experimental client TUI", () => {
 				expect(component.render(80).join("\n")).not.toContain("Experimental Sessions");
 				expect(component.render(80).join("\n")).not.toContain("Experimental Models");
 
-				component.handleInput("/");
-				await vi.waitFor(() => {
-					const rendered = component.render(80).join("\n");
-					expect(rendered).toContain("Select model");
-					expect(rendered).toContain("Set thinking level");
-					expect(rendered).toContain("Send a greeting from the example plugin");
-				});
 				component.handleInput("hello");
-				component.handleInput("\u001b");
 				component.handleInput("\r");
-				await vi.waitFor(() =>
-					expect(prompt).toHaveBeenCalledWith("Hello from the example plugin", undefined, BACKGROUND_CONTEXT),
-				);
+				await vi.waitFor(() => expect(prompt).toHaveBeenCalledWith("hello", undefined, BACKGROUND_CONTEXT));
 				await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("remote answer"));
 				expect(component.render(80).join("\n")).toContain("hello");
 				expect(component.render(80).join("\n")).not.toContain("Operation run-1 completed");

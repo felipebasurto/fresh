@@ -1,11 +1,9 @@
 import {
 	type Context,
 	type ServiceProviderUpdate as CoreServiceProviderUpdate,
-	combineFacetLoaders,
 	createFacetHost,
 	createStaticFacetLoader,
 	defineFacet,
-	type Facet,
 	type FacetHost,
 	type FacetLoader,
 	type ServiceCatalogueEntry,
@@ -28,7 +26,6 @@ import { AgentController } from "./agent-controller.ts";
 import { createAgentController } from "./agent-controller-provider.ts";
 import { createModelsServiceFacet } from "./models-provider.ts";
 import { SessionPlugins } from "./plugins.ts";
-import { accountsServiceFacet, transcriptServiceFacet } from "./stubs-provider.ts";
 
 export const ServiceOperationResultSchema = Type.Object(
 	{ result: Type.Optional(JsonValueSchema) },
@@ -62,18 +59,6 @@ export interface SessionWorkerServices {
 	dispose(): Promise<void>;
 }
 
-function createBuiltinSessionFacetLoader(options: {
-	readonly lane: AgentLane;
-	readonly modelRuntime: ModelRuntime | undefined;
-	readonly settingsManager?: SettingsManager;
-}): FacetLoader {
-	return createStaticFacetLoader([
-		createModelsServiceFacet(options),
-		accountsServiceFacet,
-		transcriptServiceFacet,
-	] satisfies readonly Facet[]);
-}
-
 export async function createSessionWorkerServices(options: {
 	readonly lane: AgentLane;
 	readonly modelRuntime: ModelRuntime | undefined;
@@ -94,9 +79,10 @@ export async function createSessionWorkerServices(options: {
 			env.provide(SessionPlugins, { reload: () => reloadPlugins() });
 		},
 	});
-	const builtins = await combineFacetLoaders([
-		createStaticFacetLoader([agentControllerRuntimeFacet, pluginRuntimeFacet]),
-		createBuiltinSessionFacetLoader(options),
+	const builtins = await createStaticFacetLoader([
+		agentControllerRuntimeFacet,
+		pluginRuntimeFacet,
+		createModelsServiceFacet(options),
 	]).load();
 	const pluginLoader = options.facetLoader ?? createStaticFacetLoader([]);
 	let loadedPlugins = await pluginLoader.load();

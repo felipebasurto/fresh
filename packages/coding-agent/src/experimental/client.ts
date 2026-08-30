@@ -80,7 +80,7 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 
 		const agent = match.agent;
 		const completedText = new Map<string, string>();
-		// AgentController returns no transcript content. Keep the lane watch until Transcript owns live deltas.
+		// AgentController returns no transcript content. Keep the lane watch until a transcript service owns live deltas.
 		const watch = await match.client.watchSession(sessionId);
 		await watch.start(async (event) => {
 			if (event.type === "message_end" && event.runId !== undefined && event.message.role === "assistant") {

@@ -12,7 +12,7 @@ export default defineFacet({
 		env.onActivate(() => {
 			env.own(
 				commands.register({
-					name: "facet-hello",
+					name: "hello",
 					description: "Call the bundled Session worker facet",
 					argumentHint: "<name>",
 					async run(args, context) {

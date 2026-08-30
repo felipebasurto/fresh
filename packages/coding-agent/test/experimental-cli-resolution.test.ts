@@ -5,41 +5,10 @@ const UNSUPPORTED_SERVER_OPTIONS = "The experimental server command does not sup
 const UNSUPPORTED_CLIENT_OPTIONS = "The experimental client command does not support existing CLI options yet";
 
 describe("experimental CLI command composition", () => {
-	test("composes pi command options with the existing parser", () => {
-		const result = cli.parse([
-			"--listen",
-			"unix:///tmp/pi.sock",
-			"--auth-token",
-			"secret",
-			"--provider",
-			"anthropic",
-			"--model",
-			"claude-sonnet",
-			"--thinking",
-			"high",
-			"inspect",
-		]);
-
-		expect(result).toMatchObject({
-			ok: true,
-			command: {
-				command: "pi",
-				listen: [{ transport: "unix", path: "/tmp/pi.sock" }],
-				auth: { type: "token", token: "secret" },
-				options: {
-					provider: "anthropic",
-					model: "claude-sonnet",
-					thinking: "high",
-					messages: ["inspect"],
-				},
-			},
-		});
-	});
-
-	test.each(["--help", "--version"] as const)("keeps Pi %s handling in existing CLI options", (option) => {
-		expect(cli.parse([option])).toMatchObject({
-			ok: true,
-			command: { command: "pi", options: { [option === "--help" ? "help" : "version"]: true } },
+	test("requires an experimental subcommand", () => {
+		expect(cli.parse([])).toEqual({
+			ok: false,
+			errors: ["Expected experimental command: server or client"],
 		});
 	});
 
@@ -48,40 +17,8 @@ describe("experimental CLI command composition", () => {
 		["server", "--version", UNSUPPORTED_SERVER_OPTIONS],
 		["client", "--help", UNSUPPORTED_CLIENT_OPTIONS],
 		["client", "--version", UNSUPPORTED_CLIENT_OPTIONS],
-	] as const)("rejects deferred %s %s handling", (command, option, error) => {
+	] as const)("rejects unsupported %s %s handling", (command, option, error) => {
 		expect(cli.parse([command, option])).toEqual({ ok: false, errors: [error] });
-	});
-
-	test("accepts provider and model options for the server command", () => {
-		expect(cli.parse(["server", "--provider", "anthropic", "--model", "claude-sonnet-4-5"])).toEqual({
-			ok: true,
-			command: {
-				command: "server",
-				provider: "anthropic",
-				model: "claude-sonnet-4-5",
-			},
-		});
-	});
-
-	test("rejects existing options that the client command does not support yet", () => {
-		expect(cli.parse(["client", "--tui-mode", "fullscreen", "@prompt.md"])).toEqual({
-			ok: false,
-			errors: [UNSUPPORTED_CLIENT_OPTIONS],
-		});
-	});
-
-	test("reports existing parser errors before capability errors", () => {
-		expect(cli.parse(["client", "--tui-mode", "wrong", "--model", "claude-sonnet"])).toEqual({
-			ok: false,
-			errors: ['Invalid TUI mode "wrong". Valid values: regular, fullscreen', UNSUPPORTED_CLIENT_OPTIONS],
-		});
-	});
-
-	test("parses an empty server command", () => {
-		expect(cli.parse(["server"])).toEqual({
-			ok: true,
-			command: { command: "server" },
-		});
 	});
 
 	test("passes server options to the command action", async () => {
@@ -98,11 +35,7 @@ describe("experimental CLI command composition", () => {
 				"--model",
 				"claude-sonnet-4-5",
 			],
-			{
-				runPi: vi.fn(() => undefined),
-				runServer,
-				runClient: vi.fn(() => undefined),
-			},
+			{ runServer, runClient: vi.fn(() => undefined) },
 		);
 
 		const command = {
@@ -116,16 +49,14 @@ describe("experimental CLI command composition", () => {
 		expect(runServer).toHaveBeenCalledWith(command);
 	});
 
-	test.each(["pi", "server", "client"] as const)("executes the parsed %s command", async (name) => {
+	test.each(["server", "client"] as const)("executes the parsed %s command", async (name) => {
 		const context = {
-			runPi: vi.fn(() => undefined),
 			runServer: vi.fn(() => undefined),
 			runClient: vi.fn(() => undefined),
 		};
-		const result = await cli.execute(name === "pi" ? [] : [name], context);
+		const result = await cli.execute([name], context);
 
-		expect(result).toMatchObject({ ok: true, command: { command: name } });
-		expect(context.runPi).toHaveBeenCalledTimes(name === "pi" ? 1 : 0);
+		expect(result).toEqual({ ok: true, command: { command: name } });
 		expect(context.runServer).toHaveBeenCalledTimes(name === "server" ? 1 : 0);
 		expect(context.runClient).toHaveBeenCalledTimes(name === "client" ? 1 : 0);
 	});

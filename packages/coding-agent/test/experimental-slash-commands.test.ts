@@ -27,7 +27,7 @@ describe("experimental slash command facets", () => {
 			facets: [
 				createSlashCommandsRuntimeFacet(registry),
 				defineFacet({
-					id: "@pi/example-hello",
+					id: "@test/example-hello",
 					setup(env) {
 						const commands = env.use(SlashCommands);
 						env.onActivate(() => env.own(commands.register({ name: "hello", run: () => undefined })));
@@ -40,7 +40,7 @@ describe("experimental slash command facets", () => {
 		const replacementRun = vi.fn();
 		await host.reload([
 			defineFacet({
-				id: "@pi/example-hello",
+				id: "@test/example-hello",
 				setup(env) {
 					const commands = env.use(SlashCommands);
 					env.onActivate(() =>

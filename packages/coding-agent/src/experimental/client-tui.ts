@@ -2,7 +2,6 @@ import { resolve } from "node:path";
 import {
 	combineFacetLoaders,
 	createFacetHost,
-	createStaticFacetLoader,
 	defineFacet,
 	type FacetHost,
 	type FacetLoader,
@@ -34,7 +33,6 @@ import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runti
 import { ExperimentalChatView } from "./client-tui-chat.ts";
 import { type LaneReplica, type LaneWatchSource, openLaneReplica } from "./lane-replica.ts";
 import { createPresentationFacetLoaders } from "./plugins/bundled.ts";
-import helloPluginFacet from "./plugins/hello.ts";
 import { AgentController, type AgentOperationResponse, type AgentQueueResponse } from "./services/agent-controller.ts";
 import type {
 	ServerConnectionState,
@@ -164,10 +162,9 @@ export class ExperimentalClientTui implements Component {
 		finish(): void;
 	}): Promise<ExperimentalClientTui> {
 		const prepared = await prepareClientSession(options.command, options.servers);
-		const loadedFacets = await combineFacetLoaders([
-			createStaticFacetLoader([helloPluginFacet]),
-			...(options.facetLoader === undefined ? [] : [options.facetLoader]),
-		]).load();
+		const loadedFacets = await combineFacetLoaders(
+			options.facetLoader === undefined ? [] : [options.facetLoader],
+		).load();
 		const component = new ExperimentalClientTui(options.ui, options.requestRender, options.finish, loadedFacets);
 		try {
 			await component.#start(prepared);

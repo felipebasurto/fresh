@@ -21,7 +21,6 @@ import {
 import { Models } from "../src/experimental/services/models.ts";
 import { PresentationPlugins } from "../src/experimental/services/plugins.ts";
 import { SessionDirectory, SessionManagement } from "../src/experimental/services/sessions.ts";
-import { Transcript } from "../src/experimental/services/transcript.ts";
 import {
 	configureExperimentalWorkerModel,
 	createExperimentalSessions,
@@ -644,19 +643,6 @@ describe("experimental durable server composition", () => {
 		expect(states.slice(latestAttach)).not.toContainEqual({ status: "attached", sessionId: "demo-2" });
 		expect(states.slice(latestAttach)).not.toContainEqual({ status: "degraded", sessionId: "demo-2" });
 		expect(errors).toEqual([]);
-	});
-
-	test("routes explicit later-slice errors across the framed service boundary", async () => {
-		const { runtime } = await makeServer();
-		const client = await attachClient(runtime, "demo-1");
-		const services = createSessionServiceBinding(client, { services: [Transcript] });
-		const transcript = services.use(Transcript);
-
-		await expect(transcript.snapshot(BACKGROUND_CONTEXT)).rejects.toMatchObject({
-			code: "service_not_implemented",
-			message: "Transcript.snapshot is not implemented until its later facet-service slice",
-		});
-		await services.dispose(BACKGROUND_CONTEXT);
 	});
 
 	test("observes keyed service instances and fences replacement generations over framed transport", async ({
