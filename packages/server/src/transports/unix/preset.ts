@@ -23,7 +23,6 @@ export function createUnixServer<TMetadata extends SessionMetadata>(
 		handshakeTimeoutMs: options.handshakeTimeoutMs,
 		onConnectionCountChanged: options.onConnectionCountChanged,
 		serverId: options.serverId,
-		helloData: options.helloData,
 		onError: options.onError,
 	});
 }

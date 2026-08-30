@@ -128,7 +128,6 @@ export class SessionWorkerManager {
 	readonly #serviceSubscriptions = new Map<string, WorkerServiceSubscription>();
 	readonly #removeListener: () => void;
 	readonly #onWorkerCountChanged: ((count: number) => void) | undefined;
-	readonly #pluginManifestPaths: readonly string[];
 	#discoveryPeers?: Set<string>;
 	#resolveDiscovery?: () => void;
 	#detached = false;
@@ -142,13 +141,11 @@ export class SessionWorkerManager {
 		sessionDir: string,
 		model?: { readonly provider?: string; readonly model: string },
 		onWorkerCountChanged?: (count: number) => void,
-		pluginManifestPaths: readonly string[] = [],
 	) {
 		this.#coordinator = coordinator;
 		this.#sessionDir = sessionDir;
 		this.#model = model;
 		this.#onWorkerCountChanged = onWorkerCountChanged;
-		this.#pluginManifestPaths = Object.freeze([...pluginManifestPaths]);
 		this.#removeListener = coordinator.onEvent((event) => this.#handleCoordinatorEvent(event));
 	}
 
@@ -198,7 +195,7 @@ export class SessionWorkerManager {
 	async openSession(
 		metadata: JsonlSessionMetadata,
 		context: Context,
-		pluginManifestPaths: readonly string[] = this.#pluginManifestPaths,
+		pluginManifestPaths: readonly string[],
 	): Promise<RoutedSessionHandle> {
 		if (this.#detached || this.#shuttingDown) throw new Error("Experimental server is shutting down");
 		this.assertSessionPluginManifestPaths(metadata, pluginManifestPaths);
@@ -540,8 +537,8 @@ export class SessionWorkerManager {
 			const options: SessionWorkerOptions = {
 				sessionDir: this.#sessionDir,
 				metadata,
+				pluginManifestPaths: [...pluginManifestPaths],
 				...(this.#model ?? {}),
-				...(pluginManifestPaths.length === 0 ? {} : { pluginManifestPaths: [...pluginManifestPaths] }),
 			};
 			child = spawnInternalProcess("session-worker", [JSON.stringify(options)], {
 				env: {

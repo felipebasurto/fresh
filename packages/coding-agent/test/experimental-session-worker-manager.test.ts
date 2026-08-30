@@ -67,7 +67,7 @@ async function createAttachedWorker(): Promise<{
 	const coordinator = new FakeCoordinator();
 	const workers = new SessionWorkerManager(coordinator, "/tmp");
 	await workers.discover(new Set(["worker-1"]));
-	const handle = await workers.openSession(metadata, BACKGROUND_CONTEXT);
+	const handle = await workers.openSession(metadata, BACKGROUND_CONTEXT, []);
 	coordinator.onSend = (peerId, payload) => {
 		if (payload.type !== "session_demand") return;
 		queueMicrotask(() =>
@@ -98,9 +98,7 @@ async function createAttachedWorker(): Promise<{
 describe("Session worker lifecycle failures", () => {
 	test("adopts a discovered worker with its existing Session plugin selection", async () => {
 		const coordinator = new FakeCoordinator();
-		const workers = new SessionWorkerManager(coordinator, "/tmp", undefined, undefined, [
-			"/tmp/plugin/chord-facets.json",
-		]);
+		const workers = new SessionWorkerManager(coordinator, "/tmp");
 		await workers.discover(new Set(["worker-1"]));
 		expect(coordinator.sent).not.toContainEqual({ peerId: "worker-1", payload: { type: "shutdown" } });
 		expect(workers.workerPids.size).toBe(1);
@@ -122,7 +120,7 @@ describe("Session worker lifecycle failures", () => {
 		const coordinator = new FakeCoordinator();
 		const workers = new SessionWorkerManager(coordinator, "/tmp");
 		await workers.discover(new Set(["worker-1"]));
-		const handle = await workers.openSession(metadata, BACKGROUND_CONTEXT);
+		const handle = await workers.openSession(metadata, BACKGROUND_CONTEXT, []);
 		const demands: { attachmentId: string; attached: boolean }[] = [];
 		coordinator.onSend = (peerId, payload) => {
 			if (
@@ -165,7 +163,7 @@ describe("Session worker lifecycle failures", () => {
 		const coordinator = new FakeCoordinator();
 		const workers = new SessionWorkerManager(coordinator, "/tmp");
 		await workers.discover(new Set(["worker-1"]));
-		const handle = await workers.openSession(metadata, BACKGROUND_CONTEXT);
+		const handle = await workers.openSession(metadata, BACKGROUND_CONTEXT, []);
 		coordinator.onSend = () => {};
 
 		const attaching = expect(handle.attachClient!(BACKGROUND_CONTEXT)).rejects.toThrow("worker was terminated");

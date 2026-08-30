@@ -22,7 +22,7 @@ Repeat `-e` to select multiple plugin packages. Client paths are resolved locall
 
 `server -e` establishes the server profile's default Session and TUI facets. Starting an explicit foreground server without `-e` clears that default. Client selection never changes the server's root facet generation.
 
-Run `/facet-hello Armin` in the TUI. After editing a facet, run `/reload`. The server atomically rebuilds the package, reloads the attached Session-worker generation, updates the current TUI generation, and advertises the new artifact to future clients.
+Run `/facet-hello Armin` in the TUI. After editing a facet, run `/reload`. The server atomically rebuilds the package, reloads the attached Session-worker generation, updates the current TUI generation, and serves the new artifact to future clients.
 
 Package metadata can override or disable conventional entries:
 

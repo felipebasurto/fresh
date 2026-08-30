@@ -10,11 +10,9 @@ import {
 import type { ServerId } from "@earendil-works/pi-protocol";
 
 const PLUGIN_PACKAGE_PROFILE_VERSION = 1;
-const SESSION_PLUGIN_PACKAGE_PROFILE_VERSION = 1;
 const DEFAULT_PLUGIN_FACETS = Object.freeze({ session: "src/session.ts", tui: "src/tui.ts" });
 
 export interface ConfiguredServerPluginPackage {
-	readonly packagePath: string;
 	readonly manifestPath: string;
 	build(): Promise<readonly FacetBundleArtifact[]>;
 }
@@ -26,73 +24,22 @@ export async function restoreServerPluginPackageProfile(
 	configuredPackagePaths?: readonly string[],
 ): Promise<readonly string[]> {
 	const path = join(directory, `plugin-packages-${serverId}.json`);
-	if (configuredPackagePaths !== undefined) {
-		const packagePaths = normalizePluginPackagePaths(configuredPackagePaths);
-		if (packagePaths.length === 0) {
-			await rm(path, { force: true });
-			return packagePaths;
-		}
-		await writeFile(path, `${JSON.stringify({ version: PLUGIN_PACKAGE_PROFILE_VERSION, packagePaths }, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
-		return packagePaths;
+	if (configuredPackagePaths === undefined) {
+		return (await readPluginPackageProfile(path, false)) ?? [];
 	}
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(await readFile(path, "utf8"));
-	} catch (error) {
-		if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
-		throw new Error(`Could not read experimental plugin package profile ${path}`, { cause: error });
-	}
-	if (
-		typeof parsed !== "object" ||
-		parsed === null ||
-		Array.isArray(parsed) ||
-		Object.keys(parsed).some((key) => key !== "version" && key !== "packagePaths") ||
-		!("version" in parsed) ||
-		parsed.version !== PLUGIN_PACKAGE_PROFILE_VERSION ||
-		!("packagePaths" in parsed) ||
-		!Array.isArray(parsed.packagePaths) ||
-		parsed.packagePaths.length === 0 ||
-		parsed.packagePaths.some((packagePath) => typeof packagePath !== "string" || packagePath.length === 0)
-	) {
-		throw new Error(`Invalid experimental plugin package profile ${path}`);
-	}
-	return normalizePluginPackagePaths(parsed.packagePaths as readonly string[]);
+	const packagePaths = normalizePluginPackagePaths(configuredPackagePaths);
+	if (packagePaths.length === 0) await rm(path, { force: true });
+	else await writePluginPackageProfile(path, packagePaths);
+	return packagePaths;
 }
 
 /** Read the explicit plugin selection stored for one durable Session. */
-export async function readSessionPluginPackageProfile(
+export function readSessionPluginPackageProfile(
 	directory: string,
 	serverId: ServerId,
 	sessionPath: string,
 ): Promise<readonly string[] | undefined> {
-	const path = sessionPluginProfilePath(directory, serverId, sessionPath);
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(await readFile(path, "utf8"));
-	} catch (error) {
-		if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
-		throw new Error(`Could not read experimental Session plugin profile ${path}`, { cause: error });
-	}
-	if (
-		typeof parsed !== "object" ||
-		parsed === null ||
-		Array.isArray(parsed) ||
-		Object.keys(parsed).some((key) => key !== "version" && key !== "sessionPath" && key !== "packagePaths") ||
-		!("version" in parsed) ||
-		parsed.version !== SESSION_PLUGIN_PACKAGE_PROFILE_VERSION ||
-		!("sessionPath" in parsed) ||
-		parsed.sessionPath !== sessionPath ||
-		!("packagePaths" in parsed) ||
-		!Array.isArray(parsed.packagePaths) ||
-		parsed.packagePaths.some((packagePath) => typeof packagePath !== "string" || packagePath.length === 0)
-	) {
-		throw new Error(`Invalid experimental Session plugin profile ${path}`);
-	}
-	return normalizePluginPackagePaths(parsed.packagePaths as readonly string[]);
+	return readPluginPackageProfile(sessionPluginProfilePath(directory, serverId, sessionPath), true, sessionPath);
 }
 
 /** Remove the plugin selection stored for one deleted Session. */
@@ -105,22 +52,16 @@ export async function removeSessionPluginPackageProfile(
 }
 
 /** Persist the plugin selection for one durable Session. */
-export async function writeSessionPluginPackageProfile(
+export function writeSessionPluginPackageProfile(
 	directory: string,
 	serverId: ServerId,
 	sessionPath: string,
 	packagePaths: readonly string[],
 ): Promise<void> {
-	const normalized = normalizePluginPackagePaths(packagePaths);
-	const path = sessionPluginProfilePath(directory, serverId, sessionPath);
-	await writeFile(
-		path,
-		`${JSON.stringify(
-			{ version: SESSION_PLUGIN_PACKAGE_PROFILE_VERSION, sessionPath, packagePaths: normalized },
-			null,
-			2,
-		)}\n`,
-		{ encoding: "utf8", mode: 0o600 },
+	return writePluginPackageProfile(
+		sessionPluginProfilePath(directory, serverId, sessionPath),
+		normalizePluginPackagePaths(packagePaths),
+		sessionPath,
 	);
 }
 
@@ -135,7 +76,6 @@ export function createServerPluginPackage(
 	const manifestPath = join(outdir, FACET_BUNDLE_MANIFEST_FILE);
 	let buildTail = Promise.resolve();
 	return {
-		packagePath: normalizedPackagePath,
 		manifestPath,
 		build() {
 			const operation = buildTail.then(async () => {
@@ -154,6 +94,56 @@ export function createServerPluginPackage(
 			return operation;
 		},
 	};
+}
+
+async function readPluginPackageProfile(
+	path: string,
+	allowEmpty: boolean,
+	sessionPath?: string,
+): Promise<readonly string[] | undefined> {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(await readFile(path, "utf8"));
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+		throw new Error(`Could not read experimental plugin package profile ${path}`, { cause: error });
+	}
+	if (
+		typeof parsed !== "object" ||
+		parsed === null ||
+		Array.isArray(parsed) ||
+		Object.keys(parsed).some(
+			(key) => key !== "version" && key !== "packagePaths" && !(key === "sessionPath" && sessionPath !== undefined),
+		) ||
+		!("version" in parsed) ||
+		parsed.version !== PLUGIN_PACKAGE_PROFILE_VERSION ||
+		(sessionPath === undefined
+			? "sessionPath" in parsed
+			: !("sessionPath" in parsed) || parsed.sessionPath !== sessionPath) ||
+		!("packagePaths" in parsed) ||
+		!Array.isArray(parsed.packagePaths) ||
+		(!allowEmpty && parsed.packagePaths.length === 0) ||
+		parsed.packagePaths.some((packagePath) => typeof packagePath !== "string" || packagePath.length === 0)
+	) {
+		throw new Error(`Invalid experimental plugin package profile ${path}`);
+	}
+	return normalizePluginPackagePaths(parsed.packagePaths as readonly string[]);
+}
+
+function writePluginPackageProfile(path: string, packagePaths: readonly string[], sessionPath?: string): Promise<void> {
+	return writeFile(
+		path,
+		`${JSON.stringify(
+			{
+				version: PLUGIN_PACKAGE_PROFILE_VERSION,
+				...(sessionPath === undefined ? {} : { sessionPath }),
+				packagePaths,
+			},
+			null,
+			2,
+		)}\n`,
+		{ encoding: "utf8", mode: 0o600 },
+	);
 }
 
 export function normalizePluginPackagePaths(packagePaths: readonly string[]): readonly string[] {

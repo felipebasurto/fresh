@@ -3,19 +3,14 @@ import { afterEach, describe, expect, test } from "vitest";
 import type { ByteConnection, ByteConnectionHandler } from "../src/connection.ts";
 import { Server } from "../src/server.ts";
 import { Deferred, ProtocolTestClient, TestServerHost, type WireChannel } from "../src/testing/index.ts";
-import type { ServerHost, ServerOptions } from "../src/types.ts";
+import type { ServerHost } from "../src/types.ts";
 
 const servers = new Set<Server>();
 
-function createServer(
-	host: ServerHost,
-	serverId = "00000000-0000-4000-8000-000000000001",
-	helloData?: ServerOptions["helloData"],
-): Server {
+function createServer(host: ServerHost, serverId = "00000000-0000-4000-8000-000000000001"): Server {
 	const server = new Server(host, {
 		listeners: [],
 		serverId,
-		...(helloData === undefined ? {} : { helloData }),
 	});
 	servers.add(server);
 	return server;
@@ -71,21 +66,6 @@ describe("Session protocol", () => {
 
 		expect(await client.hello()).toMatchObject({ type: "hello", serverId: "00000000-0000-4000-8000-000000000001" });
 		expect(host.harnesses.size).toBe(0);
-	});
-
-	test("handshake includes current application bootstrap data", async () => {
-		const host = new TestServerHost();
-		const server = createServer(host, "00000000-0000-4000-8000-000000000001", {
-			presentationFacetBundles: [{ id: "tui-1" }],
-		});
-		await expect(connect(server).hello()).resolves.toMatchObject({
-			data: { presentationFacetBundles: [{ id: "tui-1" }] },
-		});
-
-		server.setHelloData({ presentationFacetBundles: [{ id: "tui-2" }] });
-		await expect(connect(server).hello()).resolves.toMatchObject({
-			data: { presentationFacetBundles: [{ id: "tui-2" }] },
-		});
 	});
 
 	test("list returns presentation-safe summaries without opening a Session", async () => {

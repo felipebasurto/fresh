@@ -2,8 +2,6 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import {
 	createRemoteServiceBinding,
-	defineFacet,
-	type FacetLoader,
 	RemoteServiceProvider,
 	type RemoteServiceTransport,
 	replicatedState,
@@ -19,7 +17,7 @@ import type { LaneEvent, LaneSnapshot, SessionSummary } from "@earendil-works/pi
 import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { type ClientTuiServer, ExperimentalClientTui } from "../src/experimental/client-tui.ts";
-import { createPresentationFacetHelloData } from "../src/experimental/plugins/bundled.ts";
+import { createPresentationFacetData } from "../src/experimental/plugins/bundled.ts";
 import { AgentController } from "../src/experimental/services/agent-controller.ts";
 import { createAgentController } from "../src/experimental/services/agent-controller-provider.ts";
 import type {
@@ -204,8 +202,7 @@ describe("experimental client TUI", () => {
 				},
 				source: reloadSource,
 			};
-			const reloadData = createPresentationFacetHelloData([reloadArtifact]);
-			if (reloadData === undefined) throw new Error("Expected presentation reload data");
+			const reloadData = createPresentationFacetData([reloadArtifact]);
 			const prepareSessionPlugins = vi.fn(async () => reloadData);
 			const reloadPresentationPlugins = vi.fn(async () => reloadData);
 			const reloadSessionPlugins = vi.fn(async () => {});
@@ -296,27 +293,9 @@ describe("experimental client TUI", () => {
 					attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);
 				},
 			});
-			const disposeLoadedFacets = vi.fn(async () => {});
-			const facetLoader: FacetLoader = {
-				async load() {
-					return {
-						facets: [
-							defineFacet({
-								id: "test-tui-facet",
-								setup(env) {
-									const models = env.use(Models);
-									env.onActivate(() => env.own(models.state.subscribe(() => {})));
-								},
-							}),
-						],
-						dispose: disposeLoadedFacets,
-					};
-				},
-			};
 			const server: ClientTuiServer = {
 				serverId,
 				radius: true,
-				presentationFacetLoaders: [facetLoader],
 				laneWatches: { watchSession },
 				server: serverServices,
 				session: sessionServices,
@@ -423,7 +402,6 @@ describe("experimental client TUI", () => {
 				await vi.waitFor(() => expect(finished).toBe(true));
 
 				await component.close();
-				expect(disposeLoadedFacets).not.toHaveBeenCalled();
 				const rendersAfterClose = requestRender.mock.calls.length;
 				directoryState.set({ revision: 3, sessions: [] }, BACKGROUND_CONTEXT);
 				attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);

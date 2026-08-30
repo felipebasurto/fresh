@@ -13,7 +13,7 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { Client, ServerError as ClientServerError, DisconnectedError } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, type UnixServerRoute } from "@earendil-works/pi-client/unix";
-import { isServerId, type JsonValue, type ServerId, type SessionSummary } from "@earendil-works/pi-protocol";
+import { isServerId, type ServerId, type SessionSummary } from "@earendil-works/pi-protocol";
 import {
 	ServerError as RoutedServerError,
 	type Server,
@@ -27,7 +27,7 @@ import type { AuthInput } from "../cli/experimental/command-options.ts";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { CoordinatorConnection, type CoordinatorStartupLease, ensureCoordinator } from "./coordinator.ts";
-import { createPresentationFacetData, createPresentationFacetHelloData } from "./plugins/bundled.ts";
+import { createPresentationFacetData } from "./plugins/bundled.ts";
 import {
 	createServerPluginPackage,
 	normalizePluginPackagePaths,
@@ -161,17 +161,16 @@ export async function activateServer(options: ActivateServerOptions): Promise<Ac
 			}
 			return { client: existing, route };
 		}
-		const startupOptions =
+		const modelArgs =
 			options.model === undefined
-				? {}
-				: {
-						model: {
+				? []
+				: [
+						JSON.stringify({
 							...(options.provider === undefined ? {} : { provider: options.provider }),
 							model: options.model,
-						},
-					};
-		const startupArgs = Object.keys(startupOptions).length === 0 ? [] : [JSON.stringify(startupOptions)];
-		const child = spawnInternalProcess("server", [options.directory, serverId, options.sessionDir, ...startupArgs]);
+						}),
+					];
+		const child = spawnInternalProcess("server", [options.directory, serverId, options.sessionDir, ...modelArgs]);
 		let spawnError: Error | undefined;
 		child.once("error", (error) => {
 			spawnError = error;
@@ -347,8 +346,6 @@ export interface StartServerOptions {
 	readonly relayAuth?: AuthInput;
 	/** Explicit plugin packages. Undefined restores the logical server profile; an empty list clears it. */
 	readonly pluginPackages?: readonly string[];
-	/** Presentation facets selected by this server. Defaults to configured plugin packages' `tui` entries. */
-	readonly presentationFacetBundles?: readonly FacetBundleArtifact[];
 	readonly onRelayStatus?: (status: RadiusRelayHostStatus) => void;
 }
 
@@ -362,16 +359,13 @@ interface StartServerBackendOptions {
 	readonly path: string;
 	readonly serverId: ServerId;
 	readonly sessionDir?: string;
-	readonly helloData?: JsonValue;
 	resolveSessionPlugins(
 		metadata: JsonlSessionMetadata,
 		packagePaths: readonly string[] | undefined,
 		context: Context,
 	): Promise<ResolvedSessionPlugins>;
 	removeSessionPlugins(metadata: JsonlSessionMetadata): Promise<void>;
-	reloadPresentationFacetBundles(
-		packagePaths: readonly string[],
-	): Promise<{ readonly artifacts: readonly FacetBundleArtifact[]; readonly updateHello: boolean }>;
+	reloadPresentationFacetBundles(packagePaths: readonly string[]): Promise<readonly FacetBundleArtifact[]>;
 }
 
 interface RunningServerBackend extends RunningServer {
@@ -411,7 +405,6 @@ async function startServerBackend(
 		if (errors.length === 1) throw errors[0];
 		if (errors.length > 1) throw new AggregateError(errors, "Experimental session storage cleanup failed");
 	};
-	let setHelloData = (_data: JsonValue): void => {};
 	const serverServices = await createExperimentalServerServices({
 		list: async (context) =>
 			(await listSessions(context))
@@ -446,10 +439,7 @@ async function startServerBackend(
 			};
 		},
 		async reloadPresentationPlugins(packagePaths) {
-			const reloaded = await options.reloadPresentationFacetBundles(packagePaths);
-			const data = createPresentationFacetData(reloaded.artifacts);
-			if (reloaded.updateHello) setHelloData(data);
-			return data;
+			return createPresentationFacetData(await options.reloadPresentationFacetBundles(packagePaths));
 		},
 	}).catch(async (error: unknown) => {
 		try {
@@ -479,9 +469,7 @@ async function startServerBackend(
 		path: socketPath,
 		mode: 0o600,
 		onConnectionCountChanged,
-		...(options.helloData === undefined ? {} : { helloData: options.helloData }),
 	});
-	setHelloData = (data) => server.setHelloData(data);
 	try {
 		await server.start();
 	} catch (error) {
@@ -544,16 +532,23 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 	try {
 		await ensurePrivateServerDirectory(directory);
 		const pluginPackagePaths = await restoreServerPluginPackageProfile(directory, serverId, options.pluginPackages);
+		const pluginPackages = new Map<string, ReturnType<typeof createServerPluginPackage>>();
+		const getPluginPackage = (packagePath: string): ReturnType<typeof createServerPluginPackage> => {
+			let plugin = pluginPackages.get(packagePath);
+			if (plugin === undefined) {
+				plugin = createServerPluginPackage(directory, serverId, packagePath);
+				pluginPackages.set(packagePath, plugin);
+			}
+			return plugin;
+		};
 		const buildPluginSelection = async (packagePaths: readonly string[]): Promise<ResolvedSessionPlugins> => {
 			const normalizedPackagePaths = normalizePluginPackagePaths(packagePaths);
-			const plugins = normalizedPackagePaths.map((packagePath) =>
-				createServerPluginPackage(directory, serverId, packagePath),
-			);
+			const plugins = normalizedPackagePaths.map(getPluginPackage);
 			const built = (await Promise.all(plugins.map((plugin) => plugin.build()))).flat();
 			return {
 				packagePaths: normalizedPackagePaths,
 				manifestPaths: plugins.map((plugin) => plugin.manifestPath),
-				presentationArtifacts: options.presentationFacetBundles ?? built,
+				presentationArtifacts: built,
 			};
 		};
 		let defaultPluginSelection = await buildPluginSelection(pluginPackagePaths);
@@ -568,7 +563,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 				const current = sessionPluginSelections.get(metadata.path);
 				if (current !== undefined && sameStrings(current.packagePaths, normalizedPackagePaths)) return current;
 				const requestedManifestPaths = normalizedPackagePaths.map(
-					(packagePath) => createServerPluginPackage(directory, serverId, packagePath).manifestPath,
+					(packagePath) => getPluginPackage(packagePath).manifestPath,
 				);
 				workers?.assertSessionPluginManifestPaths(metadata, requestedManifestPaths);
 				const candidate = await buildPluginSelection(normalizedPackagePaths);
@@ -594,18 +589,18 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 		};
 		const reloadPresentationFacetBundles = async (
 			packagePaths: readonly string[],
-		): Promise<{ readonly artifacts: readonly FacetBundleArtifact[]; readonly updateHello: boolean }> => {
+		): Promise<readonly FacetBundleArtifact[]> => {
 			const reloaded = await buildPluginSelection(packagePaths);
-			const updateHello = sameStrings(defaultPluginSelection.packagePaths, reloaded.packagePaths);
-			if (updateHello) defaultPluginSelection = reloaded;
+			if (sameStrings(defaultPluginSelection.packagePaths, reloaded.packagePaths)) {
+				defaultPluginSelection = reloaded;
+			}
 			for (const [sessionPath, selected] of sessionPluginSelections) {
 				if (sameStrings(selected.packagePaths, reloaded.packagePaths)) {
 					sessionPluginSelections.set(sessionPath, reloaded);
 				}
 			}
-			return { artifacts: reloaded.presentationArtifacts, updateHello };
+			return reloaded.presentationArtifacts;
 		};
-		const helloData = createPresentationFacetHelloData(defaultPluginSelection.presentationArtifacts);
 		const socketPath = getUnixSocketPath(serverId, directory);
 		const controlPath = join(directory, `control-${serverId}.sock`);
 		const serverNonce = randomUUID().replaceAll("-", "").slice(0, 12);
@@ -613,12 +608,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 		startupLease = await ensureCoordinator(socketPath, controlPath);
 		coordinator = new CoordinatorConnection({ controlPath, endpoint: serverPath });
 		const sessionDir = resolveSessionDirectory(options.sessionDir);
-		workers = new SessionWorkerManager(
-			coordinator,
-			sessionDir,
-			workerModel,
-			(count) => lifetime.setWorkerCount(count),
-			defaultPluginSelection.manifestPaths,
+		workers = new SessionWorkerManager(coordinator, sessionDir, workerModel, (count) =>
+			lifetime.setWorkerCount(count),
 		);
 		backend = await startServerBackend(
 			{
@@ -628,7 +619,6 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 				resolveSessionPlugins,
 				removeSessionPlugins,
 				reloadPresentationFacetBundles,
-				...(helloData === undefined ? {} : { helloData }),
 			},
 			workers,
 			(count) => lifetime.setConnectionCount(count),
@@ -732,71 +722,47 @@ export async function startForegroundServer(
 	}
 }
 
-function parseServerStartupOptions(value: string | undefined): {
-	readonly provider?: string;
-	readonly model?: string;
-} {
-	if (value === undefined) return {};
+function parseServerModelOptions(value: string | undefined): { provider?: string; model: string } | undefined {
+	if (value === undefined) return undefined;
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(value);
 	} catch (error) {
-		throw new Error("Internal server received invalid startup options", { cause: error });
+		throw new Error("Internal server received invalid model options", { cause: error });
 	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error("Internal server received invalid model options");
+	}
+	const keys = Object.keys(parsed);
+	const model = "model" in parsed ? parsed.model : undefined;
+	const provider = "provider" in parsed ? parsed.provider : undefined;
 	if (
-		typeof parsed !== "object" ||
-		parsed === null ||
-		Array.isArray(parsed) ||
-		Object.keys(parsed).some((key) => key !== "model")
+		keys.some((key) => key !== "provider" && key !== "model") ||
+		typeof model !== "string" ||
+		model.length === 0 ||
+		(provider !== undefined && (typeof provider !== "string" || provider.length === 0))
 	) {
-		throw new Error("Internal server received invalid startup options");
+		throw new Error("Internal server received invalid model options");
 	}
-	const modelOptions = "model" in parsed ? parsed.model : undefined;
-	let model: string | undefined;
-	let provider: string | undefined;
-	if (modelOptions !== undefined) {
-		if (
-			typeof modelOptions !== "object" ||
-			modelOptions === null ||
-			Array.isArray(modelOptions) ||
-			Object.keys(modelOptions).some((key) => key !== "provider" && key !== "model")
-		) {
-			throw new Error("Internal server received invalid startup options");
-		}
-		const modelCandidate = "model" in modelOptions ? modelOptions.model : undefined;
-		const providerCandidate = "provider" in modelOptions ? modelOptions.provider : undefined;
-		if (
-			typeof modelCandidate !== "string" ||
-			modelCandidate.length === 0 ||
-			(providerCandidate !== undefined && (typeof providerCandidate !== "string" || providerCandidate.length === 0))
-		) {
-			throw new Error("Internal server received invalid startup options");
-		}
-		model = modelCandidate;
-		provider = providerCandidate;
-	}
-	return {
-		...(provider === undefined ? {} : { provider }),
-		...(model === undefined ? {} : { model }),
-	};
+	return provider === undefined ? { model } : { provider, model };
 }
 
 /** Run an automatically activated server until its client and Session demand disappears. */
 export async function runServerProcess(args: readonly string[]): Promise<void> {
-	const [directory, serverId, sessionDir, serializedStartupOptions] = args;
+	const [directory, serverId, sessionDir, serializedModel] = args;
 	if (args.length > 4) throw new Error("Internal server received unexpected arguments");
 	if (!directory || !isAbsolute(directory)) throw new Error("Internal server requires an absolute server directory");
 	if (!isServerId(serverId)) throw new Error("Internal server requires a canonical server ID");
 	if (!sessionDir || !isAbsolute(sessionDir))
 		throw new Error("Internal server requires an absolute Session directory");
-	const startupOptions = parseServerStartupOptions(serializedStartupOptions);
+	const workerModel = parseServerModelOptions(serializedModel);
 
 	const runtime = await startServer({
 		directory,
 		serverId,
 		sessionDir,
 		keepAlive: false,
-		...startupOptions,
+		...workerModel,
 	});
 	const close = (): void => {
 		void runtime.close().catch(() => {});

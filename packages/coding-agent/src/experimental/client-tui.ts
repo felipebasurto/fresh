@@ -58,7 +58,6 @@ export interface RunClientTuiOptions extends OpenClientRuntimeOptions {
 export interface ClientTuiServer {
 	readonly serverId: string;
 	readonly radius: boolean;
-	readonly presentationFacetLoaders?: readonly FacetLoader[];
 	readonly laneWatches: LaneWatchSource;
 	readonly server: ServerServiceSource;
 	readonly session: SessionServiceSource;
@@ -66,24 +65,12 @@ export interface ClientTuiServer {
 
 interface SessionFeature {
 	readonly serverId: string;
-	readonly directory: SessionDirectory;
-	readonly management: SessionManagement;
 	readonly session: SessionServiceSource;
 	readonly laneWatches: LaneWatchSource;
 }
 
-interface SlashCommandFeature {
-	readonly serverId: string;
-	readonly commands: SlashCommands;
-}
-
-interface AgentFeature {
-	readonly serverId: string;
-	readonly controller: AgentController;
-}
-
 interface PreparedClientSession {
-	readonly serverId: string;
+	readonly server: ClientTuiServer;
 	readonly summary: SessionSummary;
 	readonly presentationPlugins: JsonValue;
 }
@@ -116,13 +103,13 @@ export class ExperimentalClientTui implements Component {
 	readonly #footerComponent = new Text("", 1, 0);
 	readonly #layoutRoot: Component;
 	readonly #sharedFacets: LoadedFacets;
-	readonly #loadedFacetGenerations = new Set<LoadedFacets>();
-	readonly #facetReloads = new Set<{ tail: Promise<void> }>();
-	readonly #facetHosts: FacetHost[] = [];
-	readonly #sessions = new Map<string, SessionFeature>();
-	readonly #slashCommands = new Map<string, SlashCommandFeature>();
-	readonly #agents = new Map<string, AgentFeature>();
 	readonly #keybindings = KeybindingsManager.create();
+	#presentationFacets: LoadedFacets | undefined;
+	#facetHost: FacetHost | undefined;
+	#facetReloadTail = Promise.resolve();
+	#session: SessionFeature | undefined;
+	#slashCommands: SlashCommands | undefined;
+	#controller: AgentController | undefined;
 	readonly #chatInput: CustomEditor;
 	#selectList: SelectList | undefined;
 	#selection: PendingSelection | undefined;
@@ -143,7 +130,6 @@ export class ExperimentalClientTui implements Component {
 		this.#requestRender = requestRender;
 		this.#finish = finish;
 		this.#sharedFacets = loadedFacets;
-		this.#loadedFacetGenerations.add(loadedFacets);
 		setKeybindings(this.#keybindings);
 		this.#chatInput = new CustomEditor(ui, getEditorTheme(), this.#keybindings, { paddingX: 1 });
 		this.#chatInput.onSubmit = (message) => void this.#runPrompt(message);
@@ -184,7 +170,7 @@ export class ExperimentalClientTui implements Component {
 		]).load();
 		const component = new ExperimentalClientTui(options.ui, options.requestRender, options.finish, loadedFacets);
 		try {
-			await component.#start(options.servers, prepared);
+			await component.#start(prepared);
 			await component.#openPreparedSession(prepared);
 			return component;
 		} catch (error) {
@@ -253,105 +239,96 @@ export class ExperimentalClientTui implements Component {
 		return this.#closePromise;
 	}
 
-	async #start(servers: readonly ClientTuiServer[], prepared: PreparedClientSession): Promise<void> {
-		for (const server of servers) {
-			const presentationFacetLoaders =
-				server.serverId === prepared.serverId
-					? createPresentationFacetLoaders(prepared.presentationPlugins)
-					: (server.presentationFacetLoaders ?? []);
-			let presentationFacets = await combineFacetLoaders(presentationFacetLoaders).load();
-			this.#loadedFacetGenerations.add(presentationFacets);
-			let facetHost!: FacetHost;
-			const reloadState = { tail: Promise.resolve() };
-			this.#facetReloads.add(reloadState);
-			const reloadPresentationPlugins = (data: JsonValue): Promise<void> => {
-				const operation = reloadState.tail.then(async () => {
-					const candidate = await combineFacetLoaders(createPresentationFacetLoaders(data)).load();
+	async #start(prepared: PreparedClientSession): Promise<void> {
+		const server = prepared.server;
+		let presentationFacets = await combineFacetLoaders(
+			createPresentationFacetLoaders(prepared.presentationPlugins),
+		).load();
+		this.#presentationFacets = presentationFacets;
+		let facetHost!: FacetHost;
+		const reloadPresentationPlugins = (data: JsonValue): Promise<void> => {
+			const operation = this.#facetReloadTail.then(async () => {
+				const candidate = await combineFacetLoaders(createPresentationFacetLoaders(data)).load();
+				try {
+					await facetHost.reload(candidate.facets);
+				} catch (error) {
 					try {
-						await facetHost.reload(candidate.facets);
-					} catch (error) {
-						try {
-							await candidate.dispose();
-						} catch (cleanupError) {
-							throw new AggregateError([error, cleanupError], "TUI plugin reload and cleanup failed");
-						}
-						throw error;
+						await candidate.dispose();
+					} catch (cleanupError) {
+						throw new AggregateError([error, cleanupError], "TUI plugin reload and cleanup failed");
 					}
-					const retired = presentationFacets;
-					presentationFacets = candidate;
-					this.#loadedFacetGenerations.delete(retired);
-					this.#loadedFacetGenerations.add(candidate);
-					await retired.dispose();
+					throw error;
+				}
+				const retired = presentationFacets;
+				presentationFacets = candidate;
+				this.#presentationFacets = candidate;
+				await retired.dispose();
+			});
+			this.#facetReloadTail = operation.catch(() => {});
+			return operation;
+		};
+		const presentationBridgeFacet = defineFacet({
+			id: "@pi/presentation-bridge",
+			setup: (env) => {
+				env.provide(PresentationUI, {
+					select: (title, items, selectedValue) =>
+						this.#select(
+							title,
+							items.map((item) => ({ ...item })),
+							selectedValue,
+						),
+					showStatus: (status) => {
+						this.#status = status;
+						this.#rebuild();
+					},
 				});
-				reloadState.tail = operation.catch(() => {});
-				return operation;
-			};
-			const presentationBridgeFacet = defineFacet({
-				id: "@pi/presentation-bridge",
-				setup: (env) => {
-					env.provide(PresentationUI, {
-						select: (title, items, selectedValue) =>
-							this.#select(
-								title,
-								items.map((item) => ({ ...item })),
-								selectedValue,
-							),
-						showStatus: (status) => {
-							this.#status = status;
-							this.#rebuild();
-						},
+				const commands = env.use(SlashCommands);
+				const controller = env.use(AgentController);
+				const sessionFeature: SessionFeature = {
+					serverId: server.serverId,
+					session: server.session,
+					laneWatches: server.laneWatches,
+				};
+				env.onActivate(() => {
+					if (this.#session !== undefined || this.#slashCommands !== undefined || this.#controller !== undefined) {
+						throw new Error("Presentation services are already active");
+					}
+					this.#session = sessionFeature;
+					this.#slashCommands = commands;
+					this.#controller = controller;
+					env.own(() => {
+						if (this.#session === sessionFeature) this.#session = undefined;
+						if (this.#slashCommands === commands) this.#slashCommands = undefined;
+						if (this.#controller === controller) this.#controller = undefined;
 					});
-					const directory = env.use(SessionDirectory);
-					const management = env.use(SessionManagement);
-					const commands = env.use(SlashCommands);
-					const controller = env.use(AgentController);
-					const sessionFeature: SessionFeature = {
-						serverId: server.serverId,
-						directory,
-						management,
-						session: server.session,
-						laneWatches: server.laneWatches,
-					};
-					env.onActivate(() => {
-						env.own(this.#register(this.#sessions, "Sessions", sessionFeature));
+					env.own(commands.subscribe(() => this.#updateAutocomplete()));
+					if (server.radius) {
 						env.own(
-							this.#register(this.#slashCommands, "Slash commands", { serverId: server.serverId, commands }),
+							server.server.connection.subscribe((state) => this.#handleConnectionState(server.serverId, state)),
 						);
-						env.own(this.#register(this.#agents, "Agent controller", { serverId: server.serverId, controller }));
-						env.own(directory.state.subscribe(() => this.#rebuild()));
-						env.own(commands.subscribe(() => this.#updateAutocomplete()));
-						if (server.radius) {
-							env.own(
-								server.server.connection.subscribe((state) =>
-									this.#handleConnectionState(server.serverId, state),
-								),
-							);
-							env.own(
-								server.session.attachment.subscribe((state) =>
-									this.#handleAttachmentState(sessionFeature, state),
-								),
-							);
-						}
-					});
-				},
-			});
-			facetHost = await createFacetHost({
-				facets: [
-					createSlashCommandsRuntimeFacet(),
-					presentationBridgeFacet,
-					createBuiltInSlashCommandsFacet({ reloadPresentationPlugins }),
-					...this.#sharedFacets.facets,
-					...presentationFacets.facets,
-				],
-				serviceSources: [server.server, server.session],
-			});
-			this.#facetHosts.push(facetHost);
-		}
+						env.own(
+							server.session.attachment.subscribe((state) => this.#handleAttachmentState(sessionFeature, state)),
+						);
+					}
+				});
+			},
+		});
+		facetHost = await createFacetHost({
+			facets: [
+				createSlashCommandsRuntimeFacet(),
+				presentationBridgeFacet,
+				createBuiltInSlashCommandsFacet({ reloadPresentationPlugins }),
+				...this.#sharedFacets.facets,
+				...presentationFacets.facets,
+			],
+			serviceSources: [server.server, server.session],
+		});
+		this.#facetHost = facetHost;
 	}
 
 	async #openPreparedSession(prepared: PreparedClientSession): Promise<void> {
-		const feature = this.#sessions.get(prepared.serverId);
-		if (feature === undefined) throw new Error(`No Session service is available for ${prepared.serverId}`);
+		const feature = this.#session;
+		if (feature === undefined) throw new Error(`No Session service is available for ${prepared.server.serverId}`);
 		await feature.session.whenAttached(prepared.summary.sessionId, BACKGROUND_CONTEXT);
 		this.#selectedServerId = feature.serverId;
 		this.#sessionId = prepared.summary.sessionId;
@@ -369,35 +346,26 @@ export class ExperimentalClientTui implements Component {
 		try {
 			await this.#recoveryTransition;
 			await this.#closeLane();
+			await this.#facetReloadTail;
 		} catch (error) {
 			errors.push(error);
 		}
-		const reloadResults = await Promise.allSettled([...this.#facetReloads].map(({ tail }) => tail));
-		this.#facetReloads.clear();
-		errors.push(...reloadResults.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
-		const results = await Promise.allSettled(
-			this.#facetHosts
-				.splice(0)
-				.reverse()
-				.map((host) => host.dispose()),
+		if (this.#facetHost !== undefined) {
+			try {
+				await this.#facetHost.dispose();
+			} catch (error) {
+				errors.push(error);
+			}
+			this.#facetHost = undefined;
+		}
+		const generations = [this.#presentationFacets, this.#sharedFacets].filter(
+			(generation): generation is LoadedFacets => generation !== undefined,
 		);
+		this.#presentationFacets = undefined;
+		const results = await Promise.allSettled(generations.map((generation) => generation.dispose()));
 		errors.push(...results.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
-		const loaded = [...this.#loadedFacetGenerations].reverse();
-		this.#loadedFacetGenerations.clear();
-		const loadedResults = await Promise.allSettled(loaded.map((generation) => generation.dispose()));
-		errors.push(...loadedResults.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
 		if (errors.length === 1) throw errors[0];
 		if (errors.length > 1) throw new AggregateError(errors, "Failed to dispose experimental TUI facets");
-	}
-
-	#register<T extends { readonly serverId: string }>(features: Map<string, T>, label: string, feature: T): () => void {
-		if (features.has(feature.serverId))
-			throw new Error(`${label} is already registered for server ${feature.serverId}`);
-		features.set(feature.serverId, feature);
-		return () => {
-			if (features.get(feature.serverId) !== feature) return;
-			features.delete(feature.serverId);
-		};
 	}
 
 	#rebuild(): void {
@@ -476,9 +444,7 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	#selectedSlashCommands(): SlashCommands | undefined {
-		if (this.#selectedServerId !== undefined) return this.#slashCommands.get(this.#selectedServerId)?.commands;
-		if (this.#slashCommands.size === 1) return this.#slashCommands.values().next().value?.commands;
-		return undefined;
+		return this.#slashCommands;
 	}
 
 	#handleConnectionState(serverId: string, state: ServerConnectionState): void {
@@ -650,7 +616,7 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	#selectedController(): AgentController | undefined {
-		return this.#selectedServerId === undefined ? undefined : this.#agents.get(this.#selectedServerId)?.controller;
+		return this.#controller;
 	}
 
 	#footer(): string {
@@ -749,7 +715,7 @@ async function prepareClientSession(
 		await selected.management.attach(selected.summary.sessionId, BACKGROUND_CONTEXT);
 		await selected.server.session.whenAttached(selected.summary.sessionId, BACKGROUND_CONTEXT);
 		return {
-			serverId: selected.server.serverId,
+			server: selected.server,
 			summary: selected.summary,
 			presentationPlugins,
 		};
@@ -805,7 +771,6 @@ export async function runClientTui(command: ClientCommand, options: RunClientTui
 			servers: runtime.servers.map((server) => ({
 				serverId: server.route.serverId,
 				radius: server.route.transport === "radius",
-				presentationFacetLoaders: server.presentationFacetLoaders,
 				laneWatches: server.client,
 				server: server.server,
 				session: server.session,

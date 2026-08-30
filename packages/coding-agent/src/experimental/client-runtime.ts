@@ -1,11 +1,9 @@
 import { basename } from "node:path";
-import type { FacetLoader } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Client, ServerError } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, discoverUnixServers, type UnixServerRoute } from "@earendil-works/pi-client/unix";
 import { isServerId, type ServerId } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
-import { createPresentationFacetLoaders } from "./plugins/bundled.ts";
 import { RadiusRelayAuthResolver } from "./radius-auth.ts";
 import { createRadiusClientTransportFactory, RadiusClientReconnect } from "./radius-relay.ts";
 import { activateServer, ENV_SERVER_ID, resolveServerDirectory, resolveSessionDirectory } from "./server.ts";
@@ -27,7 +25,6 @@ export type ClientRuntimeRoute =
 export interface ClientRuntimeServer {
 	readonly route: ClientRuntimeRoute;
 	readonly client: Client;
-	readonly presentationFacetLoaders: readonly FacetLoader[];
 	readonly server: ServerServiceSource;
 	readonly session: SessionServiceSource;
 }
@@ -157,13 +154,7 @@ export async function openClientRuntime(
 			serviceSources.push(server);
 			const session = createSessionServiceSource(client);
 			serviceSources.push(session);
-			servers.push({
-				route,
-				client,
-				presentationFacetLoaders: createPresentationFacetLoaders(client.hello?.data),
-				server,
-				session,
-			});
+			servers.push({ route, client, server, session });
 		}
 		return { servers, dispose };
 	} catch (error) {
