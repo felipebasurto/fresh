@@ -8,16 +8,12 @@ import type {
 	Entry,
 	HarnessEvent,
 	LaneSnapshot as HarnessLaneSnapshot,
-	RunResult as HarnessRunResult,
 } from "@earendil-works/pi-agent-core";
 import type {
 	AssistantMessageFrame as AiAssistantMessageFrame,
 	AssistantMessage,
 	DeferredHandle,
 	ImageContent,
-	TextContent,
-	ThinkingContent,
-	ToolCall,
 	ToolResultMessage,
 	Usage,
 	UserMessage,
@@ -29,17 +25,11 @@ import type {
 	LaneEvent,
 	LaneSnapshot,
 	OperationResultRecord,
-	PromptArguments,
 	PromptImage,
 	PromptMessage,
-	RunResult,
 	ToolOutput,
 } from "@earendil-works/pi-protocol";
 
-type HarnessPromptArguments =
-	| [text: string]
-	| [text: string, images: ImageContent[]]
-	| [message: AgentMessage | AgentMessage[]];
 type WireAssistantMessage = Extract<PromptMessage, { role: "assistant" }>;
 type WireUserMessage = Extract<PromptMessage, { role: "user" }>;
 type WireToolResultMessage = Extract<PromptMessage, { role: "toolResult" }>;
@@ -65,156 +55,6 @@ export type HarnessWireAdapterCompatibility = [
 	Assert<SameKeys<WireBranchSummaryMessage, BranchSummaryMessage>>,
 	Assert<SameKeys<WireCompactionSummaryMessage, CompactionSummaryMessage>>,
 ];
-type WireRunValue = Extract<RunResult, { ok: true }>["value"];
-type WireRunError = Extract<RunResult, { ok: false }>["error"];
-
-export function toHarnessPromptArguments(prompt: PromptArguments): HarnessPromptArguments {
-	if (typeof prompt[0] === "string") {
-		return prompt.length === 1 ? [prompt[0]] : [prompt[0], prompt[1].map(toHarnessImage)];
-	}
-	return [Array.isArray(prompt[0]) ? prompt[0].map(toHarnessMessage) : toHarnessMessage(prompt[0])];
-}
-
-export function toWireRunResult(result: HarnessRunResult): RunResult {
-	return result.ok
-		? { ok: true, value: toWireRunValue(result.value) }
-		: { ok: false, error: toWireRunError(result.error) };
-}
-
-function toHarnessImage(image: PromptImage): ImageContent {
-	return { type: "image", data: image.data, mimeType: image.mimeType };
-}
-
-function toHarnessMessage(message: PromptMessage): AgentMessage {
-	switch (message.role) {
-		case "user":
-			return {
-				role: "user",
-				content:
-					typeof message.content === "string"
-						? message.content
-						: message.content.map((content) =>
-								content.type === "text"
-									? {
-											type: "text",
-											text: content.text,
-											...(content.textSignature === undefined
-												? {}
-												: { textSignature: content.textSignature }),
-										}
-									: toHarnessImage(content),
-							),
-				timestamp: message.timestamp,
-			} satisfies UserMessage;
-		case "assistant":
-			return {
-				role: "assistant",
-				content: message.content.map((content): TextContent | ThinkingContent | ToolCall => {
-					switch (content.type) {
-						case "text":
-							return {
-								type: "text",
-								text: content.text,
-								...(content.textSignature === undefined ? {} : { textSignature: content.textSignature }),
-							};
-						case "thinking":
-							return {
-								type: "thinking",
-								thinking: content.thinking,
-								...(content.thinkingSignature === undefined
-									? {}
-									: { thinkingSignature: content.thinkingSignature }),
-								...(content.redacted === undefined ? {} : { redacted: content.redacted }),
-							};
-						case "toolCall":
-							return {
-								type: "toolCall",
-								id: content.id,
-								name: content.name,
-								arguments: content.arguments,
-								...(content.thoughtSignature === undefined
-									? {}
-									: { thoughtSignature: content.thoughtSignature }),
-								...(content.namespace === undefined ? {} : { namespace: content.namespace }),
-							};
-						default:
-							return assertNever(content);
-					}
-				}),
-				api: message.api,
-				provider: message.provider,
-				model: message.model,
-				...(message.responseModel === undefined ? {} : { responseModel: message.responseModel }),
-				...(message.responseId === undefined ? {} : { responseId: message.responseId }),
-				...(message.diagnostics === undefined ? {} : { diagnostics: message.diagnostics }),
-				usage: toHarnessUsage(message.usage),
-				stopReason: message.stopReason,
-				...(message.deferred === undefined ? {} : { deferred: toHarnessDeferred(message.deferred) }),
-				...(message.errorMessage === undefined ? {} : { errorMessage: message.errorMessage }),
-				...(message.rawStopReason === undefined ? {} : { rawStopReason: message.rawStopReason }),
-				...(message.endTurn === undefined ? {} : { endTurn: message.endTurn }),
-				timestamp: message.timestamp,
-			} satisfies AssistantMessage;
-		case "toolResult":
-			return {
-				role: "toolResult",
-				toolCallId: message.toolCallId,
-				toolName: message.toolName,
-				content: message.content.map((content) =>
-					content.type === "text"
-						? {
-								type: "text",
-								text: content.text,
-								...(content.textSignature === undefined ? {} : { textSignature: content.textSignature }),
-							}
-						: toHarnessImage(content),
-				),
-				...(message.details === undefined ? {} : { details: message.details }),
-				...(message.usage === undefined ? {} : { usage: toHarnessUsage(message.usage) }),
-				...(message.addedToolNames === undefined ? {} : { addedToolNames: [...message.addedToolNames] }),
-				isError: message.isError,
-				timestamp: message.timestamp,
-			} satisfies ToolResultMessage;
-		case "bashExecution":
-			return {
-				role: "bashExecution",
-				command: message.command,
-				output: message.output,
-				exitCode: message.exitCode,
-				cancelled: message.cancelled,
-				truncated: message.truncated,
-				...(message.fullOutputPath === undefined ? {} : { fullOutputPath: message.fullOutputPath }),
-				timestamp: message.timestamp,
-				...(message.excludeFromContext === undefined ? {} : { excludeFromContext: message.excludeFromContext }),
-			} satisfies BashExecutionMessage;
-		case "custom":
-			return {
-				role: "custom",
-				customType: message.customType,
-				content: message.content,
-				display: message.display,
-				...(message.details === undefined ? {} : { details: message.details }),
-				timestamp: message.timestamp,
-			} satisfies CustomMessage<JsonValue>;
-		case "branchSummary":
-			return {
-				role: "branchSummary",
-				summary: message.summary,
-				fromId: message.fromId,
-				timestamp: message.timestamp,
-			} satisfies BranchSummaryMessage;
-		case "compactionSummary":
-			return {
-				role: "compactionSummary",
-				summary: message.summary,
-				tokensBefore: message.tokensBefore,
-				timestamp: message.timestamp,
-			} satisfies CompactionSummaryMessage;
-		default:
-			return assertNever(message);
-	}
-}
-
 function toHarnessUsage(usage: Usage): Usage {
 	return {
 		input: usage.input,
@@ -232,25 +72,6 @@ function toHarnessUsage(usage: Usage): Usage {
 			total: usage.cost.total,
 		},
 	};
-}
-
-function toHarnessDeferred(deferred: DeferredHandle): DeferredHandle {
-	return {
-		provider: deferred.provider,
-		modelId: deferred.modelId,
-		api: deferred.api,
-		id: deferred.id,
-		...(deferred.expiresAt === undefined ? {} : { expiresAt: deferred.expiresAt }),
-		...(deferred.pollAfterMs === undefined ? {} : { pollAfterMs: deferred.pollAfterMs }),
-		...(deferred.data === undefined ? {} : { data: deferred.data }),
-	};
-}
-
-function toWireRunValue(value: Extract<HarnessRunResult, { ok: true }>["value"]): WireRunValue {
-	if (value.status === "suspended") {
-		return { operationId: value.operationId, status: "suspended", deferred: toWireDeferred(value.deferred) };
-	}
-	return toWireOperationResult(value);
 }
 
 function toWireOperationResult(value: NonNullable<HarnessLaneSnapshot["lastResult"]>): OperationResultRecord {
@@ -273,29 +94,6 @@ function toWireOperationResult(value: NonNullable<HarnessLaneSnapshot["lastResul
 			...(value.error.details === undefined ? {} : { details: toWireJsonValue(value.error.details) }),
 		},
 	};
-}
-
-function toWireRunError(error: Extract<HarnessRunResult, { ok: false }>["error"]): WireRunError {
-	switch (error._tag) {
-		case "LaneBusy":
-			return {
-				_tag: "LaneBusy",
-				lane: error.lane,
-				operationId: error.operationId,
-				operationKind: error.operationKind,
-				message: error.message,
-			};
-		case "InvalidMessage":
-			return { _tag: "InvalidMessage", lane: error.lane, reason: error.reason, message: error.message };
-		case "UnknownSkill":
-			return { _tag: "UnknownSkill", name: error.name, message: error.message };
-		case "UnknownTemplate":
-			return { _tag: "UnknownTemplate", name: error.name, message: error.message };
-		case "Closed":
-			return { _tag: "Closed", message: error.message };
-		default:
-			return assertNever(error);
-	}
 }
 
 function toWireAssistantMessage(message: AssistantMessage): WireAssistantMessage {

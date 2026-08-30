@@ -13,7 +13,7 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { Client, ServerError as ClientServerError, DisconnectedError } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, type UnixServerRoute } from "@earendil-works/pi-client/unix";
-import { isServerId, type ServerId, type SessionSummary } from "@earendil-works/pi-protocol";
+import { isServerId, type ServerId, type SessionCreateOptions, type SessionSummary } from "@earendil-works/pi-protocol";
 import {
 	ServerError as RoutedServerError,
 	type Server,
@@ -386,7 +386,10 @@ async function startServerBackend(
 		for (const metadata of workers.trackedSessions) sessions.set(metadata.path, metadata);
 		return [...sessions.values()];
 	};
-	const createSession: ServerHost<JsonlSessionMetadata>["sessions"]["create"] = async (createOptions, context) => {
+	const createSession = async (
+		createOptions: SessionCreateOptions,
+		context: Context,
+	): Promise<JsonlSessionMetadata> => {
 		const session = await repo.create({ ...createOptions, cwd: process.cwd() }, context);
 		try {
 			return session.metadata;
@@ -451,7 +454,7 @@ async function startServerBackend(
 	});
 	const host: ServerHost<JsonlSessionMetadata> = {
 		serverServices: serverServices.host,
-		sessions: { list: listSessions, create: createSession },
+		sessions: { list: listSessions },
 		openSession: async (metadata, context) => {
 			const selected = await options.resolveSessionPlugins(metadata, undefined, context);
 			return workers.openSession(metadata, context, selected.manifestPaths);

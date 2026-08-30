@@ -6,7 +6,7 @@ import {
 	type ClientMessage,
 	ClientMessageDecoder,
 	DEFAULT_MAX_FRAME_LENGTH,
-	decodeServiceRpcCall,
+	decodeLaneWatchRpcCall,
 	encodeServerMessage,
 	isServerId,
 	isSupportedProtocolVersion,
@@ -315,18 +315,10 @@ export class Server<TMetadata extends SessionMetadata = SessionMetadata> {
 		try {
 			if (envelope.target.serverId !== this.serverId) throw new WrongServerError();
 			let result: ProtocolRpcResult;
-			const call = decodeServiceRpcCall(envelope.call);
-			if (!("sessionId" in envelope.target) && state.serverServices !== undefined && call?.method !== "list") {
-				result = await state.serverServices.invokeService(
-					envelope.call,
-					async (subscriptionId, update) => {
-						await this.sendMessage(state, { type: "service_update", subscriptionId, update });
-					},
-					context,
-				);
-			} else if (call !== undefined) {
-				result = await this.sessions.executeCall(
-					call,
+			const laneWatchCall = decodeLaneWatchRpcCall(envelope.call);
+			if (laneWatchCall !== undefined) {
+				result = await this.sessions.executeLaneWatchCall(
+					laneWatchCall,
 					envelope.target,
 					state,
 					async (message, _context) => {
@@ -341,6 +333,14 @@ export class Server<TMetadata extends SessionMetadata = SessionMetadata> {
 					state,
 					async (message, _context) => {
 						await this.sendMessage(state, message);
+					},
+					context,
+				);
+			} else if (state.serverServices !== undefined) {
+				result = await state.serverServices.invokeService(
+					envelope.call,
+					async (subscriptionId, update) => {
+						await this.sendMessage(state, { type: "service_update", subscriptionId, update });
 					},
 					context,
 				);
@@ -462,9 +462,6 @@ export class Server<TMetadata extends SessionMetadata = SessionMetadata> {
 
 	private toProtocolError(error: unknown): ProtocolError {
 		if (error instanceof ServerError || error instanceof RemoteServiceError) {
-			return { code: error.code, message: error.message };
-		}
-		if (error instanceof Error && "code" in error && error.code === "service_not_implemented") {
 			return { code: error.code, message: error.message };
 		}
 		if (error instanceof ProtocolValidationError) {

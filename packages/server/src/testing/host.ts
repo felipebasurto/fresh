@@ -1,7 +1,7 @@
 import type { Context, Session, SessionMetadata } from "@earendil-works/pi-agent-core";
 import { BACKGROUND_CONTEXT, MemorySessionRepo } from "@earendil-works/pi-agent-core";
-import type { LaneEvent, LaneSnapshot, PromptArguments, RunResult } from "@earendil-works/pi-protocol";
-import type { RoutedSessionHandle, RoutedSessionWatch, ServerHost } from "../types.ts";
+import type { LaneEvent, LaneSnapshot, ProtocolRpcCall, ProtocolRpcResult } from "@earendil-works/pi-protocol";
+import type { RoutedServerServiceHost, RoutedSessionHandle, RoutedSessionWatch, ServerHost } from "../types.ts";
 
 export class Deferred<T> {
 	readonly promise: Promise<T>;
@@ -102,29 +102,29 @@ export class TestHarness {
 	attachedClients = 0;
 	attachmentReleaseCount = 0;
 	closeCount = 0;
-	readonly promptCalls: PromptArguments[] = [];
+	readonly serviceCalls: ProtocolRpcCall[] = [];
 	watchSnapshot: LaneSnapshot = structuredClone(emptyLaneSnapshot);
 	private readonly watches = new Set<TestHarnessWatch>();
 	failAttachmentRelease?: Error;
 	failClose?: Error;
-	nextPromptError?: Error;
-	nextPromptResult?: RunResult;
+	nextServiceError?: Error;
+	nextServiceResult: ProtocolRpcResult = { ok: true };
 	private nextCloseGate?: OpenGate;
-	private nextPromptGate?: OpenGate;
+	private nextServiceGate?: OpenGate;
 
 	constructor(session: Session) {
 		this.session = session;
 	}
 
 	attachClient(_context: Context): {
-		prompt: TestHarness["prompt"];
+		invokeService: TestHarness["invokeService"];
 		watch: TestHarness["watch"];
 		release(context: Context): void;
 	} {
 		this.attachedClients += 1;
 		let released = false;
 		return {
-			prompt: (prompt, context) => this.prompt(prompt, context),
+			invokeService: (call) => this.invokeService(call),
 			watch: (context) => this.watch(context),
 			release: (_context) => {
 				if (released) return;
@@ -154,32 +154,21 @@ export class TestHarness {
 		await Promise.all([...this.watches].map((watch) => watch.push(event, context)));
 	}
 
-	async prompt(prompt: PromptArguments, _context: Context): Promise<RunResult> {
-		this.promptCalls.push(prompt);
-		if (this.nextPromptError) {
-			const error = this.nextPromptError;
-			this.nextPromptError = undefined;
+	async invokeService(call: ProtocolRpcCall): Promise<ProtocolRpcResult> {
+		this.serviceCalls.push(call);
+		if (this.nextServiceError) {
+			const error = this.nextServiceError;
+			this.nextServiceError = undefined;
 			throw error;
 		}
-		const gate = this.nextPromptGate;
+		const gate = this.nextServiceGate;
 		if (gate) {
-			this.nextPromptGate = undefined;
+			this.nextServiceGate = undefined;
 			gate.entered.resolve(undefined);
 			await gate.release.promise;
 		}
-		const result = this.nextPromptResult ?? {
-			ok: true,
-			value: {
-				operationId: "run-1",
-				kind: "run",
-				status: "completed",
-				fromTipId: null,
-				tipId: "leaf-1",
-				startedAt: 1,
-				endedAt: 2,
-			},
-		};
-		this.nextPromptResult = undefined;
+		const result = this.nextServiceResult;
+		this.nextServiceResult = { ok: true };
 		return result;
 	}
 
@@ -212,9 +201,9 @@ export class TestHarness {
 		return gate;
 	}
 
-	gateNextPrompt(): OpenGate {
+	gateNextServiceCall(): OpenGate {
 		const gate = { entered: new Deferred<void>(), release: new Deferred<void>() };
-		this.nextPromptGate = gate;
+		this.nextServiceGate = gate;
 		return gate;
 	}
 }
@@ -224,7 +213,40 @@ interface ListDelay {
 	release: Deferred<void>;
 }
 
+export function createTestServerServices(): RoutedServerServiceHost {
+	return {
+		attachClient(presentation) {
+			return {
+				async invokeService(call, _publish, context) {
+					if (
+						call.instance === undefined &&
+						call.serviceId === "pi.session-management" &&
+						call.member === "attach" &&
+						call.args.length === 1 &&
+						typeof call.args[0] === "string"
+					) {
+						await presentation.attachSession(call.args[0], context);
+						return null;
+					}
+					if (
+						call.instance === undefined &&
+						call.serviceId === "pi.session-management" &&
+						call.member === "detach" &&
+						call.args.length === 0
+					) {
+						await presentation.detachSession(context);
+						return null;
+					}
+					throw new Error(`Unsupported test server service ${call.serviceId}.${call.member}`);
+				},
+				release() {},
+			};
+		},
+	};
+}
+
 export class TestServerHost implements ServerHost {
+	readonly serverServices = createTestServerServices();
 	readonly repo = new MemorySessionRepo({ now: () => 1 });
 	readonly harnesses = new Map<string, TestHarness[]>();
 	openSessionCount = 0;
@@ -239,14 +261,6 @@ export class TestServerHost implements ServerHost {
 				await delay.release.promise;
 			}
 			return this.repo.list(undefined, context);
-		},
-		create: async ({ id }, context) => {
-			const session = await this.repo.create({ id }, context);
-			try {
-				return session.metadata;
-			} finally {
-				await session.close(context);
-			}
 		},
 	};
 	private nextListDelay?: ListDelay;

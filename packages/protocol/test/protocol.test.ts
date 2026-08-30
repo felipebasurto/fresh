@@ -10,30 +10,27 @@ import {
 	createServiceSubscribeCall,
 	createServiceUnsubscribeCall,
 	decodeCbor,
+	decodeLaneWatchRpcCall,
 	decodeServiceControlCall,
-	decodeServiceRpcCall,
 	defineRpc,
 	encodeCbor,
 	encodeClientMessage,
 	encodeFrame,
+	encodeLaneWatchRpcCall,
 	encodeServerMessage,
-	encodeServiceRpcCall,
 	FrameDecoder,
 	isSupportedProtocolVersion,
 	type LaneSnapshot,
+	LaneWatchRpc,
 	PROTOCOL_VERSION,
-	PromptArgumentsSchema,
 	ProtocolValidationError,
 	parseClientMessage,
 	parseServerMessage,
 	parseServiceCatalogue,
 	parseServiceSubscriptionSnapshot,
-	type RunResult,
-	RunResultSchema,
 	type ServerHello,
 	type ServerMessage,
 	ServerMessageDecoder,
-	ServiceRpc,
 	type SessionSummary,
 	SessionSummarySchema,
 } from "../src/index.ts";
@@ -76,33 +73,12 @@ const laneSnapshot = {
 	faulted: false,
 } satisfies LaneSnapshot;
 
-const completedRunResult = {
-	ok: true,
-	value: {
-		operationId: "run-1",
-		kind: "run",
-		status: "completed",
-		fromTipId: null,
-		tipId: "leaf-1",
-		startedAt: 1,
-		endedAt: 2,
-	},
-} as const satisfies RunResult;
-
 describe("RPC manifest", () => {
-	test("creates typed client methods from the manifest", async () => {
+	test("creates typed lane-watch client methods from the manifest", async () => {
 		const calls: unknown[] = [];
-		const client = createRpcClient(ServiceRpc, async (call) => {
+		const client = createRpcClient(LaneWatchRpc, async (call) => {
 			calls.push(call);
 			switch (call.method) {
-				case "list":
-					return [summary];
-				case "create":
-					return summary;
-				case "attach":
-					return { sessionId: call.args[0], attachmentId: "attachment-1" };
-				case "prompt":
-					return completedRunResult;
 				case "watch":
 					return { watchId: "watch-1", snapshot: laneSnapshot };
 				case "startWatch":
@@ -113,13 +89,6 @@ describe("RPC manifest", () => {
 			}
 		});
 
-		await expect(client.list()).resolves.toEqual([summary]);
-		await expect(client.create({})).resolves.toEqual(summary);
-		await expect(client.attach("session-1")).resolves.toEqual({
-			sessionId: "session-1",
-			attachmentId: "attachment-1",
-		});
-		await expect(client.prompt(["Hello"])).resolves.toEqual(completedRunResult);
 		await expect(client.watch()).resolves.toEqual({ watchId: "watch-1", snapshot: laneSnapshot });
 		await expect(client.startWatch("watch-1")).resolves.toEqual({ watchId: "watch-1" });
 		await expect(client.resnapshotWatch("watch-1")).resolves.toEqual({
@@ -128,10 +97,6 @@ describe("RPC manifest", () => {
 		});
 		await expect(client.stopWatch("watch-1")).resolves.toEqual({ watchId: "watch-1" });
 		expect(calls).toEqual([
-			{ method: "list", args: [] },
-			{ method: "create", args: [{}] },
-			{ method: "attach", args: ["session-1"] },
-			{ method: "prompt", args: [["Hello"]] },
 			{ method: "watch", args: [] },
 			{ method: "startWatch", args: ["watch-1"] },
 			{ method: "resnapshotWatch", args: ["watch-1"] },
@@ -139,36 +104,21 @@ describe("RPC manifest", () => {
 		]);
 	});
 
-	test("maps built-in contracts onto generic service/member envelopes", () => {
-		const encoded = encodeServiceRpcCall({ method: "attach", args: ["session-1"] });
-		expect(encoded).toEqual({
-			serviceId: "pi.session-management",
-			member: "attach",
-			args: ["session-1"],
-		});
-		expect(decodeServiceRpcCall(encoded)).toEqual({ method: "attach", args: ["session-1"] });
-		expect(decodeServiceRpcCall({ serviceId: "pi.session-management", member: "attach", args: [] })).toBeUndefined();
-		expect(decodeServiceRpcCall({ serviceId: "unknown", member: "method", args: [] })).toBeUndefined();
+	test("maps lane-watch contracts onto generic service/member envelopes", () => {
+		const encoded = encodeLaneWatchRpcCall({ method: "startWatch", args: ["watch-1"] });
+		expect(encoded).toEqual({ serviceId: "pi.transcript", member: "startWatch", args: ["watch-1"] });
+		expect(decodeLaneWatchRpcCall(encoded)).toEqual({ method: "startWatch", args: ["watch-1"] });
+		expect(decodeLaneWatchRpcCall({ serviceId: "pi.transcript", member: "startWatch", args: [] })).toBeUndefined();
+		expect(decodeLaneWatchRpcCall({ serviceId: "unknown", member: "method", args: [] })).toBeUndefined();
 	});
 
 	test("dispatches only methods and values allowed by the manifest", async () => {
-		const dispatch = createRpcDispatcher(ServiceRpc, {
-			list: () => [summary],
-			create: () => summary,
-			attach: (_context, sessionId) => ({ sessionId, attachmentId: "attachment-1" }),
-			prompt: () => completedRunResult,
+		const dispatch = createRpcDispatcher(LaneWatchRpc, {
 			watch: () => ({ watchId: "watch-1", snapshot: laneSnapshot }),
 			startWatch: (_context, watchId) => ({ watchId }),
 			resnapshotWatch: (_context, watchId) => ({ watchId, snapshot: laneSnapshot }),
 			stopWatch: (_context, watchId) => ({ watchId }),
 		});
-		await expect(dispatch({ method: "list", args: [] }, undefined)).resolves.toEqual([summary]);
-		await expect(dispatch({ method: "create", args: [{}] }, undefined)).resolves.toEqual(summary);
-		await expect(dispatch({ method: "attach", args: ["session-1"] }, undefined)).resolves.toEqual({
-			sessionId: "session-1",
-			attachmentId: "attachment-1",
-		});
-		await expect(dispatch({ method: "prompt", args: [["Hello"]] }, undefined)).resolves.toEqual(completedRunResult);
 		await expect(dispatch({ method: "watch", args: [] }, undefined)).resolves.toEqual({
 			watchId: "watch-1",
 			snapshot: laneSnapshot,
@@ -177,28 +127,14 @@ describe("RPC manifest", () => {
 			watchId: "watch-1",
 			snapshot: laneSnapshot,
 		});
-		await expect(dispatch({ method: "attach", args: [] } as never, undefined)).rejects.toThrow(/Invalid arguments/);
-		await expect(dispatch({ method: "prompt", args: [[]] } as never, undefined)).rejects.toThrow(/Invalid arguments/);
+		await expect(dispatch({ method: "startWatch", args: [] } as never, undefined)).rejects.toThrow(
+			/Invalid arguments/,
+		);
 	});
 
-	test("rejects invalid results on both client and dispatcher boundaries", async () => {
-		const client = createRpcClient(ServiceRpc, async () => ({ sessionId: 1 }));
-		await expect(client.attach("session-1")).rejects.toThrow(/Invalid result.*attach/);
-
-		const dispatch = createRpcDispatcher(ServiceRpc, {
-			list: () => [{ id: "session-1" }],
-			create: () => summary,
-			attach: (_context: undefined, sessionId: string) => ({ sessionId, attachmentId: "attachment-1" }),
-			prompt: () => completedRunResult,
-			watch: () => ({ watchId: "watch-1", snapshot: laneSnapshot }),
-			startWatch: (_context: undefined, watchId: string) => ({ watchId }),
-			resnapshotWatch: (_context: undefined, watchId: string) => ({ watchId, snapshot: laneSnapshot }),
-			stopWatch: (_context: undefined, watchId: string) => ({ watchId }),
-		} as never);
-		await expect(dispatch({ method: "list", args: [] }, undefined)).rejects.toThrow(/Invalid result.*list/);
-
-		const invalidPromptClient = createRpcClient(ServiceRpc, async () => ({ ok: true, value: {} }));
-		await expect(invalidPromptClient.prompt(["Hello"])).rejects.toThrow(/Invalid result.*prompt/);
+	test("rejects invalid results on client boundaries", async () => {
+		const client = createRpcClient(LaneWatchRpc, async () => ({ watchId: 1 }));
+		await expect(client.watch()).rejects.toThrow(/Invalid result.*watch/);
 	});
 
 	test("rejects empty manifests instead of creating unusable RPC clients", () => {
@@ -393,48 +329,6 @@ describe("protocol validation", () => {
 		expect(() => parseClientMessage({ ...cancel, extra: true })).toThrow(ProtocolValidationError);
 	});
 
-	test.each([
-		["text", ["Hello"]],
-		["text and images", ["Describe", [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }]]],
-		["one message", [{ role: "user", content: "Hello", timestamp: 1 }]],
-		[
-			"multiple messages",
-			[
-				[
-					{ role: "user", content: "Question", timestamp: 1 },
-					{
-						role: "assistant",
-						content: [{ type: "text", text: "Answer" }],
-						api: "test",
-						provider: "test",
-						model: "test",
-						usage: {
-							input: 1,
-							output: 1,
-							cacheRead: 0,
-							cacheWrite: 0,
-							totalTokens: 2,
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-						},
-						stopReason: "stop",
-						timestamp: 2,
-					},
-				],
-			],
-		],
-	] as const)("validates %s prompt arguments", (_label, promptArguments) => {
-		expect(Check(PromptArgumentsSchema, promptArguments)).toBe(true);
-	});
-
-	test.each([
-		["empty prompt tuple", []],
-		["missing image data", ["Describe", [{ type: "image", mimeType: "image/png" }]]],
-		["unknown message role", [{ role: "extension", content: "Hello", timestamp: 1 }]],
-		["extra text argument", ["Hello", [], "extra"]],
-	] as const)("rejects malformed prompt arguments: %s", (_label, promptArguments) => {
-		expect(Check(PromptArgumentsSchema, promptArguments)).toBe(false);
-	});
-
 	test("keeps presentation-safe Session summary validation at the typed service boundary", () => {
 		expect(Check(SessionSummarySchema, summary)).toBe(true);
 		expect(Check(SessionSummarySchema, { ...summary, cwd: "/private" })).toBe(false);
@@ -525,65 +419,6 @@ describe("protocol validation", () => {
 		expect(() => parseServerMessage({ ...attached, attachment: { sessionId: "session-1" } })).toThrow(
 			ProtocolValidationError,
 		);
-	});
-
-	test.each([
-		completedRunResult,
-		{
-			ok: true,
-			value: {
-				operationId: "run-1",
-				kind: "run",
-				status: "aborted",
-				fromTipId: null,
-				tipId: "leaf-1",
-				startedAt: 1,
-				endedAt: 2,
-			},
-		},
-		{
-			ok: true,
-			value: {
-				operationId: "run-1",
-				kind: "run",
-				status: "failed",
-				fromTipId: null,
-				tipId: "leaf-1",
-				startedAt: 1,
-				endedAt: 2,
-				error: { code: "provider", message: "provider failed" },
-			},
-		},
-		{
-			ok: false,
-			error: {
-				_tag: "LaneBusy",
-				lane: "main",
-				operationId: "operation-1",
-				operationKind: "run",
-				message: "lane busy",
-			},
-		},
-		{ ok: false, error: { _tag: "Closed", message: "closed" } },
-	] satisfies RunResult[])("validates structural Harness RunResult", (result) => {
-		expect(Check(RunResultSchema, result)).toBe(true);
-	});
-
-	test.each([
-		{
-			ok: true,
-			value: {
-				// Keep the removed discriminant out of the M0 no-residue grep while proving schema rejection.
-				kind: ["action", "required"].join("_"),
-				runId: "run-1",
-				action: { kind: "confirm", description: "Confirm" },
-			},
-		},
-		{ ok: true, value: { kind: "failed", runId: "run-1", tipId: "leaf-1" } },
-		{ ok: true, value: { kind: "completed", runId: "run-1", tipId: "leaf-1", finalEntryId: "entry-1" } },
-		{ ok: false, error: { _tag: "Closed", message: "closed", extra: true } },
-	] as const)("rejects malformed structural Harness RunResult", (result) => {
-		expect(Check(RunResultSchema, result)).toBe(false);
 	});
 
 	test.each([

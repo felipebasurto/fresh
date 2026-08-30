@@ -1,6 +1,6 @@
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
-import { LaneEventSchema, LaneSnapshotSchema, PromptArgumentsSchema, RunResultSchema } from "./harness.ts";
+import { LaneEventSchema, LaneSnapshotSchema } from "./harness.ts";
 import { type JsonValue, JsonValueSchema } from "./json-value.ts";
 import {
 	createRpcCallSchema,
@@ -44,24 +44,8 @@ export const SessionCreateOptionsSchema = StrictObject({
 });
 export type SessionCreateOptions = Static<typeof SessionCreateOptionsSchema>;
 
-/** Temporary typed facade for the pre-plugin Session operations. */
-export const ServiceRpc = defineRpc({
-	list: {
-		args: Type.Tuple([]),
-		result: Type.Array(SessionSummarySchema),
-	},
-	create: {
-		args: Type.Tuple([SessionCreateOptionsSchema]),
-		result: SessionSummarySchema,
-	},
-	attach: {
-		args: Type.Tuple([SessionIdSchema]),
-		result: StrictObject({ sessionId: SessionIdSchema, attachmentId: IdSchema }),
-	},
-	prompt: {
-		args: Type.Tuple([PromptArgumentsSchema]),
-		result: RunResultSchema,
-	},
+/** Temporary typed facade for snapshot-first main-lane observation. */
+export const LaneWatchRpc = defineRpc({
 	watch: {
 		args: Type.Tuple([]),
 		result: StrictObject({ watchId: IdSchema, snapshot: LaneSnapshotSchema }),
@@ -79,14 +63,14 @@ export const ServiceRpc = defineRpc({
 		result: StrictObject({ watchId: IdSchema }),
 	},
 });
-export type ServiceRpcManifest = typeof ServiceRpc;
-export type ServiceRpcMethod = RpcMethodName<ServiceRpcManifest>;
-export type ServiceRpcArgs<TMethod extends ServiceRpcMethod> = RpcArgs<ServiceRpcManifest, TMethod>;
-export type ServiceRpcResult<TMethod extends ServiceRpcMethod> = RpcResult<ServiceRpcManifest, TMethod>;
-export type ServiceRpcCall = RpcCall<ServiceRpcManifest>;
-export type ServiceRpcResultUnion = RpcResultUnion<ServiceRpcManifest>;
-export const ServiceRpcCallSchema = Type.Unsafe<ServiceRpcCall>(createRpcCallSchema(ServiceRpc));
-export const ServiceRpcResultSchema = Type.Unsafe<ServiceRpcResultUnion>(createRpcResultSchema(ServiceRpc));
+export type LaneWatchRpcManifest = typeof LaneWatchRpc;
+export type LaneWatchRpcMethod = RpcMethodName<LaneWatchRpcManifest>;
+export type LaneWatchRpcArgs<TMethod extends LaneWatchRpcMethod> = RpcArgs<LaneWatchRpcManifest, TMethod>;
+export type LaneWatchRpcResult<TMethod extends LaneWatchRpcMethod> = RpcResult<LaneWatchRpcManifest, TMethod>;
+export type LaneWatchRpcCall = RpcCall<LaneWatchRpcManifest>;
+export type LaneWatchRpcResultUnion = RpcResultUnion<LaneWatchRpcManifest>;
+export const LaneWatchRpcCallSchema = Type.Unsafe<LaneWatchRpcCall>(createRpcCallSchema(LaneWatchRpc));
+export const LaneWatchRpcResultSchema = Type.Unsafe<LaneWatchRpcResultUnion>(createRpcResultSchema(LaneWatchRpc));
 
 export const ServiceModeSchema = Type.Union([Type.Literal("singleton"), Type.Literal("keyed")]);
 export type ServiceMode = Static<typeof ServiceModeSchema>;
@@ -236,29 +220,25 @@ export function decodeServiceControlCall(call: ProtocolRpcCall): ServiceControlC
 	return undefined;
 }
 
-const ServiceRpcAddresses = {
-	list: { serviceId: "pi.session-directory", member: "list" },
-	create: { serviceId: "pi.session-management", member: "create" },
-	attach: { serviceId: "pi.session-management", member: "attach" },
-	prompt: { serviceId: "pi.chat", member: "prompt" },
+const LaneWatchRpcAddresses = {
 	watch: { serviceId: "pi.transcript", member: "watch" },
 	startWatch: { serviceId: "pi.transcript", member: "startWatch" },
 	resnapshotWatch: { serviceId: "pi.transcript", member: "resnapshotWatch" },
 	stopWatch: { serviceId: "pi.transcript", member: "stopWatch" },
-} as const satisfies Record<ServiceRpcMethod, { serviceId: string; member: string }>;
+} as const satisfies Record<LaneWatchRpcMethod, { serviceId: string; member: string }>;
 
-/** Translate the current built-in contract to its generic service envelope. */
-export function encodeServiceRpcCall(call: ServiceRpcCall): ProtocolRpcCall {
-	return { ...ServiceRpcAddresses[call.method], args: call.args };
+/** Translate the lane-watch contract to its generic service envelope. */
+export function encodeLaneWatchRpcCall(call: LaneWatchRpcCall): ProtocolRpcCall {
+	return { ...LaneWatchRpcAddresses[call.method], args: call.args };
 }
 
-/** Validate and decode one generic envelope against the current built-in contract. */
-export function decodeServiceRpcCall(call: ProtocolRpcCall): ServiceRpcCall | undefined {
+/** Validate and decode one generic envelope against the lane-watch contract. */
+export function decodeLaneWatchRpcCall(call: ProtocolRpcCall): LaneWatchRpcCall | undefined {
 	if (call.instance !== undefined) return undefined;
-	for (const [method, address] of Object.entries(ServiceRpcAddresses)) {
+	for (const [method, address] of Object.entries(LaneWatchRpcAddresses)) {
 		if (call.serviceId !== address.serviceId || call.member !== address.member) continue;
 		const candidate = { method, args: call.args };
-		return Check(ServiceRpcCallSchema, candidate) ? (candidate as ServiceRpcCall) : undefined;
+		return Check(LaneWatchRpcCallSchema, candidate) ? (candidate as LaneWatchRpcCall) : undefined;
 	}
 	return undefined;
 }
@@ -272,7 +252,6 @@ export const ServiceErrorCodeSchema = Type.Union([
 	Type.Literal("service_instance_not_found"),
 	Type.Literal("service_stale_instance"),
 	Type.Literal("service_invalid_value"),
-	Type.Literal("service_not_implemented"),
 ]);
 export type ServiceErrorCode = Static<typeof ServiceErrorCodeSchema>;
 

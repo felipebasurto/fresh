@@ -53,13 +53,23 @@ async function makeServer(): Promise<{ directory: string; runtime: RunningServer
 	return { directory, runtime };
 }
 
+async function attachSession(client: Client, sessionId: string): Promise<void> {
+	const services = createServerServiceBinding(client, { services: [SessionManagement] });
+	try {
+		await services.ready(BACKGROUND_CONTEXT);
+		await services.use(SessionManagement).attach(sessionId, BACKGROUND_CONTEXT);
+	} finally {
+		await services.dispose(BACKGROUND_CONTEXT);
+	}
+}
+
 async function attachClient(runtime: RunningServer, sessionId: string): Promise<Client> {
 	const client = await Client.connect({
 		serverId: runtime.serverId,
 		transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
 	});
 	clients.add(client);
-	await client.attachSession(sessionId);
+	await attachSession(client, sessionId);
 	return client;
 }
 
@@ -410,7 +420,7 @@ describe("experimental durable server composition", () => {
 		expect([...runtime.workerPids.keys()]).toEqual(["demo-1"]);
 		const firstPid = runtime.workerPids.get("demo-1");
 		expect(firstPid).toEqual(expect.any(Number));
-		await expect(client.attachSession("demo-1")).resolves.toMatchObject({ sessionId: "demo-1" });
+		await expect(attachSession(client, "demo-1")).resolves.toBeUndefined();
 		expect(runtime.workerPids.get("demo-1")).toBe(firstPid);
 
 		const competing = await Client.connect({
@@ -418,7 +428,7 @@ describe("experimental durable server composition", () => {
 			transportFactory: createUnixTransportFactory({ path: runtime.socketPath }),
 		});
 		clients.add(competing);
-		await expect(competing.attachSession("demo-1")).resolves.toMatchObject({ sessionId: "demo-1" });
+		await expect(attachSession(competing, "demo-1")).resolves.toBeUndefined();
 		expect(runtime.workerPids.get("demo-1")).toBe(firstPid);
 	});
 
@@ -621,9 +631,9 @@ describe("experimental durable server composition", () => {
 		onTestFinished(() => subscribe.mockRestore());
 
 		try {
-			await client.attachSession("demo-2");
+			await attachSession(client, "demo-2");
 			expect(services.attachment.value).toEqual({ status: "attaching", sessionId: "demo-2" });
-			await client.attachSession("demo-1");
+			await attachSession(client, "demo-1");
 			await services.whenAttached("demo-1", BACKGROUND_CONTEXT);
 			expect(services.attachment.value).toEqual({ status: "attached", sessionId: "demo-1" });
 			expect(models.state.value?.configuration.model).toEqual({
@@ -697,7 +707,7 @@ describe("experimental durable server composition", () => {
 
 		const replaced = observed[1]!.service;
 		const replacedReplace = replaced.replace;
-		await expect(client.attachSession("demo-2")).resolves.toMatchObject({ sessionId: "demo-2" });
+		await expect(attachSession(client, "demo-2")).resolves.toBeUndefined();
 		await services.whenAttached("demo-2", BACKGROUND_CONTEXT);
 		expect(observed).toHaveLength(3);
 		expect(services.attachment.value).toEqual({ status: "attached", sessionId: "demo-2" });
@@ -711,8 +721,6 @@ describe("experimental durable server composition", () => {
 	});
 
 	test("streams prompt events through the worker-owned service provider", async ({ onTestFinished }) => {
-		const legacyPrompt = vi.spyOn(Client.prototype, "promptSession");
-		onTestFinished(() => legacyPrompt.mockRestore());
 		const spawn = vi
 			.spyOn(processRuntime, "spawnInternalProcess")
 			.mockImplementation((role, args, options) =>
@@ -747,60 +755,6 @@ describe("experimental durable server composition", () => {
 				"run_end",
 			]),
 		);
-		expect(legacyPrompt).not.toHaveBeenCalled();
-	});
-
-	// Re-enable with runtime no-tool execution.
-	test.skip("completes and persists a prompt through the worker-owned Harness", async ({ onTestFinished }) => {
-		const spawn = vi
-			.spyOn(processRuntime, "spawnInternalProcess")
-			.mockImplementation((role, args, options) =>
-				realSpawnInternalProcess(
-					role,
-					args,
-					role === "session-worker" ? { ...options, entryUrl: fauxWorkerEntryUrl } : options,
-				),
-			);
-		onTestFinished(() => spawn.mockRestore());
-		const { runtime } = await makeServer();
-		const client = await attachClient(runtime, "demo-1");
-		const workerPid = runtime.workerPids.get("demo-1");
-		expect(workerPid).toEqual(expect.any(Number));
-
-		const result = await client.promptSession("demo-1", "question");
-		expect(result).toMatchObject({
-			ok: true,
-			value: {
-				kind: "run",
-				status: "completed",
-				tipId: expect.any(String),
-			},
-		});
-		expect(runtime.workerPids.get("demo-1")).toBe(workerPid);
-		expect(processExists(workerPid!)).toBe(true);
-		if (!result.ok || result.value.status !== "completed" || result.value.tipId === null) {
-			throw new Error("Expected a completed prompt with a terminal tip");
-		}
-		const finalEntryId = result.value.tipId;
-
-		await client.dispose();
-		clients.delete(client);
-		await expect.poll(() => runtime.workerPids.has("demo-1")).toBe(false);
-		const { branch } = await readExperimentalSessionState(runtime.sessionDir, "demo-1");
-		expect(branch).toHaveLength(2);
-		expect(branch[0]).toMatchObject({
-			type: "message",
-			message: { role: "user", content: [{ type: "text", text: "question" }] },
-		});
-		expect(branch[1]).toMatchObject({
-			id: finalEntryId,
-			type: "message",
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "deterministic remote answer" }],
-				stopReason: "stop",
-			},
-		});
 	});
 
 	test("uses legacy provider/model and thinking-suffix resolution", async () => {
@@ -823,7 +777,7 @@ describe("experimental durable server composition", () => {
 		});
 		clients.add(client);
 
-		await expect(client.attachSession("demo-1")).resolves.toMatchObject({ sessionId: "demo-1" });
+		await expect(attachSession(client, "demo-1")).resolves.toBeUndefined();
 		expect(runtime.workerPids.get("demo-1")).toEqual(expect.any(Number));
 	});
 
@@ -864,7 +818,7 @@ describe("experimental durable server composition", () => {
 
 		process.kill(firstPid!, "SIGKILL");
 		await expect.poll(() => runtime.workerPids.has("demo-1")).toBe(false);
-		await client.attachSession("demo-1");
+		await attachSession(client, "demo-1");
 		const replacementPid = runtime.workerPids.get("demo-1");
 		expect(replacementPid).toEqual(expect.any(Number));
 		expect(replacementPid).not.toBe(firstPid);
@@ -923,7 +877,6 @@ describe("experimental durable server composition", () => {
 			serverId: first.serverId,
 			transportFactory: createUnixTransportFactory({ path: first.socketPath }),
 		});
-		await client.listSessions();
 
 		const replacement = await startServer({ ...sessionWorkerModel, directory });
 		servers.add(replacement);

@@ -1,4 +1,5 @@
 import { BACKGROUND_CONTEXT, type JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
+import type { ProtocolRpcCall } from "@earendil-works/pi-protocol";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CoordinatorConnectionEvent } from "../src/experimental/coordinator.ts";
 import { SessionWorkerManager } from "../src/experimental/session-worker-manager.ts";
@@ -193,16 +194,9 @@ describe("Session worker lifecycle failures", () => {
 });
 
 describe("Session worker operations", () => {
-	const completedRun = {
-		operationId: "run-1",
-		kind: "run" as const,
-		status: "completed" as const,
-		fromTipId: null,
-		tipId: "leaf-1",
-		startedAt: 1,
-		endedAt: 2,
-	};
-	test("correlates prompt results to the worker generation and attachment", async () => {
+	const serviceCall = { serviceId: "test.session", member: "run", args: ["Hello"] } satisfies ProtocolRpcCall;
+
+	test("correlates service results to the worker generation and attachment", async () => {
 		const { coordinator, workers, attachment, release } = await createAttachedWorker();
 		coordinator.onSend = (peerId, payload) => {
 			if (payload.type !== "operation") return;
@@ -219,26 +213,23 @@ describe("Session worker operations", () => {
 							type: "operation_result",
 							requestId: payload.requestId,
 							scope,
-							result: {
-								ok: true,
-								value: completedRun,
-							},
+							result: { result: { accepted: true } },
 						},
 					},
 				});
 			});
 		};
+		if (attachment.invokeService === undefined) throw new Error("Missing service attachment");
 
-		await expect(attachment.prompt(["Hello"], BACKGROUND_CONTEXT)).resolves.toEqual({
-			ok: true,
-			value: completedRun,
+		await expect(attachment.invokeService(serviceCall, () => {}, BACKGROUND_CONTEXT)).resolves.toEqual({
+			accepted: true,
 		});
 		const operation = coordinator.sent
 			.map(({ payload }) => asObject(payload))
 			.find(({ type }) => type === "operation");
 		expect(operation).toMatchObject({
 			scope: { serverConnectionId: "server-generation-1", attachmentId: expect.any(String) },
-			call: { method: "prompt", args: [["Hello"]] },
+			call: { method: "service", args: [serviceCall] },
 		});
 		workers.detach();
 		await release();
@@ -260,17 +251,17 @@ describe("Session worker operations", () => {
 							type: "operation_result",
 							requestId: payload.requestId,
 							scope: payload.scope,
-							result: {
-								ok: true,
-								value: completedRun,
-							},
+							result: { result: { accepted: true } },
 						},
 					},
 				}),
 			);
 		};
+		if (attachment.invokeService === undefined) throw new Error("Missing service attachment");
 
-		await expect(attachment.prompt(["Hello"], BACKGROUND_CONTEXT)).rejects.toThrow(/mismatched operation response/);
+		await expect(attachment.invokeService(serviceCall, () => {}, BACKGROUND_CONTEXT)).rejects.toThrow(
+			/mismatched operation response/,
+		);
 		workers.detach();
 		await release();
 	});
@@ -291,28 +282,29 @@ describe("Session worker operations", () => {
 							type: "operation_result",
 							requestId: payload.requestId,
 							scope: null,
-							result: {
-								ok: true,
-								value: completedRun,
-							},
+							result: { result: { accepted: true } },
 						},
 					},
 				}),
 			);
 		};
+		if (attachment.invokeService === undefined) throw new Error("Missing service attachment");
 
-		await expect(attachment.prompt(["Hello"], BACKGROUND_CONTEXT)).rejects.toThrow(/invalid operation response/);
+		await expect(attachment.invokeService(serviceCall, () => {}, BACKGROUND_CONTEXT)).rejects.toThrow(
+			/invalid operation response/,
+		);
 		workers.detach();
 		await release();
 	});
 
-	test("rejects pending prompts on replacement without stopping the worker", async () => {
+	test("rejects pending service calls on replacement without stopping the worker", async () => {
 		const { coordinator, workers, attachment } = await createAttachedWorker();
 		coordinator.onSend = () => {};
-		const prompting = attachment.prompt(["Hello"], BACKGROUND_CONTEXT);
+		if (attachment.invokeService === undefined) throw new Error("Missing service attachment");
+		const calling = attachment.invokeService(serviceCall, () => {}, BACKGROUND_CONTEXT);
 		workers.detach();
 
-		await expect(prompting).rejects.toThrow(/replaced during a worker operation/);
+		await expect(calling).rejects.toThrow(/replaced during a worker operation/);
 		expect(coordinator.sent.map(({ payload }) => asObject(payload).type)).not.toContain("shutdown");
 		expect(workers.workerPids.size).toBe(0);
 	});

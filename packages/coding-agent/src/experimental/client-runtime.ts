@@ -149,9 +149,22 @@ export async function openClientRuntime(
 			}
 			activatedClient = undefined;
 			clients.push(client);
-			if (route.transport === "radius") reconnectors.push(new RadiusClientReconnect(client));
 			const server = createServerServiceSource(client);
 			serviceSources.push(server);
+			if (route.transport === "radius") {
+				const reconnectServices = server.open({
+					services: [SessionManagement],
+					assertAccess() {},
+					onError() {},
+				});
+				const reconnectManagement = reconnectServices.use(SessionManagement);
+				reconnectors.push(
+					new RadiusClientReconnect(client, async (sessionId) => {
+						await reconnectServices.ready(BACKGROUND_CONTEXT);
+						await reconnectManagement.attach(sessionId, BACKGROUND_CONTEXT);
+					}),
+				);
+			}
 			const session = createSessionServiceSource(client);
 			serviceSources.push(session);
 			servers.push({ route, client, server, session });

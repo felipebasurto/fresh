@@ -169,9 +169,6 @@ describe("experimental Radius relay", () => {
 				async list() {
 					return [];
 				},
-				async create() {
-					throw new Error("not used");
-				},
 			},
 			async openSession() {
 				throw new Error("not used");
@@ -308,7 +305,7 @@ describe("experimental Radius relay", () => {
 		const connectionListeners = new Set<(change: { state: string }) => void>();
 		const attachmentListeners = new Set<(attachment: { sessionId: string } | undefined) => void>();
 		let attempts = 0;
-		const attachSession = vi.fn(async () => ({ sessionId: "demo-1", attachmentId: "attachment-2" }));
+		const reattach = vi.fn(async () => {});
 		const client = {
 			connected: true,
 			connectionState: "connected",
@@ -329,21 +326,20 @@ describe("experimental Radius relay", () => {
 				for (const listener of connectionListeners) listener({ state: "connected" });
 				return { serverId };
 			},
-			attachSession,
 			disconnect() {
 				this.connected = false;
 				this.connectionState = "disconnected";
 				for (const listener of connectionListeners) listener({ state: "disconnected" });
 			},
 		};
-		const reconnect = new RadiusClientReconnect(client as unknown as Client);
+		const reconnect = new RadiusClientReconnect(client as unknown as Client, reattach);
 		client.disconnect();
 
 		await vi.advanceTimersByTimeAsync(1_000);
 		expect(attempts).toBe(1);
 		await vi.advanceTimersByTimeAsync(2_000);
 		expect(attempts).toBe(2);
-		expect(attachSession).toHaveBeenCalledWith("demo-1");
+		expect(reattach).toHaveBeenCalledWith("demo-1");
 		await reconnect.dispose();
 	});
 });

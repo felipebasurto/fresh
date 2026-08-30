@@ -245,7 +245,6 @@ export class SessionWorkerManager {
 		const scope = this.#operationScope(worker, attachmentId);
 		let released = false;
 		return {
-			prompt: (prompt, promptContext) => this.#operations(worker, scope, promptContext).prompt(prompt),
 			invokeService: (call, publish, serviceContext) =>
 				this.#invokeService(worker, scope, call, publish, serviceContext),
 			watch: (watchContext) => this.#createLaneWatch(worker, scope, watchContext),

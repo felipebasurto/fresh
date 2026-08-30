@@ -2,12 +2,9 @@ import type { Context, SessionMetadata } from "@earendil-works/pi-agent-core";
 import type {
 	LaneEvent,
 	LaneSnapshot,
-	PromptArguments,
 	ProtocolRpcCall,
 	ProtocolRpcResult,
-	RunResult,
 	ServiceProviderUpdate,
-	SessionCreateOptions,
 } from "@earendil-works/pi-protocol";
 import type { ServerListener } from "./listener.ts";
 
@@ -25,8 +22,6 @@ export type MaybePromise<T> = T | Promise<T>;
 
 /** One presentation connection's live capability for a hosted Session. */
 export interface RoutedSessionAttachment {
-	/** Execute one serializable prompt through this attachment. */
-	prompt(prompt: PromptArguments, context: Context): Promise<RunResult>;
 	/** Route one contract-agnostic service operation to the attached Session endpoint. */
 	invokeService?(
 		call: ProtocolRpcCall,
@@ -81,7 +76,6 @@ export interface ServerHost<TMetadata extends SessionMetadata = SessionMetadata>
 	readonly serverServices?: RoutedServerServiceHost;
 	readonly sessions: {
 		list(context: Context): Promise<TMetadata[]>;
-		create(options: SessionCreateOptions, context: Context): Promise<TMetadata>;
 	};
 	openSession(metadata: TMetadata, context: Context): Promise<RoutedSessionHandle>;
 }

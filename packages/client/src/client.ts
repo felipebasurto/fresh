@@ -5,12 +5,10 @@ import {
 	createServiceSubscribeCall,
 	createServiceUnsubscribeCall,
 	encodeClientMessage,
-	encodeServiceRpcCall,
+	encodeLaneWatchRpcCall,
 	isServerId,
 	type LaneEvent,
-	type PromptArguments,
-	type PromptImage,
-	type PromptMessage,
+	LaneWatchRpc,
 	type ProtocolRpcCall,
 	ProtocolValidationError,
 	parseServiceCatalogue,
@@ -22,13 +20,7 @@ import {
 	type ServiceCatalogueEntry,
 	type ServiceMode,
 	type ServiceProviderUpdate,
-	ServiceRpc,
-	type ServiceRpcCall,
-	type ServiceRpcResult,
 	type ServiceSubscriptionSnapshot,
-	type SessionAddress,
-	type SessionCreateOptions,
-	type SessionSummary,
 	type SessionTarget,
 } from "@earendil-works/pi-protocol";
 import { Connection } from "./connection.ts";
@@ -71,7 +63,7 @@ export class Client {
 	readonly #attachmentListeners = new Set<AttachmentChangeListener>();
 	readonly #watchListeners = new Map<string, ActiveWatchListener>();
 	readonly #serviceListeners = new Map<string, ActiveServiceListener>();
-	readonly #rpc: ReturnType<typeof createRpcClient<typeof ServiceRpc>>;
+	readonly #laneWatchRpc: ReturnType<typeof createRpcClient<typeof LaneWatchRpc>>;
 	#requestSequence = 0;
 	#serviceSubscriptionSequence = 0;
 	#hello: ServerHello | undefined;
@@ -94,9 +86,9 @@ export class Client {
 			onMessage: (message) => this.#handleMessage(message),
 			onStateChange: (change) => this.#handleConnectionStateChange(change),
 		});
-		this.#rpc = createRpcClient(
-			ServiceRpc,
-			(call) => this.#request(this.#targetForCall(call), encodeServiceRpcCall(call)),
+		this.#laneWatchRpc = createRpcClient(
+			LaneWatchRpc,
+			(call) => this.#request(this.#requireSessionTarget(), encodeLaneWatchRpcCall(call)),
 			(message) => new ProtocolValidationError(message),
 		);
 	}
@@ -165,62 +157,6 @@ export class Client {
 	/** Invoke one low-level protocol call against an explicit routed target. */
 	request(target: RpcTarget, call: ProtocolRpcCall, signal?: AbortSignal): Promise<unknown> {
 		return this.#request(target, call, signal);
-	}
-
-	listSessions(): Promise<readonly SessionSummary[]> {
-		return this.#rpc.list();
-	}
-
-	createSession(options: SessionCreateOptions): Promise<ServiceRpcResult<"create">> {
-		return this.#rpc.create(options);
-	}
-
-	async attachSession(session: string | SessionAddress): Promise<ServiceRpcResult<"attach">> {
-		const sessionId = typeof session === "string" ? session : session.sessionId;
-		if (typeof session !== "string" && session.serverId !== this.#options.serverId) {
-			throw new ServerError({ code: "wrong_server", message: "Session belongs to another server" });
-		}
-		const result = await this.#request(
-			{ serverId: this.#options.serverId },
-			{ serviceId: "pi.session-management", member: "attach", args: [sessionId] },
-		);
-		if (
-			typeof result === "object" &&
-			result !== null &&
-			"sessionId" in result &&
-			"attachmentId" in result &&
-			typeof result.sessionId === "string" &&
-			typeof result.attachmentId === "string"
-		) {
-			this.#setAttachment({
-				serverId: this.#options.serverId,
-				sessionId: result.sessionId,
-				attachmentId: result.attachmentId,
-			});
-		}
-		const attachment = this.#attachment;
-		if (attachment?.sessionId !== sessionId) {
-			const error = new ProtocolValidationError("Session attach completed without a matching attachment route");
-			this.#connection.fail(error);
-			throw error;
-		}
-		return { sessionId, attachmentId: attachment.attachmentId };
-	}
-
-	promptSession(sessionId: string, text: string, images?: PromptImage[]): Promise<ServiceRpcResult<"prompt">>;
-	promptSession(sessionId: string, message: PromptMessage | PromptMessage[]): Promise<ServiceRpcResult<"prompt">>;
-	promptSession(
-		sessionId: string,
-		message: string | PromptMessage | PromptMessage[],
-		images?: PromptImage[],
-	): Promise<ServiceRpcResult<"prompt">> {
-		this.#requireSessionTarget(sessionId);
-		if (typeof message === "string") {
-			const prompt: PromptArguments = images === undefined ? [message] : [message, images];
-			return this.#rpc.prompt(prompt);
-		}
-		if (Array.isArray(message)) return this.#rpc.prompt([message]);
-		return this.#rpc.prompt([message]);
 	}
 
 	async serviceCatalogue(target: RpcTarget, signal?: AbortSignal): Promise<readonly ServiceCatalogueEntry[]> {
@@ -301,7 +237,7 @@ export class Client {
 
 	async watchSession(sessionId: string): Promise<LaneWatch> {
 		this.#requireSessionTarget(sessionId);
-		const { watchId, snapshot } = await this.#rpc.watch();
+		const { watchId, snapshot } = await this.#laneWatchRpc.watch();
 		const connection = this.#hello;
 		let currentSnapshot = snapshot;
 		let state: "ready" | "starting" | "started" | "disposed" = "ready";
@@ -321,7 +257,7 @@ export class Client {
 				this.#watchListeners.set(watchId, { listener, deliveryTail: Promise.resolve() });
 				try {
 					this.#requireSessionTarget(sessionId);
-					await this.#rpc.startWatch(watchId);
+					await this.#laneWatchRpc.startWatch(watchId);
 					if (state === "starting") state = "started";
 				} catch (error) {
 					this.#watchListeners.delete(watchId);
@@ -332,7 +268,7 @@ export class Client {
 			resnapshot: async () => {
 				if (state === "disposed") throw new Error("Lane watch is disposed");
 				this.#requireSessionTarget(sessionId);
-				const refreshed = await this.#rpc.resnapshotWatch(watchId);
+				const refreshed = await this.#laneWatchRpc.resnapshotWatch(watchId);
 				currentSnapshot = refreshed.snapshot;
 				return currentSnapshot;
 			},
@@ -342,7 +278,7 @@ export class Client {
 				const active = this.#watchListeners.get(watchId);
 				try {
 					if (this.connected && this.#hello === connection && this.#attachment?.sessionId === sessionId) {
-						await this.#rpc.stopWatch(watchId);
+						await this.#laneWatchRpc.stopWatch(watchId);
 					}
 					await active?.deliveryTail;
 				} finally {
@@ -492,21 +428,6 @@ export class Client {
 
 	[Symbol.asyncDispose](): Promise<void> {
 		return this.dispose();
-	}
-
-	#targetForCall(call: ServiceRpcCall): RpcTarget {
-		switch (call.method) {
-			case "list":
-			case "create":
-			case "attach":
-				return { serverId: this.#options.serverId };
-			case "prompt":
-			case "watch":
-			case "startWatch":
-			case "resnapshotWatch":
-			case "stopWatch":
-				return this.#requireSessionTarget();
-		}
 	}
 
 	#requireSessionTarget(sessionId?: string): SessionTarget {

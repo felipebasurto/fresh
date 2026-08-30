@@ -54,55 +54,57 @@ export class ProtocolTestClient {
 		return response;
 	}
 
-	async request(
-		serverId: string,
-		call: TestRpcCall,
+	request(serverId: string, call: TestRpcCall, id?: string): Promise<ResponseEnvelope> {
+		const routed = this.routeLaneWatchCall(serverId, call);
+		return this.requestService(routed.target, routed.call, id);
+	}
+
+	async requestService(
+		target: RpcTarget,
+		call: ProtocolRpcCall,
 		id = `request-${++this.requestSequence}`,
 	): Promise<ResponseEnvelope> {
 		const response = this.next(
 			(message): message is ResponseEnvelope => message.type === "response" && message.id === id,
 		);
-		const routed = this.routeLegacyCall(serverId, call);
-		await this.sendMessage({ type: "request", id, ...routed });
-		const received = (await response) as ResponseEnvelope;
-		if (
-			call.method === "attach" &&
-			received.ok &&
-			typeof received.result === "object" &&
-			received.result !== null &&
-			"sessionId" in received.result &&
-			"attachmentId" in received.result &&
-			typeof received.result.sessionId === "string" &&
-			typeof received.result.attachmentId === "string"
-		) {
-			this.attachment = {
-				sessionId: received.result.sessionId,
-				attachmentId: received.result.attachmentId,
-			};
-		}
-		return received;
+		await this.sendMessage({ type: "request", id, target, call });
+		return (await response) as ResponseEnvelope;
+	}
+
+	attach(serverId: string, sessionId: string): Promise<ResponseEnvelope> {
+		return this.requestService(
+			{ serverId },
+			{ serviceId: "pi.session-management", member: "attach", args: [sessionId] },
+		);
+	}
+
+	requestSessionService(
+		serverId: string,
+		sessionId: string,
+		call: ProtocolRpcCall,
+		id?: string,
+	): Promise<ResponseEnvelope> {
+		const attachment = this.attachment;
+		const target: RpcTarget =
+			attachment === undefined || attachment.sessionId !== sessionId
+				? { serverId, sessionId, attachmentId: "missing-attachment" }
+				: { serverId, ...attachment };
+		return this.requestService(target, call, id);
 	}
 
 	sendMessage(message: ClientMessage): Promise<void> {
 		return this.channel.send(encodeClientMessage(message));
 	}
 
-	private routeLegacyCall(serverId: string, call: TestRpcCall): { target: RpcTarget; call: ProtocolRpcCall } {
-		const sessionOperation = ["prompt", "watch", "startWatch", "resnapshotWatch", "stopWatch"].includes(call.method);
-		let target: RpcTarget = { serverId };
-		let args = call.args;
-		if (sessionOperation) {
-			if (typeof call.args[0] !== "string") throw new Error(`Test call ${call.method} requires a Session ID`);
-			const sessionId = call.args[0];
-			const attachment = this.attachment;
-			target =
-				attachment === undefined || attachment.sessionId !== sessionId
-					? { serverId, sessionId, attachmentId: "missing-attachment" }
-					: { serverId, ...attachment };
-			args = call.args.slice(1);
-		}
-		const address = serviceAddress(call.method);
-		return { target, call: { ...address, args } };
+	private routeLaneWatchCall(serverId: string, call: TestRpcCall): { target: RpcTarget; call: ProtocolRpcCall } {
+		if (typeof call.args[0] !== "string") throw new Error(`Test call ${call.method} requires a Session ID`);
+		const sessionId = call.args[0];
+		const attachment = this.attachment;
+		const target: RpcTarget =
+			attachment === undefined || attachment.sessionId !== sessionId
+				? { serverId, sessionId, attachmentId: "missing-attachment" }
+				: { serverId, ...attachment };
+		return { target, call: { serviceId: "pi.transcript", member: call.method, args: call.args.slice(1) } };
 	}
 
 	sendBytes(chunk: Uint8Array): Promise<void> {
@@ -135,6 +137,15 @@ export class ProtocolTestClient {
 	receive(chunk: Uint8Array): void {
 		try {
 			for (const message of this.decoder.push(chunk)) {
+				if (message.type === "attachment") {
+					this.attachment =
+						message.attachment === null
+							? undefined
+							: {
+									sessionId: message.attachment.sessionId,
+									attachmentId: message.attachment.attachmentId,
+								};
+				}
 				this.messages.push(message);
 				for (const waiter of this.waiters) {
 					if (!waiter.predicate(message)) continue;
@@ -157,25 +168,6 @@ export class ProtocolTestClient {
 	fail(error: Error): void {
 		for (const waiter of this.waiters) waiter.reject(error);
 		this.waiters.clear();
-	}
-}
-
-function serviceAddress(method: string): { serviceId: string; member: string } {
-	switch (method) {
-		case "list":
-			return { serviceId: "pi.session-directory", member: "list" };
-		case "create":
-		case "attach":
-			return { serviceId: "pi.session-management", member: method };
-		case "prompt":
-			return { serviceId: "pi.chat", member: "prompt" };
-		case "watch":
-		case "startWatch":
-		case "resnapshotWatch":
-		case "stopWatch":
-			return { serviceId: "pi.transcript", member: method };
-		default:
-			return { serviceId: "unknown", member: method };
 	}
 }
 

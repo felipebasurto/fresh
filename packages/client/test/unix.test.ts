@@ -34,7 +34,6 @@ async function startServer(
 		{
 			sessions: {
 				list: async () => [],
-				create: async () => Promise.reject(new Error("unused")),
 			},
 			openSession: async () => Promise.reject(new Error("unused")),
 		},

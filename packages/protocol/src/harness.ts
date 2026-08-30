@@ -154,15 +154,6 @@ export const PromptMessageSchema = Type.Union([
 ]);
 export type PromptMessage = Static<typeof PromptMessageSchema>;
 
-/** Serializable AgentLane.prompt() arguments, kept as one value across RPC boundaries. */
-export const PromptArgumentsSchema = Type.Union([
-	Type.Tuple([Type.String()]),
-	Type.Tuple([Type.String(), Type.Array(PromptImageSchema)]),
-	Type.Tuple([PromptMessageSchema]),
-	Type.Tuple([Type.Array(PromptMessageSchema)]),
-]);
-export type PromptArguments = Static<typeof PromptArgumentsSchema>;
-
 const OperationErrorSchema = StrictObject({
 	code: Type.String(),
 	message: Type.String(),
@@ -184,40 +175,6 @@ export const OperationResultRecordSchema = Type.Union([
 	StrictObject({ ...OperationResultBase, status: Type.Literal("failed"), error: OperationErrorSchema }),
 ]);
 export type OperationResultRecord = Static<typeof OperationResultRecordSchema>;
-const RunValueSchema = Type.Union([
-	OperationResultRecordSchema,
-	StrictObject({
-		operationId: IdSchema,
-		status: Type.Literal("suspended"),
-		deferred: DeferredHandleSchema,
-	}),
-]);
-const RunErrorSchema = Type.Union([
-	StrictObject({
-		_tag: Type.Literal("LaneBusy"),
-		lane: Type.String(),
-		operationId: IdSchema,
-		operationKind: Type.Union([Type.Literal("run"), Type.Literal("compaction"), Type.Literal("navigation")]),
-		message: Type.String(),
-	}),
-	StrictObject({
-		_tag: Type.Literal("InvalidMessage"),
-		lane: Type.String(),
-		reason: Type.String(),
-		message: Type.String(),
-	}),
-	StrictObject({ _tag: Type.Literal("UnknownSkill"), name: Type.String(), message: Type.String() }),
-	StrictObject({ _tag: Type.Literal("UnknownTemplate"), name: Type.String(), message: Type.String() }),
-	StrictObject({ _tag: Type.Literal("Closed"), message: Type.String() }),
-]);
-
-/** Wire-safe structural equivalent of AgentLane.prompt()'s RunResult. */
-export const RunResultSchema = Type.Union([
-	StrictObject({ ok: Type.Literal(true), value: RunValueSchema }),
-	StrictObject({ ok: Type.Literal(false), error: RunErrorSchema }),
-]);
-export type RunResult = Static<typeof RunResultSchema>;
-
 export const ToolOutputSchema = StrictObject({
 	content: Type.Array(Type.Union([TextContentSchema, PromptImageSchema])),
 	details: Type.Optional(JsonValueSchema),

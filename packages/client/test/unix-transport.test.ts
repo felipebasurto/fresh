@@ -86,8 +86,10 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 
 		try {
 			await expect(client.connect()).resolves.toMatchObject({ serverId });
-			await expect(client.listSessions()).resolves.toEqual([]);
-			expect(receivedMembers).toEqual(["pi.session-directory.list"]);
+			await expect(
+				client.request({ serverId }, { serviceId: "test.server", member: "list", args: [] }),
+			).resolves.toEqual([]);
+			expect(receivedMembers).toEqual(["test.server.list"]);
 		} finally {
 			await client.dispose();
 		}
@@ -118,7 +120,9 @@ describe.runIf(process.platform !== "win32")("createUnixTransportFactory", () =>
 
 		try {
 			await client.connect();
-			await expect(client.listSessions()).rejects.toMatchObject({
+			await expect(
+				client.request({ serverId }, { serviceId: "test.server", member: "list", args: [] }),
+			).rejects.toMatchObject({
 				name: "ProtocolValidationError",
 				message: expect.stringMatching(/truncated/i),
 			});

@@ -3,17 +3,14 @@ import { BACKGROUND_CONTEXT, type Context, type SessionMetadata } from "@earendi
 import {
 	createRpcDispatcher,
 	type EventEnvelope,
-	type PromptArguments,
+	LaneWatchRpc,
+	type LaneWatchRpcCall,
+	type LaneWatchRpcResultUnion,
 	type ProtocolRpcCall,
 	type ProtocolRpcResult,
 	ProtocolValidationError,
 	type RpcTarget,
-	type RunResult,
 	type ServerEventEnvelope,
-	ServiceRpc,
-	type ServiceRpcCall,
-	type ServiceRpcResultUnion,
-	type SessionSummary,
 	type SessionTarget,
 } from "@earendil-works/pi-protocol";
 import {
@@ -28,10 +25,6 @@ import {
 import type { RoutedSessionAttachment, RoutedSessionHandle, RoutedSessionWatch, ServerHost } from "./types.ts";
 
 class SessionCleanupError extends AggregateError {}
-
-function toSessionSummary(serverId: string, metadata: SessionMetadata): SessionSummary {
-	return { serverId, sessionId: metadata.id, createdAt: metadata.createdAt };
-}
 
 interface ActiveWatch {
 	readonly id: string;
@@ -79,40 +72,16 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 	private readonly disconnectedClients = new Set<object>();
 	private readonly clientOperations = new Map<object, Promise<void>>();
 	private closePromise?: Promise<void>;
-	private readonly dispatchRpc: (call: ServiceRpcCall, context: RpcContext) => Promise<ServiceRpcResultUnion>;
+	private readonly dispatchLaneWatch: (
+		call: LaneWatchRpcCall,
+		context: RpcContext,
+	) => Promise<LaneWatchRpcResultUnion>;
 
 	constructor(options: SessionRouterOptions<TMetadata>) {
 		this.options = options;
-		this.dispatchRpc = createRpcDispatcher(
-			ServiceRpc,
+		this.dispatchLaneWatch = createRpcDispatcher(
+			LaneWatchRpc,
 			{
-				list: async ({ context, target }, ..._args: never[]) => {
-					this.requireServerTarget(target);
-					return (await this.options.host.sessions.list(context)).map((metadata) =>
-						toSessionSummary(target.serverId, metadata),
-					);
-				},
-				create: async ({ client, context, target }, createOptions) => {
-					this.requireServerTarget(target);
-					return this.runForClient(client, async () => {
-						if (this.options.isClosing() || this.disconnectedClients.has(client)) throw new ServerDrainingError();
-						return toSessionSummary(
-							target.serverId,
-							await this.options.host.sessions.create(createOptions, context),
-						);
-					});
-				},
-				attach: async ({ client, context, target }, sessionId) => {
-					this.requireServerTarget(target);
-					if (this.options.isClosing()) throw new ServerDrainingError();
-					return this.attachClient(client, sessionId, context);
-				},
-				prompt: async ({ client, context, target }, prompt) => {
-					const admitted = await this.runForClient(client, () =>
-						this.startPrompt(client, target, prompt, context),
-					);
-					return admitted.result;
-				},
 				watch: ({ client, context, target }, ..._args: never[]) =>
 					this.runForClient(client, () => this.createWatch(client, target, context)),
 				startWatch: ({ client, publish, context, target }, watchId) =>
@@ -126,14 +95,14 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		);
 	}
 
-	executeCall(
-		call: ServiceRpcCall,
+	executeLaneWatchCall(
+		call: LaneWatchRpcCall,
 		target: RpcTarget,
 		client: object,
 		publish: (message: EventEnvelope, context: Context) => Promise<void>,
 		context: Context,
-	): Promise<ServiceRpcResultUnion> {
-		return this.dispatchRpc(call, { client, target, publish, context });
+	): Promise<LaneWatchRpcResultUnion> {
+		return this.dispatchLaneWatch(call, { client, target, publish, context });
 	}
 
 	async executeServiceCall(
@@ -149,11 +118,7 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		return admitted.result;
 	}
 
-	attachClient(
-		client: object,
-		sessionId: string,
-		context: Context,
-	): Promise<{ sessionId: string; attachmentId: string }> {
+	attachClient(client: object, sessionId: string, context: Context): Promise<void> {
 		if (this.options.isClosing()) return Promise.reject(new ServerDrainingError());
 		return this.runForClient(client, () => this.attachClientNow(client, sessionId, context));
 	}
@@ -253,14 +218,10 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		return result;
 	}
 
-	private async attachClientNow(
-		client: object,
-		sessionId: string,
-		context: Context,
-	): Promise<{ sessionId: string; attachmentId: string }> {
+	private async attachClientNow(client: object, sessionId: string, context: Context): Promise<void> {
 		if (this.options.isClosing() || this.disconnectedClients.has(client)) throw new ServerDrainingError();
 		const current = this.attachmentsByClient.get(client);
-		if (current?.session.id === sessionId) return { sessionId, attachmentId: current.id };
+		if (current?.session.id === sessionId) return;
 		const hosted = await this.acquire(sessionId, context);
 		if (this.options.isClosing() || this.disconnectedClients.has(client)) throw new ServerDrainingError();
 		if (current) await this.releaseAttachment(current, context, false);
@@ -294,21 +255,6 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 			{ serverId: this.options.serverId, sessionId, attachmentId: attachment.id },
 			context,
 		);
-		return { sessionId, attachmentId: attachment.id };
-	}
-
-	private async startPrompt(
-		client: object,
-		target: RpcTarget,
-		prompt: PromptArguments,
-		context: Context,
-	): Promise<{ result: Promise<RunResult> }> {
-		const attachment = this.requireAttachment(client, target);
-		const lease = attachment.lease;
-		if (lease === undefined) throw new SessionNotAttachedError();
-		const result = lease.prompt(prompt, context);
-		this.trackOperation(attachment, result);
-		return { result };
 	}
 
 	private async startServiceCall(
@@ -419,10 +365,6 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 			throw new SessionNotAttachedError();
 		}
 		return attachment;
-	}
-
-	private requireServerTarget(target: RpcTarget): void {
-		if ("sessionId" in target) throw new ProtocolValidationError("Server operation cannot target a Session");
 	}
 
 	private releaseAttachment(attachment: ClientAttachment, context: Context, publish = true): Promise<void> {

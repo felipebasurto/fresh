@@ -25,11 +25,9 @@ import {
 	defineRpc,
 	LaneEventSchema,
 	LaneSnapshotSchema,
-	PromptArgumentsSchema,
 	ProtocolRpcCallSchema,
 	type RpcCall,
 	type RpcResultUnion,
-	RunResultSchema,
 	type ServiceErrorCode,
 	ServiceErrorCodeSchema,
 	ServiceProviderUpdateSchema,
@@ -41,12 +39,7 @@ import { findInitialModel, resolveCliModel } from "../core/model-resolver.ts";
 import { ModelRuntime } from "../core/model-runtime.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import { COORDINATOR_PROTOCOL_VERSION } from "./coordinator.ts";
-import {
-	toHarnessPromptArguments,
-	toWireLaneEvent,
-	toWireLaneSnapshot,
-	toWireRunResult,
-} from "./harness-wire-adapter.ts";
+import { toWireLaneEvent, toWireLaneSnapshot } from "./harness-wire-adapter.ts";
 import { createSessionPluginFacetLoader } from "./plugins/bundled.ts";
 import {
 	consumeInternalProcessRole,
@@ -92,10 +85,6 @@ export const SessionWorkerOptionsSchema = StrictObject({
 export type SessionWorkerOptions = Static<typeof SessionWorkerOptionsSchema>;
 
 export const SessionWorkerOperations = defineRpc({
-	prompt: {
-		args: Type.Tuple([PromptArgumentsSchema]),
-		result: RunResultSchema,
-	},
 	watch: {
 		args: Type.Tuple([]),
 		result: StrictObject({ watchId: Type.String({ minLength: 1 }), snapshot: LaneSnapshotSchema }),
@@ -684,14 +673,6 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 		readonly context: Context;
 	}
 	const dispatchWorkerOperation = createRpcDispatcher(SessionWorkerOperations, {
-		prompt: async ({ context }: WorkerOperationContext, prompt) => {
-			const args = toHarnessPromptArguments(prompt);
-			const result =
-				typeof args[0] === "string"
-					? await lane.prompt(args[0], args[1], context)
-					: await lane.prompt(args[0], context);
-			return toWireRunResult(result);
-		},
 		watch: async ({ scope, context }: WorkerOperationContext, ..._args: never[]) => {
 			const handle = await lane.watch(context);
 			const watchId = randomUUID();
