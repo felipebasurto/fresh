@@ -13,7 +13,7 @@ import {
 	type FacetBundleArtifact,
 } from "@earendil-works/chord/node";
 import type { AgentLane } from "@earendil-works/pi-agent-core";
-import type { LaneEvent, LaneSnapshot, SessionSummary } from "@earendil-works/pi-protocol";
+import type { LaneEvent, LaneSnapshot } from "@earendil-works/pi-protocol";
 import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { type ClientTuiServer, ExperimentalClientTui } from "../src/experimental/client-tui.ts";
@@ -32,6 +32,7 @@ import {
 	SessionDirectory,
 	type SessionDirectoryState,
 	SessionManagement,
+	type SessionSummary,
 } from "../src/experimental/services/sessions.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 

@@ -16,9 +16,7 @@ import {
 import {
 	NotSupportedError,
 	ServerDrainingError,
-	SessionAmbiguousError,
 	SessionNotAttachedError,
-	SessionNotFoundError,
 	WatchInUseError,
 	WatchNotFoundError,
 } from "./errors.ts";
@@ -417,12 +415,7 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 	}
 
 	private async open(sessionId: string, context: Context): Promise<HostedSession> {
-		const matches = (await this.options.host.sessions.list(context)).filter(
-			(candidate) => candidate.id === sessionId,
-		);
-		if (matches.length === 0) throw new SessionNotFoundError(`Unknown session: ${sessionId}`);
-		if (matches.length > 1) throw new SessionAmbiguousError();
-		const metadata = matches[0]!;
+		const metadata = await this.options.host.resolveSession(sessionId, context);
 		const handle = await this.options.host.openSession(metadata, context);
 		if (this.options.isClosing()) {
 			try {

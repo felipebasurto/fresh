@@ -11,13 +11,17 @@ import {
 	type JsonValue,
 	type ServiceProviderUpdate as ProtocolServiceProviderUpdate,
 	ServiceProviderUpdateSchema,
-	type SessionCreateOptions,
-	type SessionSummary,
 } from "@earendil-works/pi-protocol";
 import type { RoutedServerServiceAttachment, RoutedServerServiceHost } from "@earendil-works/pi-server";
 import { Check } from "typebox/value";
 import { PresentationPlugins } from "./plugins.ts";
-import { SessionDirectory, type SessionDirectoryState, SessionManagement } from "./sessions.ts";
+import {
+	type SessionCreateOptions,
+	SessionDirectory,
+	type SessionDirectoryState,
+	SessionManagement,
+	type SessionSummary,
+} from "./sessions.ts";
 
 export interface ExperimentalServerServices {
 	readonly host: RoutedServerServiceHost;

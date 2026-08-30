@@ -21,6 +21,8 @@ import {
   type RoutedServerServiceHost,
   type RoutedSessionHandle,
   type ServerHost,
+  SessionAmbiguousError,
+  SessionNotFoundError,
 } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 
@@ -31,8 +33,14 @@ async function startServer(
   const sessions = new MemorySessionRepo();
   const host: ServerHost = {
     serverServices,
-    sessions: {
-      list: (context) => sessions.list(undefined, context),
+    async resolveSession(sessionId, context) {
+      const matches = (await sessions.list(undefined, context))
+        .filter((metadata) => metadata.id === sessionId);
+      if (matches.length === 0) {
+        throw new SessionNotFoundError(`Unknown session: ${sessionId}`);
+      }
+      if (matches.length > 1) throw new SessionAmbiguousError();
+      return matches[0];
     },
     async openSession(metadata, context) {
       const session = await sessions.open(metadata, context);
@@ -62,7 +70,7 @@ async function startServer(
 }
 ```
 
-Applications supply a private Session catalog, server service host, and routed Session factory. Session discovery and management are application-owned services; the router uses the private catalog only to resolve attachment requests to concrete metadata. The host owns acquiring the worker-local Session and Harness. Failures are cleaned up in that worker. Neither an open JavaScript Session nor a Harness crosses the process boundary.
+Applications supply a required server service host, a bounded Session resolver, and a routed Session factory. Session discovery and management are application-owned services; the protocol server only asks the resolver for metadata when routing an attachment. The host owns acquiring the worker-local Session and Harness. Failures are cleaned up in that worker. Neither an open JavaScript Session nor a Harness crosses the process boundary.
 
 `serverId` is a logical identity supplied by the launcher, not a socket address. The Unix preset requires an explicit physical `path`; `getUnixSocketPath()` derives one from a caller-selected directory. Choose a short, private runtime directory rather than deriving the route from an unbounded home-directory path. A long-lived launcher can reuse the same ID and path when replacing a server process.
 

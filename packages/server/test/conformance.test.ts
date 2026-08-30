@@ -2,6 +2,7 @@ import { BACKGROUND_CONTEXT, type SessionMetadata } from "@earendil-works/pi-age
 import type { ProtocolRpcCall } from "@earendil-works/pi-protocol";
 import { afterEach, describe, expect, test } from "vitest";
 import type { ByteConnection, ByteConnectionHandler } from "../src/connection.ts";
+import { SessionAmbiguousError } from "../src/errors.ts";
 import { Server } from "../src/server.ts";
 import {
 	createTestServerServices,
@@ -99,7 +100,7 @@ describe("Session protocol", () => {
 		let received: BackendMetadata | undefined;
 		const host: ServerHost<BackendMetadata> = {
 			serverServices: createTestServerServices(),
-			sessions: { list: async () => [metadata] },
+			resolveSession: async () => metadata,
 			openSession: async (candidate) => {
 				received = candidate;
 				return {
@@ -124,7 +125,7 @@ describe("Session protocol", () => {
 		await backing.seed("session-1");
 		let releaseCount = 0;
 		const host: ServerHost = {
-			sessions: backing.sessions,
+			resolveSession: (sessionId, context) => backing.resolveSession(sessionId, context),
 			openSession: (metadata, context) => backing.openSession(metadata, context),
 			serverServices: {
 				attachClient(presentation) {
@@ -398,11 +399,8 @@ describe("Session protocol", () => {
 		type BackendMetadata = SessionMetadata & { path: string };
 		const host: ServerHost<BackendMetadata> = {
 			serverServices: createTestServerServices(),
-			sessions: {
-				list: async () => [
-					{ id: "duplicate", createdAt: 1, storageVersion: 1, cwd: "/one", path: "/one/session.jsonl" },
-					{ id: "duplicate", createdAt: 2, storageVersion: 1, cwd: "/two", path: "/two/session.jsonl" },
-				],
+			resolveSession: async () => {
+				throw new SessionAmbiguousError();
 			},
 			openSession: async () => {
 				throw new Error("must not create a Harness for an ambiguous session");
@@ -460,7 +458,7 @@ describe("routed Session acquisition failures", () => {
 		let releaseCount = 0;
 		const host: ServerHost = {
 			serverServices: createTestServerServices(),
-			sessions: { list: async () => [metadata] },
+			resolveSession: async () => metadata,
 			openSession: async () => ({
 				terminated: terminated.promise,
 				attachClient: async () => {

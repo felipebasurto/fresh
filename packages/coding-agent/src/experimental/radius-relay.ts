@@ -329,9 +329,20 @@ export function createRadiusClientTransportFactory(options: {
 	};
 }
 
+type RadiusReconnectClient = Pick<
+	Client,
+	| "attachment"
+	| "connected"
+	| "connectionState"
+	| "disconnect"
+	| "onAttachmentChange"
+	| "onConnectionStateChange"
+	| "reconnect"
+>;
+
 /** Reconnect one established Radius client and restore its last selected Session. */
 export class RadiusClientReconnect {
-	readonly #client: Client;
+	readonly #client: RadiusReconnectClient;
 	readonly #reattach: (sessionId: string) => Promise<void>;
 	readonly #abortController = new AbortController();
 	readonly #removeConnectionListener: () => void;
@@ -340,7 +351,7 @@ export class RadiusClientReconnect {
 	#reconnecting: Promise<void> | undefined;
 	#disposed = false;
 
-	constructor(client: Client, reattach: (sessionId: string) => Promise<void>) {
+	constructor(client: RadiusReconnectClient, reattach: (sessionId: string) => Promise<void>) {
 		this.#client = client;
 		this.#reattach = reattach;
 		this.#desiredSessionId = client.attachment?.sessionId;

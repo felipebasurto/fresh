@@ -1,6 +1,7 @@
 import type { Context, Session, SessionMetadata } from "@earendil-works/pi-agent-core";
 import { BACKGROUND_CONTEXT, MemorySessionRepo } from "@earendil-works/pi-agent-core";
 import type { LaneEvent, LaneSnapshot, ProtocolRpcCall, ProtocolRpcResult } from "@earendil-works/pi-protocol";
+import { SessionAmbiguousError, SessionNotFoundError } from "../errors.ts";
 import type { RoutedServerServiceHost, RoutedSessionHandle, RoutedSessionWatch, ServerHost } from "../types.ts";
 
 export class Deferred<T> {
@@ -208,11 +209,6 @@ export class TestHarness {
 	}
 }
 
-interface ListDelay {
-	entered: Deferred<void>;
-	release: Deferred<void>;
-}
-
 export function createTestServerServices(): RoutedServerServiceHost {
 	return {
 		attachClient(presentation) {
@@ -252,19 +248,14 @@ export class TestServerHost implements ServerHost {
 	openSessionCount = 0;
 	nextOpenSessionError?: Error;
 	nextHarnessCloseError?: Error;
-	readonly sessions: ServerHost["sessions"] = {
-		list: async (context) => {
-			const delay = this.nextListDelay;
-			if (delay) {
-				this.nextListDelay = undefined;
-				delay.entered.resolve(undefined);
-				await delay.release.promise;
-			}
-			return this.repo.list(undefined, context);
-		},
-	};
-	private nextListDelay?: ListDelay;
 	private nextOpenSessionGate?: OpenGate;
+
+	async resolveSession(sessionId: string, context: Context): Promise<SessionMetadata> {
+		const matches = (await this.repo.list(undefined, context)).filter(({ id }) => id === sessionId);
+		if (matches.length === 0) throw new SessionNotFoundError(`Unknown session: ${sessionId}`);
+		if (matches.length > 1) throw new SessionAmbiguousError();
+		return matches[0]!;
+	}
 
 	async openSession(metadata: SessionMetadata, context: Context): Promise<RoutedSessionHandle> {
 		this.openSessionCount += 1;
@@ -301,12 +292,6 @@ export class TestServerHost implements ServerHost {
 		const metadata = session.metadata;
 		await session.close(BACKGROUND_CONTEXT);
 		return metadata;
-	}
-
-	delayNextList(): ListDelay {
-		const delay = { entered: new Deferred<void>(), release: new Deferred<void>() };
-		this.nextListDelay = delay;
-		return delay;
 	}
 
 	gateNextOpenSession(): OpenGate {

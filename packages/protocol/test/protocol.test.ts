@@ -1,4 +1,3 @@
-import { Check } from "typebox/value";
 import { describe, expect, test } from "vitest";
 import {
 	type ClientHello,
@@ -31,8 +30,6 @@ import {
 	type ServerHello,
 	type ServerMessage,
 	ServerMessageDecoder,
-	type SessionSummary,
-	SessionSummarySchema,
 } from "../src/index.ts";
 
 const clientHello: ClientHello = { type: "hello", version: PROTOCOL_VERSION };
@@ -41,12 +38,6 @@ const serverHello: ServerHello = {
 	version: PROTOCOL_VERSION,
 	serverId: "00000000-0000-4000-8000-000000000001",
 };
-
-const summary = {
-	serverId: "00000000-0000-4000-8000-000000000001",
-	sessionId: "session-1",
-	createdAt: 1,
-} as const satisfies SessionSummary;
 
 const laneSnapshot = {
 	lane: "main",
@@ -327,18 +318,6 @@ describe("protocol validation", () => {
 		expect(parseClientMessage(cancel)).toEqual(cancel);
 		expect(() => parseClientMessage({ ...cancel, id: "" })).toThrow(ProtocolValidationError);
 		expect(() => parseClientMessage({ ...cancel, extra: true })).toThrow(ProtocolValidationError);
-	});
-
-	test("keeps presentation-safe Session summary validation at the typed service boundary", () => {
-		expect(Check(SessionSummarySchema, summary)).toBe(true);
-		expect(Check(SessionSummarySchema, { ...summary, cwd: "/private" })).toBe(false);
-		const message: ServerMessage = {
-			type: "response",
-			id: "request-1",
-			ok: true,
-			result: [summary],
-		};
-		expect(parseServerMessage(message)).toEqual(message);
 	});
 
 	test("validates lane watch snapshots and events", () => {

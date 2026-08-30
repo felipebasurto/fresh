@@ -2,47 +2,22 @@ import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import { LaneEventSchema, LaneSnapshotSchema } from "./harness.ts";
 import { type JsonValue, JsonValueSchema } from "./json-value.ts";
-import {
-	createRpcCallSchema,
-	createRpcResultSchema,
-	defineRpc,
-	type RpcArgs,
-	type RpcCall,
-	type RpcMethodName,
-	type RpcResult,
-	type RpcResultUnion,
-} from "./rpc.ts";
+import { createRpcCallSchema, defineRpc, type RpcCall, type RpcMethodName, type RpcResultUnion } from "./rpc.ts";
 
 export const PROTOCOL_VERSION = 6 as const;
 
 const IdSchema = Type.String({ minLength: 1 });
-const TimestampSchema = Type.Integer({ minimum: 0 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 	Type.Object(properties, { additionalProperties: false });
 
-export const ServerIdSchema = Type.String({
+const ServerIdSchema = Type.String({
 	pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
 });
-export const SessionIdSchema = IdSchema;
 export type ServerId = Static<typeof ServerIdSchema>;
-export type SessionId = Static<typeof SessionIdSchema>;
 
 export function isServerId(value: unknown): value is ServerId {
 	return Check(ServerIdSchema, value);
 }
-
-/** Presentation-safe Session directory record. */
-export const SessionSummarySchema = StrictObject({
-	serverId: ServerIdSchema,
-	sessionId: SessionIdSchema,
-	createdAt: TimestampSchema,
-});
-export type SessionSummary = Static<typeof SessionSummarySchema>;
-
-export const SessionCreateOptionsSchema = StrictObject({
-	id: Type.Optional(SessionIdSchema),
-});
-export type SessionCreateOptions = Static<typeof SessionCreateOptionsSchema>;
 
 /** Temporary typed facade for snapshot-first main-lane observation. */
 export const LaneWatchRpc = defineRpc({
@@ -63,23 +38,19 @@ export const LaneWatchRpc = defineRpc({
 		result: StrictObject({ watchId: IdSchema }),
 	},
 });
-export type LaneWatchRpcManifest = typeof LaneWatchRpc;
-export type LaneWatchRpcMethod = RpcMethodName<LaneWatchRpcManifest>;
-export type LaneWatchRpcArgs<TMethod extends LaneWatchRpcMethod> = RpcArgs<LaneWatchRpcManifest, TMethod>;
-export type LaneWatchRpcResult<TMethod extends LaneWatchRpcMethod> = RpcResult<LaneWatchRpcManifest, TMethod>;
-export type LaneWatchRpcCall = RpcCall<LaneWatchRpcManifest>;
-export type LaneWatchRpcResultUnion = RpcResultUnion<LaneWatchRpcManifest>;
-export const LaneWatchRpcCallSchema = Type.Unsafe<LaneWatchRpcCall>(createRpcCallSchema(LaneWatchRpc));
-export const LaneWatchRpcResultSchema = Type.Unsafe<LaneWatchRpcResultUnion>(createRpcResultSchema(LaneWatchRpc));
+type LaneWatchRpcMethod = RpcMethodName<typeof LaneWatchRpc>;
+export type LaneWatchRpcCall = RpcCall<typeof LaneWatchRpc>;
+export type LaneWatchRpcResultUnion = RpcResultUnion<typeof LaneWatchRpc>;
+const LaneWatchRpcCallSchema = Type.Unsafe<LaneWatchRpcCall>(createRpcCallSchema(LaneWatchRpc));
 
-export const ServiceModeSchema = Type.Union([Type.Literal("singleton"), Type.Literal("keyed")]);
+const ServiceModeSchema = Type.Union([Type.Literal("singleton"), Type.Literal("keyed")]);
 export type ServiceMode = Static<typeof ServiceModeSchema>;
 
-export const ServiceCatalogueEntrySchema = StrictObject({
+const ServiceCatalogueEntrySchema = StrictObject({
 	serviceId: IdSchema,
 	mode: ServiceModeSchema,
 });
-export const ServiceCatalogueSchema = Type.Array(ServiceCatalogueEntrySchema);
+const ServiceCatalogueSchema = Type.Array(ServiceCatalogueEntrySchema);
 export type ServiceCatalogueEntry = Static<typeof ServiceCatalogueEntrySchema>;
 
 export function parseServiceCatalogue(value: unknown): readonly ServiceCatalogueEntry[] {
@@ -89,12 +60,10 @@ export function parseServiceCatalogue(value: unknown): readonly ServiceCatalogue
 	return value;
 }
 
-export const ServiceInstanceAddressSchema = StrictObject({
+const ServiceInstanceAddressSchema = StrictObject({
 	key: IdSchema,
 	generation: Type.Integer({ minimum: 1 }),
 });
-export type ServiceInstanceAddress = Static<typeof ServiceInstanceAddressSchema>;
-
 /** Contract-agnostic service/member invocation carried by the transport. */
 export const ProtocolRpcCallSchema = StrictObject({
 	serviceId: Type.String({ minLength: 1 }),
@@ -105,7 +74,7 @@ export const ProtocolRpcCallSchema = StrictObject({
 export type ProtocolRpcCall = Static<typeof ProtocolRpcCallSchema>;
 export type ProtocolRpcResult = JsonValue | undefined;
 
-export const ServiceMemberSnapshotSchema = Type.Union([
+const ServiceMemberSnapshotSchema = Type.Union([
 	StrictObject({
 		name: IdSchema,
 		kind: Type.Literal("method"),
@@ -117,15 +86,11 @@ export const ServiceMemberSnapshotSchema = Type.Union([
 		value: JsonValueSchema,
 	}),
 ]);
-export type ServiceMemberSnapshot = Static<typeof ServiceMemberSnapshotSchema>;
-
-export const ServiceInstanceSnapshotSchema = StrictObject({
+const ServiceInstanceSnapshotSchema = StrictObject({
 	instance: Type.Optional(ServiceInstanceAddressSchema),
 	members: Type.Array(ServiceMemberSnapshotSchema),
 });
-export type ServiceInstanceSnapshot = Static<typeof ServiceInstanceSnapshotSchema>;
-
-export const ServiceSubscriptionSnapshotSchema = StrictObject({
+const ServiceSubscriptionSnapshotSchema = StrictObject({
 	serviceId: Type.String({ minLength: 1 }),
 	mode: ServiceModeSchema,
 	instances: Type.Array(ServiceInstanceSnapshotSchema),
@@ -166,12 +131,12 @@ export const ServiceProviderUpdateSchema = Type.Union([
 export type ServiceProviderUpdate = Static<typeof ServiceProviderUpdateSchema>;
 
 // TODO: check if this should be part of Chord.
-export const SERVICE_CONTROL_ID = "$chord.service";
-export const SERVICE_CATALOGUE_MEMBER = "catalogue";
-export const SERVICE_SUBSCRIBE_MEMBER = "subscribe";
-export const SERVICE_UNSUBSCRIBE_MEMBER = "unsubscribe";
+const SERVICE_CONTROL_ID = "$chord.service";
+const SERVICE_CATALOGUE_MEMBER = "catalogue";
+const SERVICE_SUBSCRIBE_MEMBER = "subscribe";
+const SERVICE_UNSUBSCRIBE_MEMBER = "unsubscribe";
 
-export type ServiceControlCall =
+type ServiceControlCall =
 	| { readonly type: "catalogue" }
 	| {
 			readonly type: "subscribe";
@@ -255,7 +220,7 @@ export const ServiceErrorCodeSchema = Type.Union([
 ]);
 export type ServiceErrorCode = Static<typeof ServiceErrorCodeSchema>;
 
-export const ProtocolErrorCodeSchema = Type.Union([
+const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("version"),
 	Type.Literal("wrong_server"),
 	Type.Literal("session_not_found"),
@@ -270,7 +235,7 @@ export const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("cancelled"),
 	Type.Literal("internal_error"),
 ]);
-export const ProtocolErrorSchema = StrictObject({
+const ProtocolErrorSchema = StrictObject({
 	code: ProtocolErrorCodeSchema,
 	message: Type.String(),
 });
@@ -278,46 +243,33 @@ export type ProtocolErrorCode = Static<typeof ProtocolErrorCodeSchema>;
 export type ProtocolError = Static<typeof ProtocolErrorSchema>;
 
 /** Must be the first frame sent by a client. */
-export const ClientHelloSchema = StrictObject({
+const ClientHelloSchema = StrictObject({
 	type: Type.Literal("hello"),
 	version: Type.Integer({ minimum: 0 }),
 });
 export type ClientHello = Static<typeof ClientHelloSchema>;
 
 /** A server-wide call, fenced to one logical server. */
-export const ServerTargetSchema = StrictObject({
+const ServerTargetSchema = StrictObject({
 	serverId: ServerIdSchema,
 });
-export type ServerTarget = Static<typeof ServerTargetSchema>;
-
-/** Durable Session identity, unique within the addressed logical server. */
-export const SessionAddressSchema = StrictObject({
-	serverId: ServerIdSchema,
-	sessionId: SessionIdSchema,
-});
-export type SessionAddress = Static<typeof SessionAddressSchema>;
-
 /** A session call, fenced to one logical server, durable session, and live attachment. */
-export const SessionTargetSchema = StrictObject({
+const SessionTargetSchema = StrictObject({
 	serverId: ServerIdSchema,
-	sessionId: SessionIdSchema,
+	sessionId: IdSchema,
 	attachmentId: IdSchema,
 });
 export type SessionTarget = Static<typeof SessionTargetSchema>;
-export const RpcTargetSchema = Type.Union([ServerTargetSchema, SessionTargetSchema]);
+const RpcTargetSchema = Type.Union([ServerTargetSchema, SessionTargetSchema]);
 export type RpcTarget = Static<typeof RpcTargetSchema>;
 
-export function isSessionTarget(target: RpcTarget): target is SessionTarget {
-	return "sessionId" in target;
-}
-
-export const RequestEnvelopeSchema = StrictObject({
+const RequestEnvelopeSchema = StrictObject({
 	type: Type.Literal("request"),
 	id: IdSchema,
 	target: RpcTargetSchema,
 	call: ProtocolRpcCallSchema,
 });
-export const CancelEnvelopeSchema = StrictObject({
+const CancelEnvelopeSchema = StrictObject({
 	type: Type.Literal("cancel"),
 	id: IdSchema,
 	target: RpcTargetSchema,
@@ -327,16 +279,16 @@ export type CancelEnvelope = Static<typeof CancelEnvelopeSchema>;
 export const ClientMessageSchema = Type.Union([ClientHelloSchema, RequestEnvelopeSchema, CancelEnvelopeSchema]);
 export type ClientMessage = Static<typeof ClientMessageSchema>;
 
-export const ServerHelloSchema = StrictObject({
+const ServerHelloSchema = StrictObject({
 	type: Type.Literal("hello"),
 	version: Type.Literal(PROTOCOL_VERSION),
 	serverId: ServerIdSchema,
 });
-export const ServerHelloErrorSchema = StrictObject({
+const ServerHelloErrorSchema = StrictObject({
 	type: Type.Literal("hello_error"),
 	error: ProtocolErrorSchema,
 });
-export const ResponseEnvelopeSchema = Type.Union([
+const ResponseEnvelopeSchema = Type.Union([
 	StrictObject({
 		type: Type.Literal("response"),
 		id: IdSchema,
@@ -350,18 +302,18 @@ export const ResponseEnvelopeSchema = Type.Union([
 		error: ProtocolErrorSchema,
 	}),
 ]);
-export const EventEnvelopeSchema = StrictObject({
+const EventEnvelopeSchema = StrictObject({
 	type: Type.Literal("event"),
 	watchId: IdSchema,
 	event: LaneEventSchema,
 });
-export const ServiceEventEnvelopeSchema = StrictObject({
+const ServiceEventEnvelopeSchema = StrictObject({
 	type: Type.Literal("service_update"),
 	subscriptionId: IdSchema,
 	update: ServiceProviderUpdateSchema,
 });
 /** Out-of-band update to this presentation's selected Session route. */
-export const AttachmentEnvelopeSchema = StrictObject({
+const AttachmentEnvelopeSchema = StrictObject({
 	type: Type.Literal("attachment"),
 	attachment: Type.Union([SessionTargetSchema, Type.Null()]),
 });

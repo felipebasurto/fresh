@@ -6,25 +6,25 @@ const TimestampSchema = Type.Integer({ minimum: 0 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 	Type.Object(properties, { additionalProperties: false });
 
-export const PromptImageSchema = StrictObject({
+const WireImageContentSchema = StrictObject({
 	type: Type.Literal("image"),
 	data: Type.String(),
 	mimeType: Type.String({ minLength: 1 }),
 });
-export type PromptImage = Static<typeof PromptImageSchema>;
+export type WireImageContent = Static<typeof WireImageContentSchema>;
 
-export const TextContentSchema = StrictObject({
+const TextContentSchema = StrictObject({
 	type: Type.Literal("text"),
 	text: Type.String(),
 	textSignature: Type.Optional(Type.String()),
 });
-export const ThinkingContentSchema = StrictObject({
+const ThinkingContentSchema = StrictObject({
 	type: Type.Literal("thinking"),
 	thinking: Type.String(),
 	thinkingSignature: Type.Optional(Type.String()),
 	redacted: Type.Optional(Type.Boolean()),
 });
-export const ToolCallSchema = StrictObject({
+const ToolCallSchema = StrictObject({
 	type: Type.Literal("toolCall"),
 	id: Type.String(),
 	name: Type.String(),
@@ -32,7 +32,7 @@ export const ToolCallSchema = StrictObject({
 	thoughtSignature: Type.Optional(Type.String()),
 	namespace: Type.Optional(Type.String()),
 });
-export const UsageSchema = StrictObject({
+const UsageSchema = StrictObject({
 	input: Type.Number(),
 	output: Type.Number(),
 	cacheRead: Type.Number(),
@@ -69,7 +69,7 @@ const AssistantMessageDiagnosticSchema = StrictObject({
 	error: Type.Optional(DiagnosticErrorSchema),
 	details: Type.Optional(Type.Record(Type.String(), JsonValueSchema)),
 });
-export const AssistantMessageSchema = StrictObject({
+const AssistantMessageSchema = StrictObject({
 	role: Type.Literal("assistant"),
 	content: Type.Array(Type.Union([TextContentSchema, ThinkingContentSchema, ToolCallSchema])),
 	api: Type.String(),
@@ -96,14 +96,14 @@ export const AssistantMessageSchema = StrictObject({
 });
 const UserMessageSchema = StrictObject({
 	role: Type.Literal("user"),
-	content: Type.Union([Type.String(), Type.Array(Type.Union([TextContentSchema, PromptImageSchema]))]),
+	content: Type.Union([Type.String(), Type.Array(Type.Union([TextContentSchema, WireImageContentSchema]))]),
 	timestamp: TimestampSchema,
 });
 const ToolResultMessageSchema = StrictObject({
 	role: Type.Literal("toolResult"),
 	toolCallId: Type.String(),
 	toolName: Type.String(),
-	content: Type.Array(Type.Union([TextContentSchema, PromptImageSchema])),
+	content: Type.Array(Type.Union([TextContentSchema, WireImageContentSchema])),
 	details: Type.Optional(JsonValueSchema),
 	usage: Type.Optional(UsageSchema),
 	addedToolNames: Type.Optional(Type.Array(Type.String())),
@@ -124,7 +124,7 @@ const BashExecutionMessageSchema = StrictObject({
 const CustomMessageSchema = StrictObject({
 	role: Type.Literal("custom"),
 	customType: Type.String(),
-	content: Type.Union([Type.String(), Type.Array(Type.Union([TextContentSchema, PromptImageSchema]))]),
+	content: Type.Union([Type.String(), Type.Array(Type.Union([TextContentSchema, WireImageContentSchema]))]),
 	display: Type.Boolean(),
 	details: Type.Optional(JsonValueSchema),
 	timestamp: TimestampSchema,
@@ -143,7 +143,7 @@ const CompactionSummaryMessageSchema = StrictObject({
 });
 
 /** Closed set of built-in AgentMessage shapes supported by the wire protocol. */
-export const PromptMessageSchema = Type.Union([
+const WireAgentMessageSchema = Type.Union([
 	UserMessageSchema,
 	AssistantMessageSchema,
 	ToolResultMessageSchema,
@@ -152,7 +152,7 @@ export const PromptMessageSchema = Type.Union([
 	BranchSummaryMessageSchema,
 	CompactionSummaryMessageSchema,
 ]);
-export type PromptMessage = Static<typeof PromptMessageSchema>;
+export type WireAgentMessage = Static<typeof WireAgentMessageSchema>;
 
 const OperationErrorSchema = StrictObject({
 	code: Type.String(),
@@ -167,7 +167,7 @@ const OperationResultBase = {
 	startedAt: TimestampSchema,
 	endedAt: TimestampSchema,
 };
-export const OperationResultRecordSchema = Type.Union([
+const OperationResultRecordSchema = Type.Union([
 	StrictObject({
 		...OperationResultBase,
 		status: Type.Union([Type.Literal("completed"), Type.Literal("declined"), Type.Literal("aborted")]),
@@ -175,14 +175,14 @@ export const OperationResultRecordSchema = Type.Union([
 	StrictObject({ ...OperationResultBase, status: Type.Literal("failed"), error: OperationErrorSchema }),
 ]);
 export type OperationResultRecord = Static<typeof OperationResultRecordSchema>;
-export const ToolOutputSchema = StrictObject({
-	content: Type.Array(Type.Union([TextContentSchema, PromptImageSchema])),
+const ToolOutputSchema = StrictObject({
+	content: Type.Array(Type.Union([TextContentSchema, WireImageContentSchema])),
 	details: Type.Optional(JsonValueSchema),
 	usage: Type.Optional(UsageSchema),
 });
 export type ToolOutput = Static<typeof ToolOutputSchema>;
 
-export const AssistantMessageFrameSchema = Type.Union([
+const AssistantMessageFrameSchema = Type.Union([
 	StrictObject({ type: Type.Literal("start"), partial: AssistantMessageSchema }),
 	StrictObject({
 		type: Type.Literal("text_start"),
@@ -246,7 +246,7 @@ const MessageEntrySchema = StrictObject({
 	seq: Type.Integer({ minimum: 1 }),
 	timestamp: TimestampSchema,
 	type: Type.Literal("message"),
-	message: PromptMessageSchema,
+	message: WireAgentMessageSchema,
 	terminate: Type.Optional(Type.Literal(true)),
 });
 const CompactionEntrySchema = StrictObject({
@@ -256,7 +256,7 @@ const CompactionEntrySchema = StrictObject({
 	timestamp: TimestampSchema,
 	type: Type.Literal("compaction"),
 	summary: Type.String(),
-	retainedTail: Type.Array(PromptMessageSchema),
+	retainedTail: Type.Array(WireAgentMessageSchema),
 	tokensBefore: Type.Number(),
 	details: Type.Optional(JsonValueSchema),
 	usage: Type.Optional(UsageSchema),
@@ -283,7 +283,7 @@ const CustomEntrySchema = StrictObject({
 	customType: Type.String({ minLength: 1 }),
 	data: Type.Optional(JsonValueSchema),
 });
-export const LaneEntrySchema = Type.Union([
+const LaneEntrySchema = Type.Union([
 	MessageEntrySchema,
 	CompactionEntrySchema,
 	BranchSummaryEntrySchema,
@@ -291,7 +291,7 @@ export const LaneEntrySchema = Type.Union([
 ]);
 export type LaneEntry = Static<typeof LaneEntrySchema>;
 
-export const LaneQueuedItemSchema = Type.Union([
+const LaneQueuedItemSchema = Type.Union([
 	StrictObject({
 		entryId: IdSchema,
 		kind: Type.Union([
@@ -301,7 +301,7 @@ export const LaneQueuedItemSchema = Type.Union([
 			Type.Literal("write"),
 		]),
 		type: Type.Literal("message"),
-		message: PromptMessageSchema,
+		message: WireAgentMessageSchema,
 	}),
 	StrictObject({
 		entryId: IdSchema,
@@ -311,7 +311,6 @@ export const LaneQueuedItemSchema = Type.Union([
 		data: Type.Optional(JsonValueSchema),
 	}),
 ]);
-export type LaneQueuedItem = Static<typeof LaneQueuedItemSchema>;
 const RunningToolSchema = StrictObject({
 	toolCallId: Type.String(),
 	toolName: Type.String(),
@@ -390,8 +389,8 @@ export const LaneEventSchema = Type.Union([
 	StrictObject({
 		type: Type.Literal("operation_abort"),
 		operationId: IdSchema,
-		steer: Type.Array(PromptMessageSchema),
-		followUp: Type.Array(PromptMessageSchema),
+		steer: Type.Array(WireAgentMessageSchema),
+		followUp: Type.Array(WireAgentMessageSchema),
 		...LaneEventBase,
 	}),
 	StrictObject({
@@ -402,7 +401,7 @@ export const LaneEventSchema = Type.Union([
 	StrictObject({
 		type: Type.Literal("message_start"),
 		runId: Type.Optional(IdSchema),
-		message: PromptMessageSchema,
+		message: WireAgentMessageSchema,
 		...LaneEventBase,
 	}),
 	StrictObject({
@@ -415,7 +414,7 @@ export const LaneEventSchema = Type.Union([
 	StrictObject({
 		type: Type.Literal("message_end"),
 		runId: Type.Optional(IdSchema),
-		message: PromptMessageSchema,
+		message: WireAgentMessageSchema,
 		entryId: Type.Optional(IdSchema),
 		...LaneEventBase,
 	}),

@@ -261,24 +261,21 @@ export class Server<TMetadata extends SessionMetadata = SessionMetadata> {
 		}
 
 		if (this.closing || state.disconnected || state.stage !== "handshaking" || state.connection.closed) return;
-		const serviceHost = this.host.serverServices;
-		if (serviceHost !== undefined) {
-			const services = await serviceHost.attachClient(
-				{
-					attachSession: async (sessionId, context) => {
-						await this.sessions.attachClient(state, sessionId, context);
-					},
-					detachSession: (context) => this.sessions.detachClient(state, context),
-					prepareSessionRemoval: (sessionId, context) => this.sessions.removeSession(sessionId, context),
+		const services = await this.host.serverServices.attachClient(
+			{
+				attachSession: async (sessionId, context) => {
+					await this.sessions.attachClient(state, sessionId, context);
 				},
-				TODO_CONTEXT,
-			);
-			if (this.closing || state.disconnected || state.stage !== "handshaking" || state.connection.closed) {
-				await services.release(TODO_CONTEXT);
-				return;
-			}
-			state.serverServices = services;
+				detachSession: (context) => this.sessions.detachClient(state, context),
+				prepareSessionRemoval: (sessionId, context) => this.sessions.removeSession(sessionId, context),
+			},
+			TODO_CONTEXT,
+		);
+		if (this.closing || state.disconnected || state.stage !== "handshaking" || state.connection.closed) {
+			await services.release(TODO_CONTEXT);
+			return;
 		}
+		state.serverServices = services;
 		const sent = await this.sendMessage(state, {
 			type: "hello",
 			version: PROTOCOL_VERSION,

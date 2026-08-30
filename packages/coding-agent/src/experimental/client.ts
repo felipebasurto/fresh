@@ -1,9 +1,10 @@
 import { resolve } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
-import type { LaneEvent, PromptMessage, SessionAddress } from "@earendil-works/pi-protocol";
+import type { LaneEvent, WireAgentMessage } from "@earendil-works/pi-protocol";
 import type { ClientCommand } from "../cli/experimental/commands/client.ts";
 import { activateBuiltinClientServices, openClientRuntime } from "./client-runtime.ts";
 import type { AgentOperationResponse } from "./services/agent-controller.ts";
+import type { SessionAddress } from "./services/sessions.ts";
 
 export type ClientResult =
 	| {
@@ -107,7 +108,7 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 	}
 }
 
-function messageText(message: Extract<PromptMessage, { role: "assistant" }>): string {
+function messageText(message: Extract<WireAgentMessage, { role: "assistant" }>): string {
 	return message.content
 		.filter((content) => content.type === "text")
 		.map((content) => content.text)

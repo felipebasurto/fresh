@@ -13,7 +13,7 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { Client, ServerError as ClientServerError, DisconnectedError } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, type UnixServerRoute } from "@earendil-works/pi-client/unix";
-import { isServerId, type ServerId, type SessionCreateOptions, type SessionSummary } from "@earendil-works/pi-protocol";
+import { isServerId, type ServerId } from "@earendil-works/pi-protocol";
 import {
 	ServerError as RoutedServerError,
 	type Server,
@@ -45,6 +45,7 @@ import {
 import { RadiusRelayAuthResolver } from "./radius-auth.ts";
 import { RadiusRelayHost, type RadiusRelayHostStatus } from "./radius-relay.ts";
 import { createExperimentalServerServices } from "./services/server.ts";
+import type { SessionCreateOptions, SessionSummary } from "./services/sessions.ts";
 import { SessionPluginSelectionConflictError, SessionWorkerManager } from "./session-worker-manager.ts";
 
 export const ENV_SERVER_DIR = "PI_SERVER_DIR";
@@ -381,10 +382,16 @@ async function startServerBackend(
 	const sessionDir = resolveSessionDirectory(options.sessionDir);
 	const executionEnv = new NodeExecutionEnv({ cwd: process.cwd() });
 	const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot: sessionDir });
-	const listSessions: ServerHost<JsonlSessionMetadata>["sessions"]["list"] = async (context) => {
+	const listSessions = async (context: Context): Promise<JsonlSessionMetadata[]> => {
 		const sessions = new Map((await repo.list(undefined, context)).map((metadata) => [metadata.path, metadata]));
 		for (const metadata of workers.trackedSessions) sessions.set(metadata.path, metadata);
 		return [...sessions.values()];
+	};
+	const resolveSession = async (sessionId: string, context: Context): Promise<JsonlSessionMetadata> => {
+		const matches = (await listSessions(context)).filter((metadata) => metadata.id === sessionId);
+		if (matches.length === 0) throw new SessionNotFoundError(`Unknown session: ${sessionId}`);
+		if (matches.length > 1) throw new SessionAmbiguousError();
+		return matches[0]!;
 	};
 	const createSession = async (
 		createOptions: SessionCreateOptions,
@@ -415,21 +422,17 @@ async function startServerBackend(
 				.sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.createdAt - right.createdAt),
 		create: async (createOptions, context) => summarize(await createSession(createOptions, context)),
 		remove: async (sessionId, context) => {
-			const matches = (await listSessions(context)).filter((metadata) => metadata.id === sessionId);
-			if (matches.length === 0) throw new SessionNotFoundError(`Unknown session: ${sessionId}`);
-			if (matches.length > 1) throw new SessionAmbiguousError();
-			await workers.closeSession(matches[0]!, context);
-			await repo.delete(matches[0]!, context);
-			await options.removeSessionPlugins(matches[0]!);
+			const metadata = await resolveSession(sessionId, context);
+			await workers.closeSession(metadata, context);
+			await repo.delete(metadata, context);
+			await options.removeSessionPlugins(metadata);
 		},
 		async prepareSessionPlugins(sessionId, packagePaths, context) {
-			const matches = (await listSessions(context)).filter((metadata) => metadata.id === sessionId);
-			if (matches.length === 0) throw new SessionNotFoundError(`Unknown session: ${sessionId}`);
-			if (matches.length > 1) throw new SessionAmbiguousError();
+			const metadata = await resolveSession(sessionId, context);
 			let selected: ResolvedSessionPlugins;
 			try {
-				selected = await options.resolveSessionPlugins(matches[0]!, packagePaths, context);
-				workers.assertSessionPluginManifestPaths(matches[0]!, selected.manifestPaths);
+				selected = await options.resolveSessionPlugins(metadata, packagePaths, context);
+				workers.assertSessionPluginManifestPaths(metadata, selected.manifestPaths);
 			} catch (error) {
 				if (error instanceof SessionPluginSelectionConflictError) {
 					throw new RoutedServerError("service_invalid_value", error.message);
@@ -454,7 +457,7 @@ async function startServerBackend(
 	});
 	const host: ServerHost<JsonlSessionMetadata> = {
 		serverServices: serverServices.host,
-		sessions: { list: listSessions },
+		resolveSession,
 		openSession: async (metadata, context) => {
 			const selected = await options.resolveSessionPlugins(metadata, undefined, context);
 			return workers.openSession(metadata, context, selected.manifestPaths);

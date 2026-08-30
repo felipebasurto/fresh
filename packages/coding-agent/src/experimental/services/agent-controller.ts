@@ -1,9 +1,14 @@
 import { type Context, defineService } from "@earendil-works/chord";
-import type { PromptImage } from "@earendil-works/pi-protocol";
+
+export interface AgentPromptImage {
+	type: "image";
+	data: string;
+	mimeType: string;
+}
 
 export interface AgentPromptRequest {
 	message: string;
-	images: PromptImage[] | null;
+	images: AgentPromptImage[] | null;
 }
 
 export interface AgentOperationError {

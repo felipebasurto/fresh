@@ -12,15 +12,11 @@ import { activateBuiltinClientServices, openClientRuntime } from "../src/experim
 import { createPresentationFacetLoaders } from "../src/experimental/plugins/bundled.ts";
 import * as processRuntime from "../src/experimental/process.ts";
 import { activateServer, type RunningServer, startServer } from "../src/experimental/server.ts";
-import {
-	createServerServiceBinding,
-	createSessionServiceBinding,
-	createSessionServiceSource,
-	type SessionAttachmentState,
-} from "../src/experimental/services/connection.ts";
+import { createSessionServiceSource, type SessionAttachmentState } from "../src/experimental/services/connection.ts";
 import { Models } from "../src/experimental/services/models.ts";
 import { PresentationPlugins } from "../src/experimental/services/plugins.ts";
 import { SessionDirectory, SessionManagement } from "../src/experimental/services/sessions.ts";
+import { createServerServiceBinding, createSessionServiceBinding } from "./experimental-service-binding.ts";
 import {
 	configureExperimentalWorkerModel,
 	createExperimentalSessions,

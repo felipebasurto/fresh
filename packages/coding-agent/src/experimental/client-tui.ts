@@ -8,7 +8,7 @@ import {
 	type LoadedFacets,
 } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { JsonValue, SessionSummary } from "@earendil-works/pi-protocol";
+import type { JsonValue } from "@earendil-works/pi-protocol";
 import {
 	CombinedAutocompleteProvider,
 	type Component,
@@ -42,7 +42,7 @@ import type {
 } from "./services/connection.ts";
 import { PresentationPlugins } from "./services/plugins.ts";
 import { PresentationUI } from "./services/presentation-ui.ts";
-import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
+import { SessionDirectory, SessionManagement, type SessionSummary } from "./services/sessions.ts";
 import { SlashCommands } from "./services/slash-commands.ts";
 import {
 	createBuiltInSlashCommandsFacet,

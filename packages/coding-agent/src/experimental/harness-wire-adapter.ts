@@ -25,18 +25,18 @@ import type {
 	LaneEvent,
 	LaneSnapshot,
 	OperationResultRecord,
-	PromptImage,
-	PromptMessage,
 	ToolOutput,
+	WireAgentMessage,
+	WireImageContent,
 } from "@earendil-works/pi-protocol";
 
-type WireAssistantMessage = Extract<PromptMessage, { role: "assistant" }>;
-type WireUserMessage = Extract<PromptMessage, { role: "user" }>;
-type WireToolResultMessage = Extract<PromptMessage, { role: "toolResult" }>;
-type WireBashExecutionMessage = Extract<PromptMessage, { role: "bashExecution" }>;
-type WireCustomMessage = Extract<PromptMessage, { role: "custom" }>;
-type WireBranchSummaryMessage = Extract<PromptMessage, { role: "branchSummary" }>;
-type WireCompactionSummaryMessage = Extract<PromptMessage, { role: "compactionSummary" }>;
+type WireAssistantMessage = Extract<WireAgentMessage, { role: "assistant" }>;
+type WireUserMessage = Extract<WireAgentMessage, { role: "user" }>;
+type WireToolResultMessage = Extract<WireAgentMessage, { role: "toolResult" }>;
+type WireBashExecutionMessage = Extract<WireAgentMessage, { role: "bashExecution" }>;
+type WireCustomMessage = Extract<WireAgentMessage, { role: "custom" }>;
+type WireBranchSummaryMessage = Extract<WireAgentMessage, { role: "branchSummary" }>;
+type WireCompactionSummaryMessage = Extract<WireAgentMessage, { role: "compactionSummary" }>;
 type SameKeys<TLeft, TRight> = Exclude<keyof TLeft, keyof TRight> extends never
 	? Exclude<keyof TRight, keyof TLeft> extends never
 		? true
@@ -46,7 +46,7 @@ type Assert<T extends true> = T;
 
 /** Compile-time alarms for field additions on either side of each closed message adapter. */
 export type HarnessWireAdapterCompatibility = [
-	Assert<SameKeys<PromptImage, ImageContent>>,
+	Assert<SameKeys<WireImageContent, ImageContent>>,
 	Assert<SameKeys<WireUserMessage, UserMessage>>,
 	Assert<SameKeys<WireAssistantMessage, AssistantMessage>>,
 	Assert<SameKeys<WireToolResultMessage, ToolResultMessage>>,
@@ -55,7 +55,7 @@ export type HarnessWireAdapterCompatibility = [
 	Assert<SameKeys<WireBranchSummaryMessage, BranchSummaryMessage>>,
 	Assert<SameKeys<WireCompactionSummaryMessage, CompactionSummaryMessage>>,
 ];
-function toHarnessUsage(usage: Usage): Usage {
+function toWireUsage(usage: Usage): Usage {
 	return {
 		input: usage.input,
 		output: usage.output,
@@ -159,7 +159,7 @@ function toWireAssistantMessage(message: AssistantMessage): WireAssistantMessage
 								}),
 					})),
 				}),
-		usage: toHarnessUsage(message.usage),
+		usage: toWireUsage(message.usage),
 		stopReason: message.stopReason,
 		...(message.deferred === undefined ? {} : { deferred: toWireDeferred(message.deferred) }),
 		...(message.errorMessage === undefined ? {} : { errorMessage: message.errorMessage }),
@@ -185,7 +185,7 @@ function toWireJsonValue(value: unknown): JsonValue {
 	return value as JsonValue;
 }
 
-function toWireMessage(message: AgentMessage): PromptMessage {
+function toWireMessage(message: AgentMessage): WireAgentMessage {
 	switch (message.role) {
 		case "user":
 			return {
@@ -223,7 +223,7 @@ function toWireMessage(message: AgentMessage): PromptMessage {
 						: { type: "image" as const, data: content.data, mimeType: content.mimeType },
 				),
 				...(message.details === undefined ? {} : { details: toWireJsonValue(message.details) }),
-				...(message.usage === undefined ? {} : { usage: toHarnessUsage(message.usage) }),
+				...(message.usage === undefined ? {} : { usage: toWireUsage(message.usage) }),
 				...(message.addedToolNames === undefined ? {} : { addedToolNames: [...message.addedToolNames] }),
 				isError: message.isError,
 				timestamp: message.timestamp,
@@ -299,7 +299,7 @@ function toWireEntry(entry: Entry): LaneEntry {
 				retainedTail: entry.retainedTail.map(toWireMessage),
 				tokensBefore: entry.tokensBefore,
 				...(entry.details === undefined ? {} : { details: entry.details }),
-				...(entry.usage === undefined ? {} : { usage: toHarnessUsage(entry.usage) }),
+				...(entry.usage === undefined ? {} : { usage: toWireUsage(entry.usage) }),
 				fromHook: entry.fromHook,
 			};
 		case "branch_summary":
@@ -309,7 +309,7 @@ function toWireEntry(entry: Entry): LaneEntry {
 				fromId: entry.fromId,
 				summary: entry.summary,
 				...(entry.details === undefined ? {} : { details: entry.details }),
-				...(entry.usage === undefined ? {} : { usage: toHarnessUsage(entry.usage) }),
+				...(entry.usage === undefined ? {} : { usage: toWireUsage(entry.usage) }),
 				fromHook: entry.fromHook,
 			};
 		case "custom":
@@ -336,7 +336,7 @@ function toWireToolOutput(result: AgentToolResult<unknown>): ToolOutput {
 				: { type: "image" as const, data: content.data, mimeType: content.mimeType },
 		),
 		...(result.details === undefined ? {} : { details: toWireJsonValue(result.details) }),
-		...(result.usage === undefined ? {} : { usage: toHarnessUsage(result.usage) }),
+		...(result.usage === undefined ? {} : { usage: toWireUsage(result.usage) }),
 	};
 }
 
@@ -403,7 +403,7 @@ export function toWireLaneSnapshot(snapshot: HarnessLaneSnapshot): LaneSnapshot 
 			thinkingLevel: snapshot.configuration.thinkingLevel,
 			activeToolNames: [...snapshot.configuration.activeToolNames],
 		},
-		stats: { messageCount: snapshot.stats.messageCount, usage: toHarnessUsage(snapshot.stats.usage) },
+		stats: { messageCount: snapshot.stats.messageCount, usage: toWireUsage(snapshot.stats.usage) },
 		operation:
 			snapshot.operation === null
 				? null
@@ -526,10 +526,10 @@ export function toWireLaneEvent(event: HarnessEvent): LaneEvent | undefined {
 				lane: event.lane,
 				row: {
 					...event.row,
-					usage: toHarnessUsage(event.row.usage),
+					usage: toWireUsage(event.row.usage),
 					...(event.row.details === undefined ? {} : { details: toWireJsonValue(event.row.details) }),
 				},
-				totals: toHarnessUsage(event.totals),
+				totals: toWireUsage(event.totals),
 			};
 		case "config_update":
 			switch (event.property) {

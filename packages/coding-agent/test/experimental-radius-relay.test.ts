@@ -165,10 +165,18 @@ describe("experimental Radius relay", () => {
 		const hostWebSockets = socketFactory();
 		const clientWebSockets = socketFactory();
 		const serverHost: ServerHost = {
-			sessions: {
-				async list() {
-					return [];
+			serverServices: {
+				attachClient() {
+					return {
+						async invokeService() {
+							throw new Error("not used");
+						},
+						release() {},
+					};
 				},
+			},
+			async resolveSession() {
+				throw new Error("not used");
 			},
 			async openSession() {
 				throw new Error("not used");
