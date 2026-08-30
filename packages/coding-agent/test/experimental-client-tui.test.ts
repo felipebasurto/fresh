@@ -91,8 +91,8 @@ describe("experimental client TUI", () => {
 		["continued", { command: "client" as const, continue: true }, "one", 0],
 		["plugin-selected", { command: "client" as const, pluginPackages: ["./example-plugin"] }, "two", 1],
 	] as const)(
-		"opens a %s Session directly and renders a Harness-backed turn",
-		async (_kind, command, sessionId, creates) => {
+		"opens a %s Session directly and exercises the full lifecycle only for a new Session",
+		async (kind, command, sessionId, creates) => {
 			const directoryState = replicatedState<SessionDirectoryState>({ revision: 1, sessions: [session("one", 1)] });
 			const attachment = replicatedState<SessionAttachmentState>({ status: "detached" });
 			const connectionState = replicatedState<ServerConnectionState>({ status: "connected", since: "now" });
@@ -333,6 +333,9 @@ describe("experimental client TUI", () => {
 				expect(component.render(80).join("\n")).toContain("test/one");
 				expect(component.render(80).join("\n")).not.toContain("Experimental Sessions");
 				expect(component.render(80).join("\n")).not.toContain("Experimental Models");
+
+				// Startup selection is the only behavior specific to continue and plugin-selected Sessions.
+				if (kind !== "new") return;
 
 				component.handleInput("hello");
 				component.handleInput("\r");

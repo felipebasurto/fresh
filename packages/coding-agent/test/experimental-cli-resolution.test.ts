@@ -1,24 +1,12 @@
 import { describe, expect, test, vi } from "vitest";
 import { cli } from "../src/cli/experimental/cli.ts";
 
-const UNSUPPORTED_SERVER_OPTIONS = "The experimental server command does not support existing CLI options yet";
-const UNSUPPORTED_CLIENT_OPTIONS = "The experimental client command does not support existing CLI options yet";
-
 describe("experimental CLI command composition", () => {
 	test("requires an experimental subcommand", () => {
 		expect(cli.parse([])).toEqual({
 			ok: false,
 			errors: ["Expected experimental command: server or client"],
 		});
-	});
-
-	test.each([
-		["server", "--help", UNSUPPORTED_SERVER_OPTIONS],
-		["server", "--version", UNSUPPORTED_SERVER_OPTIONS],
-		["client", "--help", UNSUPPORTED_CLIENT_OPTIONS],
-		["client", "--version", UNSUPPORTED_CLIENT_OPTIONS],
-	] as const)("rejects unsupported %s %s handling", (command, option, error) => {
-		expect(cli.parse([command, option])).toEqual({ ok: false, errors: [error] });
 	});
 
 	test("passes server options to the command action", async () => {

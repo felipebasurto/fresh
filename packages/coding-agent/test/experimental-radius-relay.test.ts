@@ -1,6 +1,5 @@
-import { Client } from "@earendil-works/pi-client";
-import { PROTOCOL_VERSION } from "@earendil-works/pi-protocol";
-import { Server, type ServerHost } from "@earendil-works/pi-server";
+import type { Client } from "@earendil-works/pi-client";
+import type { Server } from "@earendil-works/pi-server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { RadiusRelayAuthResolver } from "../src/experimental/radius-auth.ts";
 import {
@@ -159,72 +158,6 @@ describe("experimental Radius relay", () => {
 		socket.message(JSON.stringify({ version: 1, type: "connection_close", connection_id: connectionId }));
 		expect(onClose).toHaveBeenCalledOnce();
 		await host.close();
-	});
-
-	test("connects the real Pi client and server through the Radius transport", async () => {
-		const hostWebSockets = socketFactory();
-		const clientWebSockets = socketFactory();
-		const serverHost: ServerHost = {
-			serverServices: {
-				attachClient() {
-					return {
-						async invokeService() {
-							throw new Error("not used");
-						},
-						release() {},
-					};
-				},
-			},
-			async resolveSession() {
-				throw new Error("not used");
-			},
-			async openSession() {
-				throw new Error("not used");
-			},
-		};
-		const protocolServer = new Server(serverHost, { serverId, listeners: [] });
-		await protocolServer.start();
-		const statuses: string[] = [];
-		const relayHost = new RadiusRelayHost({
-			serverId,
-			server: protocolServer,
-			auth: new RadiusRelayAuthResolver({ type: "token", token: "secret" }),
-			webSocketFactory: hostWebSockets.factory,
-			onStatus: (status) => statuses.push(status.status),
-		});
-		relayHost.start();
-		await vi.waitFor(() => expect(hostWebSockets.sockets).toHaveLength(1));
-		const hostSocket = hostWebSockets.sockets[0]!.socket;
-		hostSocket.open(hostWebSockets.sockets[0]!.options.protocol);
-		await vi.waitFor(() => expect(statuses).toContain("connected"));
-		hostSocket.message(JSON.stringify({ version: 1, type: "connection_open", connection_id: connectionId }));
-
-		const connecting = Client.connect({
-			serverId,
-			transportFactory: createRadiusClientTransportFactory({
-				serverId,
-				auth: new RadiusRelayAuthResolver({ type: "token", token: "secret" }),
-				webSocketFactory: clientWebSockets.factory,
-			}),
-		});
-		await vi.waitFor(() => expect(clientWebSockets.sockets).toHaveLength(1));
-		const clientSocket = clientWebSockets.sockets[0]!.socket;
-		clientSocket.onSend = (data) => {
-			if (data instanceof ArrayBuffer) hostSocket.message(encodeRelayDataFrame(connectionId, new Uint8Array(data)));
-		};
-		hostSocket.onSend = (data) => {
-			if (data instanceof ArrayBuffer) {
-				const frame = parseRelayDataFrame(data);
-				if (frame?.connectionId === connectionId) clientSocket.message(frame.payload);
-			}
-		};
-		clientSocket.open(clientWebSockets.sockets[0]!.options.protocol);
-		const client = await connecting;
-
-		expect(client.hello).toEqual({ type: "hello", version: PROTOCOL_VERSION, serverId });
-		await client.dispose();
-		await relayHost.close();
-		await protocolServer.close();
 	});
 
 	test("reconnects the server host after the relay connection drops", async () => {

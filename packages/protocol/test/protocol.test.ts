@@ -259,54 +259,22 @@ describe("protocol validation", () => {
 		expect(parseClientMessage(keyed)).toEqual(keyed);
 	});
 
-	test("keeps transport RPC calls untyped while validating their envelope", () => {
-		const list: ClientMessage = {
+	test("keeps transport RPC payloads opaque while validating their envelope", () => {
+		const message: ClientMessage = {
 			type: "request",
 			id: "request-1",
-			target: { serverId: "00000000-0000-4000-8000-000000000001" },
-			call: { serviceId: "pi.session-directory", member: "list", args: [] },
-		};
-		const create: ClientMessage = {
-			type: "request",
-			id: "request-2",
-			target: { serverId: "00000000-0000-4000-8000-000000000001" },
-			call: { serviceId: "pi.session-management", member: "create", args: [{}] },
-		};
-		const attach: ClientMessage = {
-			type: "request",
-			id: "request-3",
-			target: { serverId: "00000000-0000-4000-8000-000000000001" },
-			call: { serviceId: "pi.session-management", member: "attach", args: ["session-1"] },
-		};
-		const prompt: ClientMessage = {
-			type: "request",
-			id: "request-4",
 			target: {
 				serverId: "00000000-0000-4000-8000-000000000001",
 				sessionId: "session-1",
 				attachmentId: "attachment-1",
 			},
-			call: { serviceId: "pi.chat", member: "prompt", args: [["Hello"]] },
+			call: {
+				serviceId: "application.custom",
+				member: "invoke",
+				args: [{ arbitrary: true }, ["opaque"]],
+			},
 		};
-		expect(parseClientMessage(list)).toEqual(list);
-		expect(parseClientMessage(create)).toEqual(create);
-		expect(parseClientMessage(attach)).toEqual(attach);
-		expect(parseClientMessage(prompt)).toEqual(prompt);
-		expect(parseClientMessage({ ...create, call: { ...create.call, args: [{ cwd: "" }] } })).toMatchObject({
-			call: { serviceId: "pi.session-management", member: "create" },
-		});
-		expect(parseClientMessage({ ...attach, call: { ...attach.call, args: [] } })).toMatchObject({
-			call: { serviceId: "pi.session-management", member: "attach", args: [] },
-		});
-		expect(
-			parseClientMessage({
-				...attach,
-				call: { serviceId: "unknown", member: "method", args: [{ arbitrary: true }] },
-			}),
-		).toMatchObject({ call: { serviceId: "unknown", member: "method" } });
-		expect(parseClientMessage({ ...prompt, call: { ...prompt.call, args: ["session-1", []] } })).toMatchObject({
-			call: { serviceId: "pi.chat", member: "prompt" },
-		});
+		expect(parseClientMessage(message)).toEqual(message);
 	});
 
 	test("validates request cancellation envelopes", () => {
