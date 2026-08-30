@@ -189,14 +189,14 @@ describe("experimental client TUI", () => {
 			});
 
 			const reloadSource =
-				'import { defineFacet, defineService } from "@earendil-works/chord";\nconst Models = defineService("pi.models");\nexport default defineFacet({ id: "test-tui-facet", setup(env) { env.use(Models); } });\n';
+				'"use strict";\nconst { defineFacet, defineService } = require("@earendil-works/chord");\nconst Models = defineService("pi.models");\nmodule.exports = { __esModule: true, default: defineFacet({ id: "test-tui-facet", setup(env) { env.use(Models); } }) };\n';
 			const reloadArtifact: FacetBundleArtifact = {
 				format: FACET_BUNDLE_ARTIFACT_FORMAT,
 				formatVersion: FACET_BUNDLE_ARTIFACT_FORMAT_VERSION,
 				plugin: { id: "test-tui-plugin" },
 				entryName: "tui",
 				entry: {
-					file: "tui.js",
+					file: "tui.cjs",
 					integrity: `sha256-${createHash("sha256").update(reloadSource).digest("base64")}`,
 					externalImports: ["@earendil-works/chord"],
 				},

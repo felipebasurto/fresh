@@ -59,10 +59,10 @@ prefix is `$chord.*`.
 
 ## Bundling and loading facets
 
-`@earendil-works/chord/bundler` uses esbuild to turn opaque application entry
-names into independent, content-addressed ESM files. The package-level API reads
-plugin identity and build configuration from `package.json`, then applies facet
-path conventions supplied by the host application:
+`@earendil-works/chord/bundler` uses esbuild to turn ESM or TypeScript application
+entries into independent, content-addressed CommonJS files. The package-level API
+reads plugin identity and build configuration from `package.json`, then applies
+facet path conventions supplied by the host application:
 
 ```json
 {
@@ -100,7 +100,7 @@ when loading. Chord never installs dependencies or runs package lifecycle
 scripts. `bundleFacets()` remains available as the lower-level API for callers
 that already have explicit plugin identity and entry mappings.
 
-The output directory contains one `.js` file per entry plus
+The output directory contains one `.cjs` file per entry plus
 `chord-facets.json`. Load one application-selected entry through the Node-only
 loader:
 
@@ -115,7 +115,13 @@ const loader = createFacetBundleLoader({
 const loaded = await loader.load();
 ```
 
-Each `load()` verifies SHA-256 integrity and evaluates a fresh ESM generation.
+Each `load()` verifies SHA-256 integrity and compiles the CommonJS body directly
+with `node:vm` instead of putting the plugin into Node's CommonJS or ESM module
+cache. Externals are resolved by the host and loaded through a restricted
+`require`; esbuild lowers dynamic imports so they use the same path. Disposing a
+retired generation releases the loader's facet references, making its compiled
+code eligible for garbage collection once plugin-owned resources are also gone.
+
 For transport to another Node host, `readFacetBundleArtifact()` packages one
 verified manifest entry with its source, and `createFacetBundleArtifactLoader()`
 materializes fresh temporary generations while resolving externals against the
