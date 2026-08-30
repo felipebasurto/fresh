@@ -8,7 +8,7 @@ import {
 	type LoadedFacets,
 } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { SessionSummary } from "@earendil-works/pi-protocol";
+import type { JsonValue, SessionSummary } from "@earendil-works/pi-protocol";
 import {
 	CombinedAutocompleteProvider,
 	type Component,
@@ -32,6 +32,7 @@ import { createInteractiveTui } from "../modes/interactive/tui-renderer.ts";
 import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runtime.ts";
 import { ExperimentalChatView } from "./client-tui-chat.ts";
 import { type LaneReplica, type LaneWatchSource, openLaneReplica } from "./lane-replica.ts";
+import { createPresentationFacetLoaders } from "./plugins/bundled.ts";
 import helloPluginFacet from "./plugins/hello.ts";
 import { AgentController, type AgentOperationResponse, type AgentQueueResponse } from "./services/agent-controller.ts";
 import type {
@@ -40,8 +41,9 @@ import type {
 	SessionAttachmentState,
 	SessionServiceSource,
 } from "./services/connection.ts";
+import { PresentationUI } from "./services/presentation-ui.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
-import { type SlashCommandExecutionContext, SlashCommands } from "./services/slash-commands.ts";
+import { SlashCommands } from "./services/slash-commands.ts";
 import {
 	createBuiltInSlashCommandsFacet,
 	createSlashCommandsRuntimeFacet,
@@ -54,6 +56,7 @@ export interface RunClientTuiOptions extends OpenClientRuntimeOptions {
 export interface ClientTuiServer {
 	readonly serverId: string;
 	readonly radius: boolean;
+	readonly presentationFacetLoaders?: readonly FacetLoader[];
 	readonly laneWatches: LaneWatchSource;
 	readonly server: ServerServiceSource;
 	readonly session: SessionServiceSource;
@@ -104,7 +107,9 @@ export class ExperimentalClientTui implements Component {
 	readonly #editorContainer = new Container();
 	readonly #footerComponent = new Text("", 1, 0);
 	readonly #layoutRoot: Component;
-	readonly #loadedFacets: LoadedFacets;
+	readonly #sharedFacets: LoadedFacets;
+	readonly #loadedFacetGenerations = new Set<LoadedFacets>();
+	readonly #facetReloads = new Set<{ tail: Promise<void> }>();
 	readonly #facetHosts: FacetHost[] = [];
 	readonly #sessions = new Map<string, SessionFeature>();
 	readonly #slashCommands = new Map<string, SlashCommandFeature>();
@@ -129,7 +134,8 @@ export class ExperimentalClientTui implements Component {
 		this.#ui = ui;
 		this.#requestRender = requestRender;
 		this.#finish = finish;
-		this.#loadedFacets = loadedFacets;
+		this.#sharedFacets = loadedFacets;
+		this.#loadedFacetGenerations.add(loadedFacets);
 		setKeybindings(this.#keybindings);
 		this.#chatInput = new CustomEditor(ui, getEditorTheme(), this.#keybindings, { paddingX: 1 });
 		this.#chatInput.onSubmit = (message) => void this.#runPrompt(message);
@@ -240,9 +246,48 @@ export class ExperimentalClientTui implements Component {
 
 	async #start(servers: readonly ClientTuiServer[]): Promise<void> {
 		for (const server of servers) {
+			let presentationFacets = await combineFacetLoaders(server.presentationFacetLoaders ?? []).load();
+			this.#loadedFacetGenerations.add(presentationFacets);
+			let facetHost!: FacetHost;
+			const reloadState = { tail: Promise.resolve() };
+			this.#facetReloads.add(reloadState);
+			const reloadPresentationPlugins = (data: JsonValue): Promise<void> => {
+				const operation = reloadState.tail.then(async () => {
+					const candidate = await combineFacetLoaders(createPresentationFacetLoaders(data)).load();
+					try {
+						await facetHost.reload(candidate.facets);
+					} catch (error) {
+						try {
+							await candidate.dispose();
+						} catch (cleanupError) {
+							throw new AggregateError([error, cleanupError], "TUI plugin reload and cleanup failed");
+						}
+						throw error;
+					}
+					const retired = presentationFacets;
+					presentationFacets = candidate;
+					this.#loadedFacetGenerations.delete(retired);
+					this.#loadedFacetGenerations.add(candidate);
+					await retired.dispose();
+				});
+				reloadState.tail = operation.catch(() => {});
+				return operation;
+			};
 			const presentationBridgeFacet = defineFacet({
 				id: "@pi/presentation-bridge",
 				setup: (env) => {
+					env.provide(PresentationUI, {
+						select: (title, items, selectedValue) =>
+							this.#select(
+								title,
+								items.map((item) => ({ ...item })),
+								selectedValue,
+							),
+						showStatus: (status) => {
+							this.#status = status;
+							this.#rebuild();
+						},
+					});
 					const directory = env.use(SessionDirectory);
 					const management = env.use(SessionManagement);
 					const commands = env.use(SlashCommands);
@@ -277,12 +322,13 @@ export class ExperimentalClientTui implements Component {
 					});
 				},
 			});
-			const facetHost = await createFacetHost({
+			facetHost = await createFacetHost({
 				facets: [
 					createSlashCommandsRuntimeFacet(),
 					presentationBridgeFacet,
-					createBuiltInSlashCommandsFacet(),
-					...this.#loadedFacets.facets,
+					createBuiltInSlashCommandsFacet({ reloadPresentationPlugins }),
+					...this.#sharedFacets.facets,
+					...presentationFacets.facets,
 				],
 				serviceSources: [server.server, server.session],
 			});
@@ -357,6 +403,9 @@ export class ExperimentalClientTui implements Component {
 		} catch (error) {
 			errors.push(error);
 		}
+		const reloadResults = await Promise.allSettled([...this.#facetReloads].map(({ tail }) => tail));
+		this.#facetReloads.clear();
+		errors.push(...reloadResults.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
 		const results = await Promise.allSettled(
 			this.#facetHosts
 				.splice(0)
@@ -364,11 +413,10 @@ export class ExperimentalClientTui implements Component {
 				.map((host) => host.dispose()),
 		);
 		errors.push(...results.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
-		try {
-			await this.#loadedFacets.dispose();
-		} catch (error) {
-			errors.push(error);
-		}
+		const loaded = [...this.#loadedFacetGenerations].reverse();
+		this.#loadedFacetGenerations.clear();
+		const loadedResults = await Promise.allSettled(loaded.map((generation) => generation.dispose()));
+		errors.push(...loadedResults.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
 		if (errors.length === 1) throw errors[0];
 		if (errors.length > 1) throw new AggregateError(errors, "Failed to dispose experimental TUI facets");
 	}
@@ -570,22 +618,12 @@ export class ExperimentalClientTui implements Component {
 			this.#rebuild();
 			return;
 		}
-		const context: SlashCommandExecutionContext = {
-			operation: BACKGROUND_CONTEXT,
-			select: (title, items, selectedValue) =>
-				this.#select(
-					title,
-					items.map((item) => ({ ...item })),
-					selectedValue,
-				),
-			submitPrompt: (message) => this.#submitPrompt(message),
-			showStatus: (status) => {
-				this.#status = status;
-				this.#rebuild();
-			},
-		};
 		try {
-			await command.run(args, context);
+			const result = await command.run(args, BACKGROUND_CONTEXT);
+			if (result !== undefined) {
+				if ("entryId" in result) this.#reportQueue(result);
+				else this.#reportOperation(result);
+			}
 		} catch (error) {
 			this.#status = `Error: ${message(error)}`;
 			this.#rebuild();
@@ -648,8 +686,8 @@ export class ExperimentalClientTui implements Component {
 
 	#footer(): string {
 		const snapshot = this.#laneReplica?.state();
-		if (!snapshot) return "/model · /thinking · /compact";
-		return `${snapshot.configuration.model.provider}/${snapshot.configuration.model.modelId} · thinking:${snapshot.configuration.thinkingLevel} · ${snapshot.stats.messageCount} messages · /model · /thinking · /compact`;
+		if (!snapshot) return "/model · /thinking · /compact · /reload";
+		return `${snapshot.configuration.model.provider}/${snapshot.configuration.model.modelId} · thinking:${snapshot.configuration.thinkingLevel} · ${snapshot.stats.messageCount} messages · /model · /thinking · /compact · /reload`;
 	}
 }
 
@@ -700,6 +738,7 @@ export async function runClientTui(command: ClientCommand, options: RunClientTui
 			servers: runtime.servers.map((server) => ({
 				serverId: server.route.serverId,
 				radius: server.route.transport === "radius",
+				presentationFacetLoaders: server.presentationFacetLoaders,
 				laneWatches: server.client,
 				server: server.server,
 				session: server.session,

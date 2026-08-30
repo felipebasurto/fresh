@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	createRemoteServiceBinding,
 	defineFacet,
@@ -7,11 +8,17 @@ import {
 	replicatedState,
 } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import {
+	FACET_BUNDLE_ARTIFACT_FORMAT,
+	FACET_BUNDLE_ARTIFACT_FORMAT_VERSION,
+	type FacetBundleArtifact,
+} from "@earendil-works/chord/node";
 import type { AgentLane } from "@earendil-works/pi-agent-core";
 import type { LaneEvent, LaneSnapshot, SessionSummary } from "@earendil-works/pi-protocol";
 import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { type ClientTuiServer, ExperimentalClientTui } from "../src/experimental/client-tui.ts";
+import { createPresentationFacetHelloData } from "../src/experimental/plugins/bundled.ts";
 import { AgentController } from "../src/experimental/services/agent-controller.ts";
 import { createAgentController } from "../src/experimental/services/agent-controller-provider.ts";
 import type {
@@ -21,6 +28,7 @@ import type {
 	SessionServiceSource,
 } from "../src/experimental/services/connection.ts";
 import { Models, type ModelsState } from "../src/experimental/services/models.ts";
+import { PresentationPlugins, SessionPlugins } from "../src/experimental/services/plugins.ts";
 import {
 	SessionDirectory,
 	type SessionDirectoryState,
@@ -180,8 +188,27 @@ describe("experimental client TUI", () => {
 				};
 			});
 
-			const serverProvider = new RemoteServiceProvider([SessionDirectory, SessionManagement]);
+			const reloadSource =
+				'import { defineFacet, defineService } from "@earendil-works/chord";\nconst Models = defineService("pi.models");\nexport default defineFacet({ id: "test-tui-facet", setup(env) { env.use(Models); } });\n';
+			const reloadArtifact: FacetBundleArtifact = {
+				format: FACET_BUNDLE_ARTIFACT_FORMAT,
+				formatVersion: FACET_BUNDLE_ARTIFACT_FORMAT_VERSION,
+				plugin: { id: "test-tui-plugin" },
+				entryName: "tui",
+				entry: {
+					file: "tui.js",
+					integrity: `sha256-${createHash("sha256").update(reloadSource).digest("base64")}`,
+					externalImports: ["@earendil-works/chord"],
+				},
+				source: reloadSource,
+			};
+			const reloadData = createPresentationFacetHelloData([reloadArtifact]);
+			if (reloadData === undefined) throw new Error("Expected presentation reload data");
+			const reloadPresentationPlugins = vi.fn(async () => reloadData);
+			const reloadSessionPlugins = vi.fn(async () => {});
+			const serverProvider = new RemoteServiceProvider([SessionDirectory, SessionManagement, PresentationPlugins]);
 			serverProvider.provide(SessionDirectory, { state: directoryState });
+			serverProvider.provide(PresentationPlugins, { reload: reloadPresentationPlugins });
 			serverProvider.provide(SessionManagement, {
 				create,
 				async remove() {},
@@ -192,7 +219,8 @@ describe("experimental client TUI", () => {
 					attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);
 				},
 			});
-			const sessionProvider = new RemoteServiceProvider([Models, AgentController]);
+			const sessionProvider = new RemoteServiceProvider([Models, AgentController, SessionPlugins]);
+			sessionProvider.provide(SessionPlugins, { reload: reloadSessionPlugins });
 			sessionProvider.provide(Models, {
 				state: modelsState,
 				async cycleThinking() {},
@@ -206,7 +234,7 @@ describe("experimental client TUI", () => {
 			sessionProvider.provide(AgentController, createAgentController({ prompt } as unknown as AgentLane));
 
 			const serverNamespace = createRemoteServiceBinding({
-				services: [SessionDirectory, SessionManagement],
+				services: [SessionDirectory, SessionManagement, PresentationPlugins],
 				transport: createLoopbackServiceTransport(serverProvider),
 				bound: false,
 			});
@@ -226,7 +254,7 @@ describe("experimental client TUI", () => {
 				},
 			});
 			const sessionNamespace = createRemoteServiceBinding({
-				services: [Models, AgentController],
+				services: [Models, AgentController, SessionPlugins],
 				transport: createLoopbackServiceTransport(sessionProvider),
 				bound: false,
 			});
@@ -249,15 +277,6 @@ describe("experimental client TUI", () => {
 					attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);
 				},
 			});
-			const server: ClientTuiServer = {
-				serverId,
-				radius: true,
-				laneWatches: { watchSession },
-				server: serverServices,
-				session: sessionServices,
-			};
-			let finished = false;
-			const requestRender = vi.fn();
 			const disposeLoadedFacets = vi.fn(async () => {});
 			const facetLoader: FacetLoader = {
 				async load() {
@@ -275,12 +294,21 @@ describe("experimental client TUI", () => {
 					};
 				},
 			};
+			const server: ClientTuiServer = {
+				serverId,
+				radius: true,
+				presentationFacetLoaders: [facetLoader],
+				laneWatches: { watchSession },
+				server: serverServices,
+				session: sessionServices,
+			};
+			let finished = false;
+			const requestRender = vi.fn();
 			const ui = new TuiMainScreen(new ProcessTerminal());
 			const component = await ExperimentalClientTui.create({
 				command,
 				ui,
 				servers: [server],
-				facetLoader,
 				requestRender,
 				finish() {
 					finished = true;
@@ -308,11 +336,20 @@ describe("experimental client TUI", () => {
 				component.handleInput("\u001b");
 				component.handleInput("\r");
 				await vi.waitFor(() =>
-					expect(prompt).toHaveBeenCalledWith("Hello from the example plugin.", undefined, expect.anything()),
+					expect(prompt).toHaveBeenCalledWith("Hello from the example plugin", undefined, BACKGROUND_CONTEXT),
 				);
 				await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("remote answer"));
 				expect(component.render(80).join("\n")).toContain("hello");
 				expect(component.render(80).join("\n")).not.toContain("Operation run-1 completed");
+
+				component.handleInput("/reload");
+				component.handleInput("\u001b");
+				component.handleInput("\r");
+				await vi.waitFor(() => {
+					expect(reloadPresentationPlugins).toHaveBeenCalledOnce();
+					expect(reloadSessionPlugins).toHaveBeenCalledOnce();
+				});
+				await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("Reloaded plugins."));
 
 				attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);
 				connectionState.set(

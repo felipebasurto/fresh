@@ -18,6 +18,9 @@ Example extensions demonstrating:
 - External integrations (SSH, file watchers, system theme sync)
 - Custom providers (Anthropic with custom streaming, GitLab Duo)
 
+### [facets/](facets/)
+An experimental Chord plugin bundled into separate Session-worker and TUI facet files.
+
 ## Documentation
 
 - [SDK Reference](sdk/README.md)

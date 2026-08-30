@@ -13,7 +13,7 @@ import {
 	type RpcResultUnion,
 } from "./rpc.ts";
 
-export const PROTOCOL_VERSION = 3 as const;
+export const PROTOCOL_VERSION = 4 as const;
 
 const IdSchema = Type.String({ minLength: 1 });
 const TimestampSchema = Type.Integer({ minimum: 0 });
@@ -352,6 +352,8 @@ export const ServerHelloSchema = StrictObject({
 	type: Type.Literal("hello"),
 	version: Type.Literal(PROTOCOL_VERSION),
 	serverId: ServerIdSchema,
+	/** Application-owned connection bootstrap data, such as presentation facet artifacts. */
+	data: Type.Optional(JsonValueSchema),
 });
 export const ServerHelloErrorSchema = StrictObject({
 	type: Type.Literal("hello_error"),

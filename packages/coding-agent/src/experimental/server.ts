@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import type { FacetBundleArtifact } from "@earendil-works/chord/node";
 import {
 	BACKGROUND_CONTEXT,
 	type JsonlSessionMetadata,
@@ -11,7 +12,7 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { Client, DisconnectedError, ServerError } from "@earendil-works/pi-client";
 import { createUnixTransportFactory, type UnixServerRoute } from "@earendil-works/pi-client/unix";
-import { isServerId, type ServerId, type SessionSummary } from "@earendil-works/pi-protocol";
+import { isServerId, type JsonValue, type ServerId, type SessionSummary } from "@earendil-works/pi-protocol";
 import { type Server, type ServerHost, SessionAmbiguousError, SessionNotFoundError } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 import lockfile from "proper-lockfile";
@@ -19,6 +20,11 @@ import type { AuthInput } from "../cli/experimental/command-options.ts";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { CoordinatorConnection, type CoordinatorStartupLease, ensureCoordinator } from "./coordinator.ts";
+import {
+	createPresentationFacetHelloData,
+	readConfiguredPresentationFacetBundles,
+	restoreServerFacetBundleProfile,
+} from "./plugins/bundled.ts";
 import {
 	consumeInternalProcessRole,
 	isDirectInternalProcessEntry,
@@ -327,6 +333,8 @@ export interface StartServerOptions {
 	readonly keepAlive?: boolean;
 	/** Optional explicit Radius credential. Stored Radius auth is used when omitted. */
 	readonly relayAuth?: AuthInput;
+	/** Presentation facets selected by this server. Defaults to the configured bundle's `tui` entry. */
+	readonly presentationFacetBundles?: readonly FacetBundleArtifact[];
 	readonly onRelayStatus?: (status: RadiusRelayHostStatus) => void;
 }
 
@@ -334,6 +342,8 @@ interface StartServerBackendOptions {
 	readonly path: string;
 	readonly serverId: ServerId;
 	readonly sessionDir?: string;
+	readonly helloData?: JsonValue;
+	readonly reloadPresentationFacetBundles: () => Promise<readonly FacetBundleArtifact[]>;
 }
 
 interface RunningServerBackend extends RunningServer {
@@ -373,6 +383,7 @@ async function startServerBackend(
 		if (errors.length === 1) throw errors[0];
 		if (errors.length > 1) throw new AggregateError(errors, "Experimental session storage cleanup failed");
 	};
+	let setHelloData = (_data: JsonValue): void => {};
 	const serverServices = await createExperimentalServerServices({
 		list: async (context) =>
 			(await listSessions(context))
@@ -385,6 +396,12 @@ async function startServerBackend(
 			if (matches.length > 1) throw new SessionAmbiguousError();
 			await workers.closeSession(matches[0]!, context);
 			await repo.delete(matches[0]!, context);
+		},
+		async reloadPresentationPlugins() {
+			const data = createPresentationFacetHelloData(await options.reloadPresentationFacetBundles());
+			if (data === undefined) throw new Error("No presentation plugin bundle is configured");
+			setHelloData(data);
+			return data;
 		},
 	}).catch(async (error: unknown) => {
 		try {
@@ -411,7 +428,9 @@ async function startServerBackend(
 		path: socketPath,
 		mode: 0o600,
 		onConnectionCountChanged,
+		...(options.helloData === undefined ? {} : { helloData: options.helloData }),
 	});
+	setHelloData = (data) => server.setHelloData(data);
 	try {
 		await server.start();
 	} catch (error) {
@@ -473,6 +492,13 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 	let released = false;
 	try {
 		await ensurePrivateServerDirectory(directory);
+		await restoreServerFacetBundleProfile(directory, serverId);
+		const configuredPresentationFacetBundles = options.presentationFacetBundles;
+		const reloadPresentationFacetBundles =
+			configuredPresentationFacetBundles === undefined
+				? readConfiguredPresentationFacetBundles
+				: async () => configuredPresentationFacetBundles;
+		const helloData = createPresentationFacetHelloData(await reloadPresentationFacetBundles());
 		const socketPath = getUnixSocketPath(serverId, directory);
 		const controlPath = join(directory, `control-${serverId}.sock`);
 		const serverNonce = randomUUID().replaceAll("-", "").slice(0, 12);
@@ -484,7 +510,13 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 			lifetime.setWorkerCount(count),
 		);
 		backend = await startServerBackend(
-			{ path: serverPath, serverId, sessionDir: options.sessionDir },
+			{
+				path: serverPath,
+				serverId,
+				sessionDir: options.sessionDir,
+				reloadPresentationFacetBundles,
+				...(helloData === undefined ? {} : { helloData }),
+			},
 			workers,
 			(count) => lifetime.setConnectionCount(count),
 		);

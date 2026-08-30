@@ -1,5 +1,6 @@
 import type { Context, SessionMetadata } from "@earendil-works/pi-agent-core";
 import type {
+	JsonValue,
 	LaneEvent,
 	LaneSnapshot,
 	PromptArguments,
@@ -15,6 +16,8 @@ export interface ServerOptions {
 	listeners: readonly ServerListener[];
 	/** Stable logical server identity supplied by the installation or profile. */
 	serverId: string;
+	/** Application-owned bootstrap data included in every successful server handshake. */
+	helloData?: JsonValue;
 	maxFrameLength?: number;
 	handshakeTimeoutMs?: number;
 	onConnectionCountChanged?: (count: number) => void;

@@ -10,6 +10,7 @@ import {
 	encodeServerMessage,
 	isServerId,
 	isSupportedProtocolVersion,
+	type JsonValue,
 	PROTOCOL_VERSION,
 	type ProtocolError,
 	type ProtocolRpcResult,
@@ -43,6 +44,7 @@ export class Server<TMetadata extends SessionMetadata = SessionMetadata> {
 
 	private readonly host: ServerHost<TMetadata>;
 	private readonly listeners: readonly ServerListener[];
+	private helloData: JsonValue | undefined;
 	private readonly maxFrameLength: number;
 	private readonly handshakeTimeoutMs: number;
 	private readonly onConnectionCountChanged: ((count: number) => void) | undefined;
@@ -62,6 +64,7 @@ export class Server<TMetadata extends SessionMetadata = SessionMetadata> {
 		this.host = host;
 		this.listeners = options.listeners;
 		this.serverId = options.serverId;
+		this.helloData = options.helloData;
 		this.maxFrameLength = resolved.maxFrameLength;
 		this.handshakeTimeoutMs = resolved.handshakeTimeoutMs;
 		this.onConnectionCountChanged = options.onConnectionCountChanged;
@@ -83,6 +86,11 @@ export class Server<TMetadata extends SessionMetadata = SessionMetadata> {
 			this.rejectClosed = reject;
 		});
 		void this.closed.catch(() => {});
+	}
+
+	/** Replace application bootstrap data used by subsequent handshakes. */
+	setHelloData(data: JsonValue | undefined): void {
+		this.helloData = data;
 	}
 
 	start(): Promise<this> {
@@ -283,6 +291,7 @@ export class Server<TMetadata extends SessionMetadata = SessionMetadata> {
 			type: "hello",
 			version: PROTOCOL_VERSION,
 			serverId: this.serverId,
+			...(this.helloData === undefined ? {} : { data: this.helloData }),
 		} satisfies ServerHello);
 		if (sent && !state.disconnected && state.stage === "handshaking") {
 			state.stage = "ready";

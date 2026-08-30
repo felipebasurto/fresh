@@ -16,6 +16,7 @@ import {
 } from "@earendil-works/pi-protocol";
 import type { RoutedServerServiceAttachment, RoutedServerServiceHost } from "@earendil-works/pi-server";
 import { Check } from "typebox/value";
+import { PresentationPlugins } from "./plugins.ts";
 import { SessionDirectory, type SessionDirectoryState, SessionManagement } from "./sessions.ts";
 
 export interface ExperimentalServerServices {
@@ -28,6 +29,7 @@ export async function createExperimentalServerServices(options: {
 	list(context: Context): Promise<SessionSummary[]>;
 	create(createOptions: SessionCreateOptions, context: Context): Promise<SessionSummary>;
 	remove(sessionId: string, context: Context): Promise<void>;
+	reloadPresentationPlugins(context: Context): Promise<JsonValue>;
 }): Promise<ExperimentalServerServices> {
 	let revision = 1;
 	const directory = replicatedState<SessionDirectoryState>({
@@ -57,8 +59,12 @@ export async function createExperimentalServerServices(options: {
 				const provider = new RemoteServiceProvider([
 					{ service: SessionDirectory, mode: "singleton" },
 					{ service: SessionManagement, mode: "singleton" },
+					{ service: PresentationPlugins, mode: "singleton" },
 				]);
 				provider.provide(SessionDirectory, { state: directory });
+				provider.provide(PresentationPlugins, {
+					reload: (_context) => options.reloadPresentationPlugins(_context),
+				});
 				provider.provide(SessionManagement, {
 					create: (createOptions, context) =>
 						serialize(async () => {

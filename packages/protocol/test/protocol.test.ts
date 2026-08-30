@@ -207,11 +207,11 @@ describe("RPC manifest", () => {
 });
 
 describe("protocol validation", () => {
-	test("negotiates protocol version 3", () => {
-		expect(PROTOCOL_VERSION).toBe(3);
-		expect(isSupportedProtocolVersion(3)).toBe(true);
-		expect(isSupportedProtocolVersion(2)).toBe(false);
-		expect(isSupportedProtocolVersion(3.5)).toBe(false);
+	test("negotiates protocol version 4", () => {
+		expect(PROTOCOL_VERSION).toBe(4);
+		expect(isSupportedProtocolVersion(4)).toBe(true);
+		expect(isSupportedProtocolVersion(3)).toBe(false);
+		expect(isSupportedProtocolVersion(4.5)).toBe(false);
 	});
 
 	test.each([0, PROTOCOL_VERSION, PROTOCOL_VERSION + 1])(
@@ -615,6 +615,11 @@ describe("protocol validation", () => {
 			id: "request-1",
 			ok: true,
 		});
+	});
+
+	test("accepts application bootstrap data in the server hello", () => {
+		const message: ServerHello = { ...serverHello, data: { presentationFacets: [{ id: "tui" }] } };
+		expect(parseServerMessage(message)).toEqual(message);
 	});
 
 	test.each([

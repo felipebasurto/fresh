@@ -1,4 +1,5 @@
 import { Client } from "@earendil-works/pi-client";
+import { PROTOCOL_VERSION } from "@earendil-works/pi-protocol";
 import { Server, type ServerHost } from "@earendil-works/pi-server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { RadiusRelayAuthResolver } from "../src/experimental/radius-auth.ts";
@@ -215,7 +216,7 @@ describe("experimental Radius relay", () => {
 		clientSocket.open(clientWebSockets.sockets[0]!.options.protocol);
 		const client = await connecting;
 
-		expect(client.hello).toEqual({ type: "hello", version: 3, serverId });
+		expect(client.hello).toEqual({ type: "hello", version: PROTOCOL_VERSION, serverId });
 		await client.dispose();
 		await relayHost.close();
 		await protocolServer.close();

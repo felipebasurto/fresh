@@ -16,6 +16,7 @@ import {
 	type SessionAttachmentState,
 } from "../src/experimental/services/connection.ts";
 import { Models } from "../src/experimental/services/models.ts";
+import { PresentationPlugins } from "../src/experimental/services/plugins.ts";
 import { SessionDirectory, SessionManagement } from "../src/experimental/services/sessions.ts";
 import { Transcript } from "../src/experimental/services/transcript.ts";
 import {
@@ -312,6 +313,7 @@ describe("experimental durable server composition", () => {
 		await expect(firstServices.catalogue(BACKGROUND_CONTEXT)).resolves.toEqual([
 			{ serviceId: SessionDirectory.id, mode: "singleton" },
 			{ serviceId: SessionManagement.id, mode: "singleton" },
+			{ serviceId: PresentationPlugins.id, mode: "singleton" },
 		]);
 		const firstDirectory = firstServices.use(SessionDirectory);
 		const secondDirectory = secondServices.use(SessionDirectory);

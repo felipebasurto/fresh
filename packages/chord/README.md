@@ -57,5 +57,49 @@ the root API.
 Chord-owned identifiers use the `chord.*` namespace and its reserved service
 prefix is `$chord.*`.
 
-See [PLANNING.md](PLANNING.md) for the broader RPC, generation-loading, and
-bundling architecture.
+## Bundling and loading facets
+
+`@earendil-works/chord/bundler` uses esbuild to turn opaque application entry
+names into independent, content-addressed ESM files. It bundles dependencies by
+default and always externalizes Chord so every facet shares the host's runtime
+and service branding:
+
+```ts
+import { bundleFacets } from "@earendil-works/chord/bundler";
+
+await bundleFacets({
+	plugin: { id: "example-plugin", version: "1.0.0" },
+	entries: { worker: "src/worker.ts", presentation: "src/presentation.ts" },
+	outdir: "dist/facets",
+	sourceMap: true,
+});
+```
+
+The output directory contains one `.js` file per entry plus
+`chord-facets.json`. Load one application-selected entry through the Node-only
+loader:
+
+```ts
+import { createFacetBundleLoader } from "@earendil-works/chord/node";
+
+const loader = createFacetBundleLoader({
+	manifestPath: "dist/facets/chord-facets.json",
+	entry: "worker",
+});
+const loaded = await loader.load();
+```
+
+Each `load()` verifies SHA-256 integrity and evaluates a fresh ESM generation.
+For transport to another Node host, `readFacetBundleArtifact()` packages one
+verified manifest entry with its source, and `createFacetBundleArtifactLoader()`
+materializes fresh temporary generations while resolving externals against the
+receiving host.
+
+To reload, load a candidate, pass its facets to `FacetHost.reload()`, dispose the
+candidate on failure, and dispose the retired `LoadedFacets` only after a
+successful cutover. Reload retains the host's existing shape-preservation rules.
+The bundler writes a complete temporary directory before replacing the previous
+output, so loaders do not observe partially built generations.
+
+See [PLANNING.md](PLANNING.md) for the broader RPC and generation-loading
+architecture.

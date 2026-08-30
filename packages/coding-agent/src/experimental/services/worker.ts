@@ -27,6 +27,7 @@ import type { SettingsManager } from "../../core/settings-manager.ts";
 import { AgentController } from "./agent-controller.ts";
 import { createAgentController } from "./agent-controller-provider.ts";
 import { createModelsServiceFacet } from "./models-provider.ts";
+import { SessionPlugins } from "./plugins.ts";
 import { accountsServiceFacet, transcriptServiceFacet } from "./stubs-provider.ts";
 
 export const ServiceOperationResultSchema = Type.Object(
@@ -57,6 +58,7 @@ export interface SessionWorkerServices {
 	readonly catalogue: readonly ServiceCatalogueEntry[];
 	invoke(call: ProtocolRpcCall, scope: WorkerServiceScope, context: Context): Promise<JsonValue | undefined>;
 	removeSubscriptions(matches: (scope: WorkerServiceScope) => boolean): void;
+	reload(): Promise<void>;
 	dispose(): Promise<void>;
 }
 
@@ -85,23 +87,51 @@ export async function createSessionWorkerServices(options: {
 			env.provide(AgentController, createAgentController(options.lane));
 		},
 	});
-	const loader = combineFacetLoaders([
-		createStaticFacetLoader([agentControllerRuntimeFacet]),
+	let reloadPlugins = (): Promise<void> => Promise.reject(new Error("Session plugins are not ready"));
+	const pluginRuntimeFacet = defineFacet({
+		id: "@pi/session-plugins-runtime",
+		setup(env) {
+			env.provide(SessionPlugins, { reload: () => reloadPlugins() });
+		},
+	});
+	const builtins = await combineFacetLoaders([
+		createStaticFacetLoader([agentControllerRuntimeFacet, pluginRuntimeFacet]),
 		createBuiltinSessionFacetLoader(options),
-		...(options.facetLoader === undefined ? [] : [options.facetLoader]),
-	]);
-	const loaded = await loader.load();
+	]).load();
+	const pluginLoader = options.facetLoader ?? createStaticFacetLoader([]);
+	let loadedPlugins = await pluginLoader.load();
 	let facetHost: FacetHost;
 	try {
-		facetHost = await createFacetHost({ facets: loaded.facets });
+		facetHost = await createFacetHost({ facets: [...builtins.facets, ...loadedPlugins.facets] });
 	} catch (error) {
-		try {
-			await loaded.dispose();
-		} catch (cleanupError) {
-			throw new AggregateError([error, cleanupError], "Session facets failed to start and clean up");
+		const cleanup = await Promise.allSettled([loadedPlugins.dispose(), builtins.dispose()]);
+		const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+		if (cleanupErrors.length > 0) {
+			throw new AggregateError([error, ...cleanupErrors], "Session facets failed to start and clean up");
 		}
 		throw error;
 	}
+	let reloadTail = Promise.resolve();
+	reloadPlugins = () => {
+		const operation = reloadTail.then(async () => {
+			const candidate = await pluginLoader.load();
+			try {
+				await facetHost.reload(candidate.facets);
+			} catch (error) {
+				try {
+					await candidate.dispose();
+				} catch (cleanupError) {
+					throw new AggregateError([error, cleanupError], "Session plugin reload and cleanup failed");
+				}
+				throw error;
+			}
+			const retired = loadedPlugins;
+			loadedPlugins = candidate;
+			await retired.dispose();
+		});
+		reloadTail = operation.catch(() => {});
+		return operation;
+	};
 	const provider = facetHost.services;
 
 	const subscriptions = new Map<string, WorkerServiceSubscription>();
@@ -139,19 +169,18 @@ export async function createSessionWorkerServices(options: {
 			return provider.invoke(call, context);
 		},
 		removeSubscriptions,
+		reload: () => reloadPlugins(),
 		async dispose() {
 			removeSubscriptions(() => true);
+			await reloadTail;
 			const errors: unknown[] = [];
 			try {
 				await facetHost.dispose();
 			} catch (error) {
 				errors.push(error);
 			}
-			try {
-				await loaded.dispose();
-			} catch (error) {
-				errors.push(error);
-			}
+			const results = await Promise.allSettled([loadedPlugins.dispose(), builtins.dispose()]);
+			errors.push(...results.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
 			if (errors.length === 1) throw errors[0];
 			if (errors.length > 1) throw new AggregateError(errors, "Failed to dispose Session facets");
 		},

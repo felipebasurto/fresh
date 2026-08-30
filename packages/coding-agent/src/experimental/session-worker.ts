@@ -47,6 +47,7 @@ import {
 	toWireLaneSnapshot,
 	toWireRunResult,
 } from "./harness-wire-adapter.ts";
+import { createConfiguredFacetBundleLoader } from "./plugins/bundled.ts";
 import {
 	consumeInternalProcessRole,
 	encodeControlLine,
@@ -940,7 +941,13 @@ async function createCodingAgentHarness(
 		) {
 			await lane.setActiveTools(activeToolNames, TODO_CONTEXT);
 		}
-		return { harness, lane, modelRuntime, settingsManager };
+		return {
+			harness,
+			lane,
+			modelRuntime,
+			settingsManager,
+			facetLoader: createConfiguredFacetBundleLoader("session"),
+		};
 	} catch (error) {
 		try {
 			await harness.close(TODO_CONTEXT);
