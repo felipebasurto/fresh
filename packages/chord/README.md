@@ -36,6 +36,10 @@ The design has a few connected pieces:
   ordered updates, and become unready on disconnect or replacement until they
   are rehydrated.
 
+- **Delta tracking** records mutations to plain JSON as compact operations. It
+  preserves append, front-truncation, and array-splice intent, supports durable
+  base batches, and validates untrusted operations before applying them.
+
 - **Remote service sources** advertise services available outside a facet host
   and open bindings for the services its facets require. Bindings carry logical
   calls and subscriptions through an application-supplied adapter. Chord
@@ -56,6 +60,26 @@ package root. Context constants and functions live in
 the root API.
 Chord-owned identifiers use the `chord.*` namespace and its reserved service
 prefix is `$chord.*`.
+
+## Tracking JSON deltas
+
+Import the standalone delta primitive from `@earendil-works/chord/delta`:
+
+```ts
+import { apply, track } from "@earendil-works/chord/delta";
+
+const changes = track({ output: "", count: 0 });
+changes.flush(); // opening base batch
+changes.state.output += "done\n";
+changes.state.count += 1;
+
+const ops = changes.flush();
+const replica = apply({ output: "", count: 0 }, ops);
+```
+
+The first flush is always a complete base batch. Later flushes contain path-based
+changes. String assignments preserve pure appends and rolling-window movement as
+append and front-truncate operations; unrelated rewrites fall back to a set.
 
 ## Bundling and loading facets
 
