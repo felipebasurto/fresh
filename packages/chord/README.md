@@ -36,9 +36,10 @@ The design has a few connected pieces:
   ordered updates, and become unready on disconnect or replacement until they
   are rehydrated.
 
-- **Delta tracking** records mutations to plain JSON as compact operations. It
-  preserves append, front-truncation, and array-splice intent, supports durable
-  base batches, and validates untrusted operations before applying them.
+- **Delta tracking** derives compact operations from tracked plain JSON at
+  flush time. It preserves string append/front-truncation and array-append
+  behavior without retaining mutation history, supports durable base batches,
+  and validates untrusted operations before applying them.
 
 - **Remote service sources** advertise services available outside a facet host
   and open bindings for the services its facets require. Bindings carry logical
@@ -80,6 +81,9 @@ const replica = apply({ output: "", count: 0 }, ops);
 The first flush is always a complete base batch. Later flushes contain path-based
 changes. String assignments preserve pure appends and rolling-window movement as
 append and front-truncate operations; unrelated rewrites fall back to a set.
+Values inserted into tracked state become tracker-owned and must subsequently be
+mutated only through `state`. See the [Delta guide](src/delta/README.md) for
+mutation, array, lifecycle, and consumer-ownership rules.
 
 ## Bundling and loading facets
 
