@@ -3,6 +3,10 @@
 Chord Delta synchronizes one mutable JSON value from an authoritative producer
 to an ordered replica. It is available from `@earendil-works/chord/delta`.
 
+A change is represented by an `Op`: a small JSON tuple that replaces the root,
+sets or deletes a value, updates a string, or splices an array. `flush()` returns
+`Op[]`; `apply()` replays those operations on a replica.
+
 ```ts
 import { apply, track } from "@earendil-works/chord/delta";
 
