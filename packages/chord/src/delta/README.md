@@ -3,9 +3,9 @@
 Chord Delta synchronizes one mutable JSON value from an authoritative producer
 to an ordered replica. It is available from `@earendil-works/chord/delta`.
 
-A change is represented by an `Op`: a small JSON tuple that replaces the root,
-sets or deletes a value, updates a string, or splices an array. `flush()` returns
-`Op[]`; `apply()` replays those operations on a replica.
+A change is represented by an `Op`: a JSON tuple for replacing, setting,
+deleting, updating a string, or splicing an array. `flush()` returns `Op[]`;
+`apply()` replays an `Op[]` on a replica.
 
 ```ts
 import { apply, track } from "@earendil-works/chord/delta";
@@ -18,9 +18,120 @@ tracker.state.entries.push("result");
 replica = apply(replica, tracker.flush());
 ```
 
-The first `flush()` returns a complete snapshot. Each later `flush()` returns the
-changes needed to transform the previously published value into the current
-value. `flush()` returns `[]` when the value has not changed.
+The first `flush()` returns one operation containing the complete value. Each
+later flush returns the operations needed to transform the previously published
+value into the current value. It returns `[]` when the value has not changed.
+
+## Sending or storing changes
+
+`flush()` produces decoded `Op[]` with complete paths. This is convenient for
+local use but repeats long paths on the wire or disk.
+
+`encoder()` compresses those paths and returns `WireOp[]`. `decoder()` validates
+the encoded tuples, restores complete paths, and returns the `Op[]` required by
+`apply()`:
+
+```ts
+import { apply, decoder, encoder, track } from "@earendil-works/chord/delta";
+
+const tracker = track({ output: "" });
+const enc = encoder(); // producer side
+const dec = decoder(); // consumer side
+let replica: { output: string } | undefined;
+
+const send = () => {
+	const ops = tracker.flush();
+	const wire = enc.encode(ops); // serialize or store WireOp[] here
+	const received = dec.decode(wire);
+	replica = apply(replica, received);
+};
+```
+
+Encoding is optional for local application. Never pass `WireOp[]` directly to
+`apply()`.
+
+An encoder and decoder are stateful. Use one pair for each ordered stream. The
+encoder assigns numeric IDs to paths used across batches; the decoder remembers
+the corresponding definitions. A complete-value operation resets both path
+dictionaries, so replay can begin at that batch with a fresh decoder.
+
+Path omission is local to one batch. Numeric path IDs may span batches. A second
+consumer needs its own stream and encoder state.
+
+## Operation vocabulary
+
+A path is an array of object keys and array indices:
+
+```ts
+["operation", "message", "content", 0, "text"]
+```
+
+### Decoded `Op`
+
+`track().flush()` returns these tuples, and `apply()` accepts them:
+
+| Tuple | Meaning |
+| --- | --- |
+| `["r", value]` | Replace the complete value. |
+| `["s", path, value]` | Set a property or array element. |
+| `["d", path]` | Delete an object property. |
+| `["a", path, text]` | Append to a string. |
+| `["t", path, count]` | Remove UTF-16 code units from a string's front. |
+| `["p", path, index, remove, items]` | Splice an array. |
+
+Except for `r`, every decoded operation carries its complete path. `s`, `d`,
+`a`, and `t` cannot address the root. `p` may address a root array.
+
+### Encoded `WireOp`
+
+A `PathRef` is either an inline path or a non-negative numeric path ID.
+`WireOp` supports the following tuples:
+
+| Tuple | Meaning |
+| --- | --- |
+| `["r", value]` | Complete replacement; identical to decoded form. |
+| `["#", id, path]` | Define a numeric path ID. |
+| `["s", pathRef, value]` | Set with an inline or interned path. |
+| `["s", value]` | Set using the previous path in this batch. |
+| `["d", pathRef]` | Delete with an inline or interned path. |
+| `["d"]` | Delete using the previous path. |
+| `["a", pathRef, text]` | Append with an inline or interned path. |
+| `["a", text]` | Append using the previous path. |
+| `["t", pathRef, count]` | Front-truncate with an inline or interned path. |
+| `["t", count]` | Front-truncate using the previous path. |
+| `["p", pathRef, index, remove, items]` | Splice with an inline or interned path. |
+| `["p", index, remove, items]` | Splice using the previous path. |
+
+For example, adjacent decoded operations on one path:
+
+```ts
+[
+	["t", ["output"], 200],
+	["a", ["output"], "next chunk"],
+]
+```
+
+encode to:
+
+```ts
+[
+	["t", ["output"], 200],
+	["a", "next chunk"], // reuses ["output"]
+]
+```
+
+When `output` is used again in a later batch, the encoder defines an ID on its
+second explicit use:
+
+```ts
+[
+	["#", 0, ["output"]],
+	["a", 0, "more"],
+]
+```
+
+Later batches can use `0` directly until a complete-value operation resets the
+dictionary.
 
 ## Producing changes
 
@@ -33,16 +144,16 @@ tracker.state.messages.push(message);
 delete tracker.state.retry;
 ```
 
-Only the value at flush time is published. Intermediate assignments are not:
+Only the value at flush time is published:
 
 ```ts
 tracker.state.status = "starting";
 tracker.state.status = "running";
-tracker.flush(); // publishes only "running"
+tracker.flush(); // one set to "running"
 ```
 
-Replacing an object or array is also valid. Delta compares its properties and
-elements with the previously published value:
+Replacing an object or array is valid. Delta compares its properties and elements
+with the previously published value:
 
 ```ts
 tracker.state.settings = {
@@ -52,24 +163,24 @@ tracker.state.settings = {
 ```
 
 Unchanged properties produce no operations. Changed nested strings and arrays
-still use the compact forms described below.
+still use string and splice operations.
 
 ### Strings
 
-Appending text produces an append operation:
+Appending text produces an `a` operation:
 
 ```ts
 tracker.state.output += "next line\n";
 ```
 
-Moving a bounded text window forward produces a front-truncate followed by an
-append when the old suffix exactly matches the new prefix:
+Moving a bounded text window forward produces `t` followed by `a` when the old
+suffix matches the new prefix:
 
 ```ts
 tracker.state.output = tracker.state.output.slice(200) + nextChunk;
 ```
 
-An unrelated replacement produces a normal set operation.
+An unrelated replacement produces `s`.
 
 ### Arrays
 
@@ -81,16 +192,15 @@ tracker.state.messages.push(second);
 tracker.state.messages.splice(3, 1, replacement);
 ```
 
-All `push()` calls before one flush are published as one tail splice. Changes to
-older elements remain separate, regardless of whether they happen before or
-after the pushes. Changes to newly pushed elements are included in the pushed
-values.
+All `push()` calls before one flush produce one tail `p`. Changes to older
+elements remain separate, regardless of whether they happen before or after the
+pushes. Changes to newly pushed elements are included in the pushed values.
 
 Front or middle insertion, removal, sorting, reversing, `fill()`, and
 `copyWithin()` are supported. These operations can require comparison or
 replacement of a larger array region than a tail append.
 
-Sparse arrays are not supported. Writing beyond the next index throws. Increasing
+Sparse arrays are unsupported. Writing beyond the next index throws. Increasing
 `length` creates explicit `null` elements; decreasing it removes elements.
 
 `fill(object)` copies the object independently into each affected position.
@@ -106,7 +216,7 @@ type Settings = { label?: string; count: number };
 const tracker = track<Settings>({ count: 0 });
 
 tracker.state.label = "active";
-tracker.state.label = undefined; // deletes label
+tracker.state.label = undefined; // produces d
 // `delete tracker.state.label` is equivalent
 ```
 
@@ -145,54 +255,11 @@ Tracked state must be a mutable JSON tree:
 Do not keep a child proxy across an array operation that changes indices. Read
 the child again from its new index.
 
-## Operation formats
-
-Delta has two operation formats.
-
-### `Op`: decoded operations
-
-`track().flush()` returns `Op[]`, and `apply()` accepts `Op[]`. Every path is an
-inline array.
-
-| Tuple | Meaning |
-| --- | --- |
-| `["r", value]` | Replace the complete value. |
-| `["s", path, value]` | Set a property or array element. |
-| `["d", path]` | Delete an object property. |
-| `["a", path, text]` | Append to a string. |
-| `["t", path, count]` | Remove UTF-16 code units from a string's front. |
-| `["p", path, index, remove, items]` | Splice an array. |
-
-### `WireOp`: encoded operations
-
-`WireOp[]` is the transport and storage form. `encoder()` replaces repeated
-paths with numeric IDs and may omit a path when it equals the preceding path in
-the same batch. `decoder()` restores inline paths.
-
-```ts
-import { apply, decoder, encoder, track } from "@earendil-works/chord/delta";
-
-const tracker = track({ output: "" });
-const enc = encoder();
-const dec = decoder();
-let replica: { output: string } | undefined;
-
-const send = () => {
-	const wire = enc.encode(tracker.flush()); // Op[] -> WireOp[]
-	replica = apply(replica, dec.decode(wire)); // WireOp[] -> Op[]
-};
-```
-
-Use one encoder and decoder per ordered stream. Numeric path IDs remain valid
-across batches. Omitted paths never carry across a batch boundary. A complete
-snapshot resets both path dictionaries, allowing replay to start there. Do not
-pass `WireOp[]` directly to `apply()`.
-
 ## Tracker lifecycle
 
 ```ts
 tracker.flush(); // publish changes since the previous flush
-tracker.rebase(); // make the next flush a complete snapshot
+tracker.rebase(); // make the next flush a complete replacement
 tracker.discard(); // accept current changes without publishing them
 tracker.state = replacement; // replace the root; next flush is complete
 ```
