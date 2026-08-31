@@ -1,10 +1,9 @@
+import { isJsonValue } from "@earendil-works/chord";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
-import { LaneEventSchema, LaneSnapshotSchema } from "./harness.ts";
 import { type JsonValue, JsonValueSchema } from "./json-value.ts";
-import { createRpcCallSchema, defineRpc, type RpcCall, type RpcMethodName, type RpcResultUnion } from "./rpc.ts";
 
-export const PROTOCOL_VERSION = 6 as const;
+export const PROTOCOL_VERSION = 7 as const;
 
 const IdSchema = Type.String({ minLength: 1 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
@@ -18,30 +17,6 @@ export type ServerId = Static<typeof ServerIdSchema>;
 export function isServerId(value: unknown): value is ServerId {
 	return Check(ServerIdSchema, value);
 }
-
-/** Temporary typed facade for snapshot-first main-lane observation. */
-export const LaneWatchRpc = defineRpc({
-	watch: {
-		args: Type.Tuple([]),
-		result: StrictObject({ watchId: IdSchema, snapshot: LaneSnapshotSchema }),
-	},
-	startWatch: {
-		args: Type.Tuple([IdSchema]),
-		result: StrictObject({ watchId: IdSchema }),
-	},
-	resnapshotWatch: {
-		args: Type.Tuple([IdSchema]),
-		result: StrictObject({ watchId: IdSchema, snapshot: LaneSnapshotSchema }),
-	},
-	stopWatch: {
-		args: Type.Tuple([IdSchema]),
-		result: StrictObject({ watchId: IdSchema }),
-	},
-});
-type LaneWatchRpcMethod = RpcMethodName<typeof LaneWatchRpc>;
-export type LaneWatchRpcCall = RpcCall<typeof LaneWatchRpc>;
-export type LaneWatchRpcResultUnion = RpcResultUnion<typeof LaneWatchRpc>;
-const LaneWatchRpcCallSchema = Type.Unsafe<LaneWatchRpcCall>(createRpcCallSchema(LaneWatchRpc));
 
 const ServiceModeSchema = Type.Union([Type.Literal("singleton"), Type.Literal("keyed")]);
 export type ServiceMode = Static<typeof ServiceModeSchema>;
@@ -98,7 +73,7 @@ const ServiceSubscriptionSnapshotSchema = StrictObject({
 export type ServiceSubscriptionSnapshot = Static<typeof ServiceSubscriptionSnapshotSchema>;
 
 export function parseServiceSubscriptionSnapshot(value: unknown): ServiceSubscriptionSnapshot {
-	if (!Check(ServiceSubscriptionSnapshotSchema, value)) {
+	if (!Check(ServiceSubscriptionSnapshotSchema, value) || !isJsonValue(value)) {
 		throw new TypeError("Invalid service subscription snapshot");
 	}
 	return value;
@@ -185,29 +160,6 @@ export function decodeServiceControlCall(call: ProtocolRpcCall): ServiceControlC
 	return undefined;
 }
 
-const LaneWatchRpcAddresses = {
-	watch: { serviceId: "pi.transcript", member: "watch" },
-	startWatch: { serviceId: "pi.transcript", member: "startWatch" },
-	resnapshotWatch: { serviceId: "pi.transcript", member: "resnapshotWatch" },
-	stopWatch: { serviceId: "pi.transcript", member: "stopWatch" },
-} as const satisfies Record<LaneWatchRpcMethod, { serviceId: string; member: string }>;
-
-/** Translate the lane-watch contract to its generic service envelope. */
-export function encodeLaneWatchRpcCall(call: LaneWatchRpcCall): ProtocolRpcCall {
-	return { ...LaneWatchRpcAddresses[call.method], args: call.args };
-}
-
-/** Validate and decode one generic envelope against the lane-watch contract. */
-export function decodeLaneWatchRpcCall(call: ProtocolRpcCall): LaneWatchRpcCall | undefined {
-	if (call.instance !== undefined) return undefined;
-	for (const [method, address] of Object.entries(LaneWatchRpcAddresses)) {
-		if (call.serviceId !== address.serviceId || call.member !== address.member) continue;
-		const candidate = { method, args: call.args };
-		return Check(LaneWatchRpcCallSchema, candidate) ? (candidate as LaneWatchRpcCall) : undefined;
-	}
-	return undefined;
-}
-
 export const ServiceErrorCodeSchema = Type.Union([
 	Type.Literal("service_not_allowed"),
 	Type.Literal("service_not_found"),
@@ -226,8 +178,6 @@ const ProtocolErrorCodeSchema = Type.Union([
 	Type.Literal("session_not_found"),
 	Type.Literal("session_ambiguous"),
 	Type.Literal("session_not_attached"),
-	Type.Literal("watch_not_found"),
-	Type.Literal("watch_in_use"),
 	Type.Literal("not_supported"),
 	Type.Literal("server_draining"),
 	ServiceErrorCodeSchema,
@@ -302,11 +252,6 @@ const ResponseEnvelopeSchema = Type.Union([
 		error: ProtocolErrorSchema,
 	}),
 ]);
-const EventEnvelopeSchema = StrictObject({
-	type: Type.Literal("event"),
-	watchId: IdSchema,
-	event: LaneEventSchema,
-});
 const ServiceEventEnvelopeSchema = StrictObject({
 	type: Type.Literal("service_update"),
 	subscriptionId: IdSchema,
@@ -321,15 +266,12 @@ export const ServerMessageSchema = Type.Union([
 	ServerHelloSchema,
 	ServerHelloErrorSchema,
 	ResponseEnvelopeSchema,
-	EventEnvelopeSchema,
 	ServiceEventEnvelopeSchema,
 	AttachmentEnvelopeSchema,
 ]);
 export type ServerHello = Static<typeof ServerHelloSchema>;
 export type ServerHelloError = Static<typeof ServerHelloErrorSchema>;
 export type ResponseEnvelope = Static<typeof ResponseEnvelopeSchema>;
-export type EventEnvelope = Static<typeof EventEnvelopeSchema>;
 export type ServiceEventEnvelope = Static<typeof ServiceEventEnvelopeSchema>;
 export type AttachmentEnvelope = Static<typeof AttachmentEnvelopeSchema>;
-export type ServerEventEnvelope = EventEnvelope | ServiceEventEnvelope;
 export type ServerMessage = Static<typeof ServerMessageSchema>;

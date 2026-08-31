@@ -1,3 +1,4 @@
+import { isJsonValue } from "@earendil-works/chord";
 import { Check } from "typebox/value";
 import { decodeCbor, encodeCbor } from "./cbor/index.ts";
 import {
@@ -23,14 +24,14 @@ export class ProtocolValidationError extends Error {
 }
 
 export function parseClientMessage(value: unknown): ClientMessage {
-	if (!Check(ClientMessageSchema, value)) {
+	if (!Check(ClientMessageSchema, value) || !isJsonValue(value)) {
 		throw new ProtocolValidationError("Invalid client protocol message");
 	}
 	return value;
 }
 
 export function parseServerMessage(value: unknown): ServerMessage {
-	if (!Check(ServerMessageSchema, value)) {
+	if (!Check(ServerMessageSchema, value) || !isJsonValue(value)) {
 		throw new ProtocolValidationError("Invalid server protocol message");
 	}
 	return value;

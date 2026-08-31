@@ -6,7 +6,6 @@ export type {
 	ClientOptions,
 	ConnectionState,
 	ConnectionStateChange,
-	LaneWatch,
 	ListenerErrorHandler,
 	ServiceSubscription,
 	Unsubscribe,

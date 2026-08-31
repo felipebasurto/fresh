@@ -1,8 +1,8 @@
 import type { Context, Session, SessionMetadata } from "@earendil-works/pi-agent-core";
 import { BACKGROUND_CONTEXT, MemorySessionRepo } from "@earendil-works/pi-agent-core";
-import type { LaneEvent, LaneSnapshot, ProtocolRpcCall, ProtocolRpcResult } from "@earendil-works/pi-protocol";
+import type { ProtocolRpcCall, ProtocolRpcResult } from "@earendil-works/pi-protocol";
 import { SessionAmbiguousError, SessionNotFoundError } from "../errors.ts";
-import type { RoutedServerServiceHost, RoutedSessionHandle, RoutedSessionWatch, ServerHost } from "../types.ts";
+import type { RoutedServerServiceHost, RoutedSessionHandle, ServerHost } from "../types.ts";
 
 export class Deferred<T> {
 	readonly promise: Promise<T>;
@@ -24,77 +24,6 @@ interface OpenGate {
 	release: Deferred<void>;
 }
 
-const emptyLaneSnapshot: LaneSnapshot = {
-	lane: "main",
-	transcript: [],
-	tipId: null,
-	configuration: {
-		model: { provider: "faux", modelId: "faux-1" },
-		thinkingLevel: "off",
-		activeToolNames: [],
-	},
-	stats: {
-		messageCount: 0,
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-	},
-	operation: null,
-	queues: [],
-	faulted: false,
-};
-
-class TestHarnessWatch implements RoutedSessionWatch {
-	readonly snapshot: LaneSnapshot;
-	private readonly buffered: Array<{ event: LaneEvent; context: Context }> = [];
-	private listener: ((event: LaneEvent, context: Context) => void | Promise<void>) | undefined;
-	private tail: Promise<void> = Promise.resolve();
-	private state: "buffering" | "started" | "unsubscribed" = "buffering";
-
-	constructor(snapshot: LaneSnapshot) {
-		this.snapshot = structuredClone(snapshot);
-	}
-
-	start(listener: (event: LaneEvent, context: Context) => void | Promise<void>, _context: Context): void {
-		if (this.state !== "buffering") throw new Error("Test Harness watch may be started only once");
-		this.state = "started";
-		this.listener = listener;
-		for (const buffered of this.buffered.splice(0)) this.enqueue(buffered.event, buffered.context);
-	}
-
-	resnapshot(_context: Context): Promise<LaneSnapshot> {
-		return Promise.resolve(structuredClone(this.snapshot));
-	}
-
-	unsubscribe(_context: Context): void {
-		this.state = "unsubscribed";
-		this.buffered.splice(0);
-		this.listener = undefined;
-	}
-
-	push(event: LaneEvent, context: Context): Promise<void> {
-		if (this.state === "unsubscribed") return Promise.resolve();
-		if (this.state === "buffering") {
-			this.buffered.push({ event: structuredClone(event), context });
-			return Promise.resolve();
-		}
-		return this.enqueue(event, context);
-	}
-
-	private enqueue(event: LaneEvent, context: Context): Promise<void> {
-		const listener = this.listener;
-		if (listener === undefined) return Promise.resolve();
-		const delivery = this.tail.then(() => listener(structuredClone(event), context));
-		this.tail = delivery.catch(() => {});
-		return delivery;
-	}
-}
-
 export class TestHarness {
 	readonly session: Session;
 	readonly closed = new Deferred<void>();
@@ -104,8 +33,6 @@ export class TestHarness {
 	attachmentReleaseCount = 0;
 	closeCount = 0;
 	readonly serviceCalls: ProtocolRpcCall[] = [];
-	watchSnapshot: LaneSnapshot = structuredClone(emptyLaneSnapshot);
-	private readonly watches = new Set<TestHarnessWatch>();
 	failAttachmentRelease?: Error;
 	failClose?: Error;
 	nextServiceError?: Error;
@@ -119,14 +46,12 @@ export class TestHarness {
 
 	attachClient(_context: Context): {
 		invokeService: TestHarness["invokeService"];
-		watch: TestHarness["watch"];
 		release(context: Context): void;
 	} {
 		this.attachedClients += 1;
 		let released = false;
 		return {
 			invokeService: (call) => this.invokeService(call),
-			watch: (context) => this.watch(context),
 			release: (_context) => {
 				if (released) return;
 				this.attachmentReleaseCount += 1;
@@ -135,24 +60,6 @@ export class TestHarness {
 				this.attachedClients -= 1;
 			},
 		};
-	}
-
-	async watch(_context: Context): Promise<RoutedSessionWatch> {
-		const watch = new TestHarnessWatch(this.watchSnapshot);
-		this.watches.add(watch);
-		return {
-			snapshot: watch.snapshot,
-			start: (listener, context) => watch.start(listener, context),
-			resnapshot: (context) => watch.resnapshot(context),
-			unsubscribe: (context) => {
-				watch.unsubscribe(context);
-				this.watches.delete(watch);
-			},
-		};
-	}
-
-	async emitEvent(event: LaneEvent, context: Context = BACKGROUND_CONTEXT): Promise<void> {
-		await Promise.all([...this.watches].map((watch) => watch.push(event, context)));
 	}
 
 	async invokeService(call: ProtocolRpcCall): Promise<ProtocolRpcResult> {

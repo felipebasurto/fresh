@@ -1,6 +1,7 @@
 import {
 	type Context,
 	type ServiceProviderUpdate as CoreServiceProviderUpdate,
+	cloneJsonValue,
 	createFacetHost,
 	createStaticFacetLoader,
 	defineFacet,
@@ -26,6 +27,7 @@ import { AgentController } from "./agent-controller.ts";
 import { createAgentController } from "./agent-controller-provider.ts";
 import { createModelsServiceFacet } from "./models-provider.ts";
 import { SessionPlugins } from "./plugins.ts";
+import { createTranscriptServiceFacet } from "./transcript-provider.ts";
 
 export const ServiceOperationResultSchema = Type.Object(
 	{ result: Type.Optional(JsonValueSchema) },
@@ -83,6 +85,7 @@ export async function createSessionWorkerServices(options: {
 		agentControllerRuntimeFacet,
 		pluginRuntimeFacet,
 		createModelsServiceFacet(options),
+		createTranscriptServiceFacet(options.lane),
 	]).load();
 	const pluginLoader = options.facetLoader ?? createStaticFacetLoader([]);
 	let loadedPlugins = await pluginLoader.load();
@@ -133,7 +136,7 @@ export async function createSessionWorkerServices(options: {
 		catalogue: provider.catalogue,
 		async invoke(call, scope, context) {
 			const controlCall = decodeServiceControlCall(call);
-			if (controlCall?.type === "catalogue") return toProtocolJson(provider.catalogue);
+			if (controlCall?.type === "catalogue") return cloneJsonValue(provider.catalogue);
 			if (controlCall?.type === "subscribe") {
 				const key = scopedSubscriptionKey(scope, controlCall.subscriptionId);
 				if (subscriptions.has(key)) throw new Error("Service subscription ID is already active");
@@ -142,7 +145,7 @@ export async function createSessionWorkerServices(options: {
 				});
 				subscriptions.set(key, { scope, subscription });
 				subscription.activate();
-				return toProtocolJson(subscription.snapshot);
+				return cloneJsonValue(subscription.snapshot);
 			}
 			if (controlCall?.type === "unsubscribe") {
 				const key = scopedSubscriptionKey(scope, controlCall.subscriptionId);
@@ -175,10 +178,6 @@ export async function createSessionWorkerServices(options: {
 
 function scopedSubscriptionKey(scope: WorkerServiceScope, subscriptionId: string): string {
 	return `${scope.serverConnectionId}\0${scope.attachmentId}\0${subscriptionId}`;
-}
-
-function toProtocolJson(value: unknown): JsonValue {
-	return value as JsonValue;
 }
 
 function toProtocolServiceUpdate(update: CoreServiceProviderUpdate): ProtocolServiceProviderUpdate {

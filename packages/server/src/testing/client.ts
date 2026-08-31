@@ -3,7 +3,6 @@ import { createConnection, type Socket } from "node:net";
 import {
 	type ClientMessage,
 	encodeClientMessage,
-	type JsonValue,
 	PROTOCOL_VERSION,
 	type ProtocolRpcCall,
 	type ResponseEnvelope,
@@ -12,11 +11,6 @@ import {
 	ServerMessageDecoder,
 } from "@earendil-works/pi-protocol";
 import { Deferred } from "./host.ts";
-
-interface TestRpcCall {
-	readonly method: string;
-	readonly args: JsonValue[];
-}
 
 interface MessageWaiter {
 	predicate: (message: ServerMessage) => boolean;
@@ -54,11 +48,6 @@ export class ProtocolTestClient {
 		return response;
 	}
 
-	request(serverId: string, call: TestRpcCall, id?: string): Promise<ResponseEnvelope> {
-		const routed = this.routeLaneWatchCall(serverId, call);
-		return this.requestService(routed.target, routed.call, id);
-	}
-
 	async requestService(
 		target: RpcTarget,
 		call: ProtocolRpcCall,
@@ -94,17 +83,6 @@ export class ProtocolTestClient {
 
 	sendMessage(message: ClientMessage): Promise<void> {
 		return this.channel.send(encodeClientMessage(message));
-	}
-
-	private routeLaneWatchCall(serverId: string, call: TestRpcCall): { target: RpcTarget; call: ProtocolRpcCall } {
-		if (typeof call.args[0] !== "string") throw new Error(`Test call ${call.method} requires a Session ID`);
-		const sessionId = call.args[0];
-		const attachment = this.attachment;
-		const target: RpcTarget =
-			attachment === undefined || attachment.sessionId !== sessionId
-				? { serverId, sessionId, attachmentId: "missing-attachment" }
-				: { serverId, ...attachment };
-		return { target, call: { serviceId: "pi.transcript", member: call.method, args: call.args.slice(1) } };
 	}
 
 	sendBytes(chunk: Uint8Array): Promise<void> {

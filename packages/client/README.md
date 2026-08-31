@@ -29,7 +29,7 @@ The client verifies that the physical endpoint reports the expected logical `ser
 
 Typed server and Session APIs are provided by Chord service bindings owned by the application. `request()` and `subscribeService()` are low-level transport adapters. A service subscription returns a complete provider snapshot; the binding installs it and then calls `start()` to release updates buffered during hydration. `Client` applies ordered out-of-band attachment changes but deliberately does not construct typed service proxies or interpret service contracts.
 
-`watchSession()` is the remaining low-level compatibility API. It creates a main-lane watch and returns its authoritative snapshot without starting event delivery. Install the listener with `await watch.start(listener)`; this then flushes events buffered after the snapshot and continues with live events. `watch.dispose()` stops server delivery and waits for already-received listener work. A disconnected watch is stale and cannot be reused after reconnection.
+Application observation APIs such as the coding agent's `Transcript` are ordinary Chord services. The client does not interpret their snapshots or updates.
 
 On disconnect or disposal, pending requests reject locally, but accepted work may still complete remotely before the attachment is released. The client clears its live attachment route. It never reconnects or replays requests automatically. After disconnection, call `reconnect()`, attach through the application's management service again, and explicitly repeat only operations known to be safe.
 

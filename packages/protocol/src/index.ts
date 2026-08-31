@@ -1,7 +1,6 @@
 export * from "./cbor/index.ts";
 export * from "./codec.ts";
 export * from "./framing.ts";
-export * from "./harness.ts";
 export * from "./json-value.ts";
 export {
 	type AttachmentEnvelope,
@@ -11,14 +10,8 @@ export {
 	createServiceCatalogueCall,
 	createServiceSubscribeCall,
 	createServiceUnsubscribeCall,
-	decodeLaneWatchRpcCall,
 	decodeServiceControlCall,
-	type EventEnvelope,
-	encodeLaneWatchRpcCall,
 	isServerId,
-	LaneWatchRpc,
-	type LaneWatchRpcCall,
-	type LaneWatchRpcResultUnion,
 	PROTOCOL_VERSION,
 	type ProtocolError,
 	type ProtocolErrorCode,
@@ -30,7 +23,6 @@ export {
 	type RequestEnvelope,
 	type ResponseEnvelope,
 	type RpcTarget,
-	type ServerEventEnvelope,
 	type ServerHello,
 	type ServerHelloError,
 	type ServerId,
@@ -45,4 +37,3 @@ export {
 	type ServiceSubscriptionSnapshot,
 	type SessionTarget,
 } from "./protocol.ts";
-export * from "./rpc.ts";

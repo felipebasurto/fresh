@@ -31,7 +31,7 @@ import { InteractiveThemeController } from "../modes/interactive/theme/theme-con
 import { createInteractiveTui } from "../modes/interactive/tui-renderer.ts";
 import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runtime.ts";
 import { ExperimentalChatView } from "./client-tui-chat.ts";
-import { type LaneReplica, type LaneWatchSource, openLaneReplica } from "./lane-replica.ts";
+import { type LaneReplica, openLaneReplica } from "./lane-replica.ts";
 import { createPresentationFacetLoaders } from "./plugins/bundled.ts";
 import { AgentController, type AgentOperationResponse, type AgentQueueResponse } from "./services/agent-controller.ts";
 import type {
@@ -48,6 +48,7 @@ import {
 	createBuiltInSlashCommandsFacet,
 	createSlashCommandsRuntimeFacet,
 } from "./services/slash-commands-provider.ts";
+import { Transcript, type Transcript as TranscriptService } from "./services/transcript.ts";
 
 export interface RunClientTuiOptions extends OpenClientRuntimeOptions {
 	readonly facetLoader?: FacetLoader;
@@ -56,7 +57,6 @@ export interface RunClientTuiOptions extends OpenClientRuntimeOptions {
 export interface ClientTuiServer {
 	readonly serverId: string;
 	readonly radius: boolean;
-	readonly laneWatches: LaneWatchSource;
 	readonly server: ServerServiceSource;
 	readonly session: SessionServiceSource;
 }
@@ -64,7 +64,7 @@ export interface ClientTuiServer {
 interface SessionFeature {
 	readonly serverId: string;
 	readonly session: SessionServiceSource;
-	readonly laneWatches: LaneWatchSource;
+	readonly transcript: TranscriptService;
 }
 
 interface PreparedClientSession {
@@ -281,10 +281,11 @@ export class ExperimentalClientTui implements Component {
 				});
 				const commands = env.use(SlashCommands);
 				const controller = env.use(AgentController);
+				const transcript = env.use(Transcript);
 				const sessionFeature: SessionFeature = {
 					serverId: server.serverId,
 					session: server.session,
-					laneWatches: server.laneWatches,
+					transcript,
 				};
 				env.onActivate(() => {
 					if (this.#session !== undefined || this.#slashCommands !== undefined || this.#controller !== undefined) {
@@ -494,7 +495,7 @@ export class ExperimentalClientTui implements Component {
 
 	async #openLane(feature: SessionFeature, sessionId: string): Promise<void> {
 		await this.#closeLane();
-		const replica = await openLaneReplica(feature.laneWatches, sessionId);
+		const replica = await openLaneReplica(feature.transcript, sessionId);
 		const view = new ExperimentalChatView(this.#ui, process.cwd());
 		view.apply(replica.state());
 		this.#laneReplica = replica;
@@ -768,7 +769,6 @@ export async function runClientTui(command: ClientCommand, options: RunClientTui
 			servers: runtime.servers.map((server) => ({
 				serverId: server.route.serverId,
 				radius: server.route.transport === "radius",
-				laneWatches: server.client,
 				server: server.server,
 				session: server.session,
 			})),

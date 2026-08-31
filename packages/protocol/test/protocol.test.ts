@@ -3,24 +3,17 @@ import {
 	type ClientHello,
 	type ClientMessage,
 	ClientMessageDecoder,
-	createRpcClient,
-	createRpcDispatcher,
 	createServiceCatalogueCall,
 	createServiceSubscribeCall,
 	createServiceUnsubscribeCall,
 	decodeCbor,
-	decodeLaneWatchRpcCall,
 	decodeServiceControlCall,
-	defineRpc,
 	encodeCbor,
 	encodeClientMessage,
 	encodeFrame,
-	encodeLaneWatchRpcCall,
 	encodeServerMessage,
 	FrameDecoder,
 	isSupportedProtocolVersion,
-	type LaneSnapshot,
-	LaneWatchRpc,
 	PROTOCOL_VERSION,
 	ProtocolValidationError,
 	parseClientMessage,
@@ -39,106 +32,12 @@ const serverHello: ServerHello = {
 	serverId: "00000000-0000-4000-8000-000000000001",
 };
 
-const laneSnapshot = {
-	lane: "main",
-	transcript: [],
-	tipId: null,
-	configuration: {
-		model: { provider: "faux", modelId: "faux-1" },
-		thinkingLevel: "off",
-		activeToolNames: [],
-	},
-	stats: {
-		messageCount: 0,
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-	},
-	operation: null,
-	queues: [],
-	faulted: false,
-} satisfies LaneSnapshot;
-
-describe("RPC manifest", () => {
-	test("creates typed lane-watch client methods from the manifest", async () => {
-		const calls: unknown[] = [];
-		const client = createRpcClient(LaneWatchRpc, async (call) => {
-			calls.push(call);
-			switch (call.method) {
-				case "watch":
-					return { watchId: "watch-1", snapshot: laneSnapshot };
-				case "startWatch":
-				case "stopWatch":
-					return { watchId: call.args[0] };
-				case "resnapshotWatch":
-					return { watchId: call.args[0], snapshot: laneSnapshot };
-			}
-		});
-
-		await expect(client.watch()).resolves.toEqual({ watchId: "watch-1", snapshot: laneSnapshot });
-		await expect(client.startWatch("watch-1")).resolves.toEqual({ watchId: "watch-1" });
-		await expect(client.resnapshotWatch("watch-1")).resolves.toEqual({
-			watchId: "watch-1",
-			snapshot: laneSnapshot,
-		});
-		await expect(client.stopWatch("watch-1")).resolves.toEqual({ watchId: "watch-1" });
-		expect(calls).toEqual([
-			{ method: "watch", args: [] },
-			{ method: "startWatch", args: ["watch-1"] },
-			{ method: "resnapshotWatch", args: ["watch-1"] },
-			{ method: "stopWatch", args: ["watch-1"] },
-		]);
-	});
-
-	test("maps lane-watch contracts onto generic service/member envelopes", () => {
-		const encoded = encodeLaneWatchRpcCall({ method: "startWatch", args: ["watch-1"] });
-		expect(encoded).toEqual({ serviceId: "pi.transcript", member: "startWatch", args: ["watch-1"] });
-		expect(decodeLaneWatchRpcCall(encoded)).toEqual({ method: "startWatch", args: ["watch-1"] });
-		expect(decodeLaneWatchRpcCall({ serviceId: "pi.transcript", member: "startWatch", args: [] })).toBeUndefined();
-		expect(decodeLaneWatchRpcCall({ serviceId: "unknown", member: "method", args: [] })).toBeUndefined();
-	});
-
-	test("dispatches only methods and values allowed by the manifest", async () => {
-		const dispatch = createRpcDispatcher(LaneWatchRpc, {
-			watch: () => ({ watchId: "watch-1", snapshot: laneSnapshot }),
-			startWatch: (_context, watchId) => ({ watchId }),
-			resnapshotWatch: (_context, watchId) => ({ watchId, snapshot: laneSnapshot }),
-			stopWatch: (_context, watchId) => ({ watchId }),
-		});
-		await expect(dispatch({ method: "watch", args: [] }, undefined)).resolves.toEqual({
-			watchId: "watch-1",
-			snapshot: laneSnapshot,
-		});
-		await expect(dispatch({ method: "resnapshotWatch", args: ["watch-1"] }, undefined)).resolves.toEqual({
-			watchId: "watch-1",
-			snapshot: laneSnapshot,
-		});
-		await expect(dispatch({ method: "startWatch", args: [] } as never, undefined)).rejects.toThrow(
-			/Invalid arguments/,
-		);
-	});
-
-	test("rejects invalid results on client boundaries", async () => {
-		const client = createRpcClient(LaneWatchRpc, async () => ({ watchId: 1 }));
-		await expect(client.watch()).rejects.toThrow(/Invalid result.*watch/);
-	});
-
-	test("rejects empty manifests instead of creating unusable RPC clients", () => {
-		expect(() => defineRpc({})).toThrow(/at least one method/);
-	});
-});
-
 describe("protocol validation", () => {
-	test("negotiates protocol version 6", () => {
-		expect(PROTOCOL_VERSION).toBe(6);
-		expect(isSupportedProtocolVersion(6)).toBe(true);
-		expect(isSupportedProtocolVersion(5)).toBe(false);
-		expect(isSupportedProtocolVersion(6.5)).toBe(false);
+	test("negotiates protocol version 7", () => {
+		expect(PROTOCOL_VERSION).toBe(7);
+		expect(isSupportedProtocolVersion(7)).toBe(true);
+		expect(isSupportedProtocolVersion(6)).toBe(false);
+		expect(isSupportedProtocolVersion(7.5)).toBe(false);
 	});
 
 	test.each([0, PROTOCOL_VERSION, PROTOCOL_VERSION + 1])(
@@ -277,6 +176,31 @@ describe("protocol validation", () => {
 		expect(parseClientMessage(message)).toEqual(message);
 	});
 
+	test("rejects non-JSON opaque service payloads", () => {
+		const request = {
+			type: "request",
+			id: "request-1",
+			target: { serverId: "00000000-0000-4000-8000-000000000001" },
+			call: { serviceId: "application.custom", member: "invoke", args: [] },
+		};
+		const cyclic: { self?: unknown } = {};
+		cyclic.self = cyclic;
+		for (const [label, value] of [
+			["byte array", new Uint8Array([1])],
+			["non-finite number", Number.NaN],
+			["undefined property", { value: undefined }],
+			["cycle", cyclic],
+		] as const) {
+			expect(() => parseClientMessage({ ...request, call: { ...request.call, args: [value] } }), label).toThrow(
+				ProtocolValidationError,
+			);
+			expect(
+				() => parseServerMessage({ type: "response", id: "request-1", ok: true, result: value }),
+				label,
+			).toThrow(ProtocolValidationError);
+		}
+	});
+
 	test("validates request cancellation envelopes", () => {
 		const cancel: ClientMessage = {
 			type: "cancel",
@@ -286,69 +210,6 @@ describe("protocol validation", () => {
 		expect(parseClientMessage(cancel)).toEqual(cancel);
 		expect(() => parseClientMessage({ ...cancel, id: "" })).toThrow(ProtocolValidationError);
 		expect(() => parseClientMessage({ ...cancel, extra: true })).toThrow(ProtocolValidationError);
-	});
-
-	test("validates lane watch snapshots and events", () => {
-		const snapshotMessage: ServerMessage = {
-			type: "response",
-			id: "request-1",
-			ok: true,
-			result: { watchId: "watch-1", snapshot: laneSnapshot },
-		};
-		const eventMessage: ServerMessage = {
-			type: "event",
-			watchId: "watch-1",
-			event: { type: "run_start", lane: "main", runId: "run-1", startedAt: 1 },
-		};
-		expect(parseServerMessage(snapshotMessage)).toEqual(snapshotMessage);
-		expect(parseServerMessage(eventMessage)).toEqual(eventMessage);
-		expect(
-			parseServerMessage({
-				type: "event",
-				watchId: "watch-1",
-				event: {
-					type: "message_update",
-					lane: "main",
-					runId: "run-1",
-					message: {
-						role: "assistant",
-						content: [{ type: "text", text: "hello" }],
-						api: "test",
-						provider: "test",
-						model: "test",
-						usage: {
-							input: 0,
-							output: 0,
-							cacheRead: 0,
-							cacheWrite: 0,
-							totalTokens: 0,
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-						},
-						stopReason: "pending",
-						timestamp: 1,
-					},
-					frame: { type: "text_delta", contentIndex: 0, delta: "hello" },
-				},
-			}),
-		).toMatchObject({ event: { frame: { delta: "hello" } } });
-		expect(() => parseServerMessage({ ...eventMessage, event: { ...eventMessage.event, unknown: true } })).toThrow(
-			ProtocolValidationError,
-		);
-		expect(() =>
-			parseServerMessage({
-				type: "event",
-				watchId: "watch-1",
-				event: {
-					type: "run_end",
-					lane: "main",
-					runId: "run-1",
-					fromTipId: null,
-					tipId: "leaf-1",
-					status: "completed",
-					finalEntryId: "entry-1",
-				},
-			}),
-		).toThrow(ProtocolValidationError);
 	});
 
 	test("validates attachment route updates", () => {
@@ -410,8 +271,6 @@ describe("protocol validation", () => {
 		"wrong_server",
 		"session_not_found",
 		"session_not_attached",
-		"watch_not_found",
-		"watch_in_use",
 		"not_supported",
 		"server_draining",
 		"cancelled",
@@ -428,7 +287,7 @@ describe("protocol validation", () => {
 
 	test("rejects unknown messages and fields", () => {
 		expect(() => parseServerMessage({ ...serverHello, snapshot: {} })).toThrow(ProtocolValidationError);
-		expect(() => parseServerMessage({ type: "event", event: {} })).toThrow(ProtocolValidationError);
+		expect(() => parseServerMessage({ type: "unknown", event: {} })).toThrow(ProtocolValidationError);
 	});
 
 	test("does not parse JSON strings as messages", () => {

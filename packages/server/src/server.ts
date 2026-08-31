@@ -6,7 +6,6 @@ import {
 	type ClientMessage,
 	ClientMessageDecoder,
 	DEFAULT_MAX_FRAME_LENGTH,
-	decodeLaneWatchRpcCall,
 	encodeServerMessage,
 	isServerId,
 	isSupportedProtocolVersion,
@@ -312,18 +311,7 @@ export class Server<TMetadata extends SessionMetadata = SessionMetadata> {
 		try {
 			if (envelope.target.serverId !== this.serverId) throw new WrongServerError();
 			let result: ProtocolRpcResult;
-			const laneWatchCall = decodeLaneWatchRpcCall(envelope.call);
-			if (laneWatchCall !== undefined) {
-				result = await this.sessions.executeLaneWatchCall(
-					laneWatchCall,
-					envelope.target,
-					state,
-					async (message, _context) => {
-						await this.sendMessage(state, message);
-					},
-					context,
-				);
-			} else if ("sessionId" in envelope.target) {
+			if ("sessionId" in envelope.target) {
 				result = await this.sessions.executeServiceCall(
 					envelope.call,
 					envelope.target,

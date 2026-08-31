@@ -1,3 +1,4 @@
+import type { JsonRepresentation } from "@earendil-works/chord";
 import type {
 	Api,
 	AssistantMessage,
@@ -382,6 +383,20 @@ export type HarnessEvent =
 	| (Extract<HarnessEventPayload, { type: "usage" }> & { recovery?: never })
 	| (GlobalConfigEventPayload & { lane?: never; recovery?: never })
 	| (HandlerErrorPayload & ({ lane: string; recovery?: true } | { lane?: never; recovery?: never }));
+
+type LaneWatchSourceEvent =
+	| Exclude<
+			HarnessEvent,
+			| { type: "handler_error" | "turn_start" | "turn_end" | "value_update" | "lane_created" | "message_update" }
+			| ({ type: "config_update" } & { property: string })
+	  >
+	| Extract<HarnessEvent, { type: "config_update"; property: "model" | "thinkingLevel" | "activeTools" }>
+	| Omit<Extract<HarnessEvent, { type: "message_update" }>, "event">;
+
+/** Strict-JSON snapshot representation published to remote transcript consumers. */
+export type LaneTranscriptSnapshot = JsonRepresentation<LaneSnapshot>;
+/** Reducer-relevant strict-JSON Harness events published to remote transcript consumers. */
+export type LaneWatchEvent = JsonRepresentation<LaneWatchSourceEvent>;
 
 export type HarnessEventType = HarnessEvent["type"];
 export type EventListener<TEvent extends HarnessEvent = HarnessEvent> = (

@@ -1,5 +1,5 @@
 import { defineFacet, type FacetLoader } from "@earendil-works/chord";
-import type { AgentLane } from "@earendil-works/pi-agent-core";
+import type { AgentLane, LaneSnapshot } from "@earendil-works/pi-agent-core";
 import { describe, expect, test, vi } from "vitest";
 import { createSessionWorkerServices } from "../src/experimental/services/worker.ts";
 
@@ -28,7 +28,41 @@ describe("experimental plugin reload", () => {
 				};
 			},
 		};
+		const snapshot: LaneSnapshot = {
+			lane: "main",
+			transcript: [],
+			tipId: null,
+			configuration: {
+				model: { provider: "test", modelId: "model" },
+				thinkingLevel: "off",
+				activeToolNames: [],
+			},
+			stats: {
+				messageCount: 0,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+			},
+			operation: null,
+			queues: [],
+			faulted: false,
+		};
 		const lane = {
+			async watch() {
+				return {
+					snapshot,
+					start() {},
+					async resnapshot() {
+						return snapshot;
+					},
+					unsubscribe() {},
+				};
+			},
 			async getModel() {
 				return undefined;
 			},

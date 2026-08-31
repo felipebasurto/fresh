@@ -1,23 +1,20 @@
 import {
 	type AttachmentEnvelope,
-	createRpcClient,
 	createServiceCatalogueCall,
 	createServiceSubscribeCall,
 	createServiceUnsubscribeCall,
 	encodeClientMessage,
-	encodeLaneWatchRpcCall,
 	isServerId,
-	type LaneEvent,
-	LaneWatchRpc,
 	type ProtocolRpcCall,
+	type ProtocolRpcResult,
 	ProtocolValidationError,
 	parseServiceCatalogue,
 	parseServiceSubscriptionSnapshot,
 	type ResponseEnvelope,
 	type RpcTarget,
-	type ServerEventEnvelope,
 	type ServerHello,
 	type ServiceCatalogueEntry,
+	type ServiceEventEnvelope,
 	type ServiceMode,
 	type ServiceProviderUpdate,
 	type ServiceSubscriptionSnapshot,
@@ -31,20 +28,14 @@ import type {
 	ClientOptions,
 	ConnectionState,
 	ConnectionStateChange,
-	LaneWatch,
 	ServiceSubscription,
 	Unsubscribe,
 } from "./types.ts";
 
 interface PendingRequest {
-	resolve(result: unknown): void;
+	resolve(result: ProtocolRpcResult): void;
 	reject(error: Error): void;
 	cleanup(): void;
-}
-
-interface ActiveWatchListener {
-	readonly listener: (event: LaneEvent) => void | Promise<void>;
-	deliveryTail: Promise<void>;
 }
 
 interface ActiveServiceListener {
@@ -61,9 +52,7 @@ export class Client {
 	readonly #pendingRequests = new Map<string, PendingRequest>();
 	readonly #connectionStateListeners = new Set<(change: ConnectionStateChange) => void>();
 	readonly #attachmentListeners = new Set<AttachmentChangeListener>();
-	readonly #watchListeners = new Map<string, ActiveWatchListener>();
 	readonly #serviceListeners = new Map<string, ActiveServiceListener>();
-	readonly #laneWatchRpc: ReturnType<typeof createRpcClient<typeof LaneWatchRpc>>;
 	#requestSequence = 0;
 	#serviceSubscriptionSequence = 0;
 	#hello: ServerHello | undefined;
@@ -86,11 +75,6 @@ export class Client {
 			onMessage: (message) => this.#handleMessage(message),
 			onStateChange: (change) => this.#handleConnectionStateChange(change),
 		});
-		this.#laneWatchRpc = createRpcClient(
-			LaneWatchRpc,
-			(call) => this.#request(this.#requireSessionTarget(), encodeLaneWatchRpcCall(call)),
-			(message) => new ProtocolValidationError(message),
-		);
 	}
 
 	get disposed(): boolean {
@@ -155,7 +139,7 @@ export class Client {
 	}
 
 	/** Invoke one low-level protocol call against an explicit routed target. */
-	request(target: RpcTarget, call: ProtocolRpcCall, signal?: AbortSignal): Promise<unknown> {
+	request(target: RpcTarget, call: ProtocolRpcCall, signal?: AbortSignal): Promise<ProtocolRpcResult> {
 		return this.#request(target, call, signal);
 	}
 
@@ -235,65 +219,12 @@ export class Client {
 		};
 	}
 
-	async watchSession(sessionId: string): Promise<LaneWatch> {
-		this.#requireSessionTarget(sessionId);
-		const { watchId, snapshot } = await this.#laneWatchRpc.watch();
-		const connection = this.#hello;
-		let currentSnapshot = snapshot;
-		let state: "ready" | "starting" | "started" | "disposed" = "ready";
-		return {
-			id: watchId,
-			sessionId,
-			get snapshot() {
-				return currentSnapshot;
-			},
-			start: async (listener) => {
-				if (state !== "ready") throw new Error("Lane watch may be started only once");
-				if (this.#watchListeners.has(watchId)) {
-					this.#connection.fail(new ProtocolValidationError("Server reused an active lane watch ID"));
-					throw new ProtocolValidationError("Server reused an active lane watch ID");
-				}
-				state = "starting";
-				this.#watchListeners.set(watchId, { listener, deliveryTail: Promise.resolve() });
-				try {
-					this.#requireSessionTarget(sessionId);
-					await this.#laneWatchRpc.startWatch(watchId);
-					if (state === "starting") state = "started";
-				} catch (error) {
-					this.#watchListeners.delete(watchId);
-					state = "disposed";
-					throw error;
-				}
-			},
-			resnapshot: async () => {
-				if (state === "disposed") throw new Error("Lane watch is disposed");
-				this.#requireSessionTarget(sessionId);
-				const refreshed = await this.#laneWatchRpc.resnapshotWatch(watchId);
-				currentSnapshot = refreshed.snapshot;
-				return currentSnapshot;
-			},
-			dispose: async () => {
-				if (state === "disposed") return;
-				state = "disposed";
-				const active = this.#watchListeners.get(watchId);
-				try {
-					if (this.connected && this.#hello === connection && this.#attachment?.sessionId === sessionId) {
-						await this.#laneWatchRpc.stopWatch(watchId);
-					}
-					await active?.deliveryTail;
-				} finally {
-					this.#watchListeners.delete(watchId);
-				}
-			},
-		};
-	}
-
-	#request(target: RpcTarget, call: ProtocolRpcCall, signal?: AbortSignal): Promise<unknown> {
+	#request(target: RpcTarget, call: ProtocolRpcCall, signal?: AbortSignal): Promise<ProtocolRpcResult> {
 		if (this.#disposed) return Promise.reject(new ClientDisposedError());
 		if (!this.connected) return Promise.reject(new DisconnectedError());
 		if (signal?.aborted) return Promise.reject(abortError(signal));
 		const id = `request-${++this.#requestSequence}`;
-		const { promise, resolve, reject } = createPromiseResolvers<unknown>();
+		const { promise, resolve, reject } = createPromiseResolvers<ProtocolRpcResult>();
 		let sent = false;
 		let aborted = false;
 		let onAbort: (() => void) | undefined;
@@ -339,21 +270,13 @@ export class Client {
 		return promise;
 	}
 
-	#handleMessage(message: ResponseEnvelope | ServerEventEnvelope | AttachmentEnvelope): void {
+	#handleMessage(message: ResponseEnvelope | ServiceEventEnvelope | AttachmentEnvelope): void {
 		if (message.type === "attachment") {
 			if (message.attachment !== null && message.attachment.serverId !== this.#options.serverId) {
 				this.#connection.fail(new ProtocolValidationError("Attachment update belongs to another server"));
 				return;
 			}
 			this.#setAttachment(message.attachment ?? undefined);
-			return;
-		}
-		if (message.type === "event") {
-			const active = this.#watchListeners.get(message.watchId);
-			if (active === undefined) return;
-			active.deliveryTail = active.deliveryTail
-				.then(() => active.listener(message.event))
-				.catch((error: unknown) => this.#reportListenerError(error));
 			return;
 		}
 		if (message.type === "service_update") {
@@ -380,7 +303,6 @@ export class Client {
 			this.#hello = undefined;
 			this.#setAttachment(undefined);
 			this.#rejectPendingRequests(change.error ?? new DisconnectedError());
-			this.#watchListeners.clear();
 			this.#serviceListeners.clear();
 		}
 		for (const listener of this.#connectionStateListeners) {
@@ -421,21 +343,12 @@ export class Client {
 		this.#setAttachment(undefined);
 		this.#connectionStateListeners.clear();
 		this.#attachmentListeners.clear();
-		this.#watchListeners.clear();
 		this.#serviceListeners.clear();
 		return this.#disposePromise;
 	}
 
 	[Symbol.asyncDispose](): Promise<void> {
 		return this.dispose();
-	}
-
-	#requireSessionTarget(sessionId?: string): SessionTarget {
-		const attachment = this.#attachment;
-		if (attachment === undefined || (sessionId !== undefined && attachment.sessionId !== sessionId)) {
-			throw new ServerError({ code: "session_not_attached", message: "Session is not attached" });
-		}
-		return attachment;
 	}
 
 	#setAttachment(attachment: SessionTarget | undefined): void {

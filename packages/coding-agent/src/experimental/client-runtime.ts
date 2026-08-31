@@ -17,6 +17,7 @@ import {
 import { Models } from "./services/models.ts";
 import { PresentationPlugins } from "./services/plugins.ts";
 import { SessionDirectory, SessionManagement } from "./services/sessions.ts";
+import { Transcript } from "./services/transcript.ts";
 
 export type ClientRuntimeRoute =
 	| ({ readonly transport: "unix" } & UnixServerRoute)
@@ -35,6 +36,7 @@ export interface ActivatedClientRuntimeServer extends ClientRuntimeServer {
 	readonly plugins: PresentationPlugins;
 	readonly models: Models;
 	readonly agent: AgentController;
+	readonly transcript: Transcript;
 }
 
 export interface ClientRuntime {
@@ -190,7 +192,7 @@ export async function activateBuiltinClientServices(
 		onError() {},
 	});
 	const sessionServices = server.session.open({
-		services: [Models, AgentController],
+		services: [Models, AgentController, Transcript],
 		assertAccess() {},
 		onError() {},
 	});
@@ -215,8 +217,9 @@ export async function activateBuiltinClientServices(
 	const plugins = serverServices.use(PresentationPlugins);
 	const models = sessionServices.use(Models);
 	const agent = sessionServices.use(AgentController);
+	const transcript = sessionServices.use(Transcript);
 	await Promise.all([serverServices.ready(BACKGROUND_CONTEXT), sessionServices.ready(BACKGROUND_CONTEXT)]);
-	return { ...server, directory, management, plugins, models, agent };
+	return { ...server, directory, management, plugins, models, agent, transcript };
 }
 
 function routeFromExplicitPath(path: string): UnixServerRoute {

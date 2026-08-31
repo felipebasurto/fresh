@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import {
+	cloneJsonValue,
 	createRemoteServiceBinding,
 	RemoteServiceProvider,
 	type RemoteServiceTransport,
@@ -12,8 +13,12 @@ import {
 	FACET_BUNDLE_ARTIFACT_FORMAT_VERSION,
 	type FacetBundleArtifact,
 } from "@earendil-works/chord/node";
-import type { AgentLane } from "@earendil-works/pi-agent-core";
-import type { LaneEvent, LaneSnapshot } from "@earendil-works/pi-protocol";
+import {
+	type AgentLane,
+	type LaneSnapshot,
+	type LaneWatchEvent,
+	reduceLaneSnapshot,
+} from "@earendil-works/pi-agent-core";
 import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { type ClientTuiServer, ExperimentalClientTui } from "../src/experimental/client-tui.ts";
@@ -34,6 +39,7 @@ import {
 	SessionManagement,
 	type SessionSummary,
 } from "../src/experimental/services/sessions.ts";
+import { Transcript, type TranscriptUpdate } from "../src/experimental/services/transcript.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 const serverId = "00000000-0000-4000-8000-000000000001";
@@ -127,22 +133,21 @@ describe("experimental client TUI", () => {
 					BACKGROUND_CONTEXT,
 				);
 			});
-			let watchListener: ((event: LaneEvent) => void | Promise<void>) | undefined;
-			const snapshot = laneSnapshot();
-			const watchSession = vi.fn(async (sessionId: string) => ({
-				id: "watch-1",
-				sessionId,
-				snapshot,
-				async start(listener: (event: LaneEvent) => void | Promise<void>) {
-					watchListener = listener;
-				},
-				async resnapshot() {
-					return snapshot;
-				},
-				async dispose() {},
+			let snapshot = laneSnapshot();
+			let transcriptRevision = 0;
+			const transcriptUpdates = replicatedState<TranscriptUpdate | null>(null);
+			const transcriptSnapshot = vi.fn(async () => ({
+				revision: transcriptRevision,
+				snapshot: cloneJsonValue(snapshot),
 			}));
+			const emitTranscriptEvent = (event: LaneWatchEvent): void => {
+				const reduced = reduceLaneSnapshot(snapshot, event);
+				if (!("rebase" in reduced)) snapshot = reduced;
+				transcriptRevision += 1;
+				transcriptUpdates.set({ type: "event", revision: transcriptRevision, event }, BACKGROUND_CONTEXT);
+			};
 			const prompt = vi.fn(async () => {
-				await watchListener?.({
+				emitTranscriptEvent({
 					type: "entry_added",
 					lane: "main",
 					entry: {
@@ -154,7 +159,7 @@ describe("experimental client TUI", () => {
 						message: { role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 },
 					},
 				});
-				await watchListener?.({
+				emitTranscriptEvent({
 					type: "entry_added",
 					lane: "main",
 					entry: {
@@ -223,7 +228,7 @@ describe("experimental client TUI", () => {
 					attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);
 				},
 			});
-			const sessionProvider = new RemoteServiceProvider([Models, AgentController, SessionPlugins]);
+			const sessionProvider = new RemoteServiceProvider([Models, AgentController, SessionPlugins, Transcript]);
 			sessionProvider.provide(SessionPlugins, { reload: reloadSessionPlugins });
 			sessionProvider.provide(Models, {
 				state: modelsState,
@@ -236,6 +241,7 @@ describe("experimental client TUI", () => {
 				selectThinking,
 			});
 			sessionProvider.provide(AgentController, createAgentController({ prompt } as unknown as AgentLane));
+			sessionProvider.provide(Transcript, { updates: transcriptUpdates, snapshot: transcriptSnapshot });
 
 			const serverNamespace = createRemoteServiceBinding({
 				services: [SessionDirectory, SessionManagement, PresentationPlugins],
@@ -266,7 +272,7 @@ describe("experimental client TUI", () => {
 				},
 			});
 			const sessionNamespace = createRemoteServiceBinding({
-				services: [Models, AgentController, SessionPlugins],
+				services: [Models, AgentController, SessionPlugins, Transcript],
 				transport: createLoopbackServiceTransport(sessionProvider),
 				bound: false,
 			});
@@ -297,7 +303,6 @@ describe("experimental client TUI", () => {
 			const server: ClientTuiServer = {
 				serverId,
 				radius: true,
-				laneWatches: { watchSession },
 				server: serverServices,
 				session: sessionServices,
 			};
@@ -326,7 +331,7 @@ describe("experimental client TUI", () => {
 					expect.anything(),
 				);
 				expect(attachment.value).toEqual({ status: "attached", sessionId });
-				expect(watchSession).toHaveBeenCalledWith(sessionId);
+				expect(transcriptSnapshot).toHaveBeenCalledOnce();
 				expect(select).not.toHaveBeenCalled();
 				expect(component.render(80).join("\n")).toContain(`Server: ${serverId}`);
 				expect(component.render(80).join("\n")).toContain(`Session: ${sessionId}`);
@@ -368,7 +373,7 @@ describe("experimental client TUI", () => {
 				connectionState.set({ status: "connecting", attempt: 1 }, BACKGROUND_CONTEXT);
 				connectionState.set({ status: "connected", since: "reconnected" }, BACKGROUND_CONTEXT);
 				attachment.set({ status: "attached", sessionId }, BACKGROUND_CONTEXT);
-				await vi.waitFor(() => expect(watchSession).toHaveBeenCalledTimes(2));
+				await vi.waitFor(() => expect(transcriptSnapshot).toHaveBeenCalledTimes(2));
 				await vi.waitFor(() => expect(component.render(80).join("\n")).not.toContain("Reattaching"));
 
 				component.handleInput("/model");

@@ -46,8 +46,11 @@ The design has a few connected pieces:
   calls and subscriptions through an application-supplied adapter. Chord
   requires strict-JSON arguments, results, snapshots, updates, and catalogues,
   but does not prescribe framing, routing, transport, or an application wire
-  envelope. Symmetric RPC peers are planned as one optional implementation of
-  this boundary.
+  envelope. `JsonRepresentation<T>` derives a wire-safe type for application data
+  with unknown payloads; `isJsonValue()` validates received values, while
+  `cloneJsonValue()` validates, normalizes optional fields, and detaches outbound
+  values at an adapter boundary. Symmetric RPC peers are planned as one optional
+  implementation of this boundary.
 
 - **Context** Chord provides a Go-like context system for cancellation and
   invocation-scoped application values. Applications can carry permissions or

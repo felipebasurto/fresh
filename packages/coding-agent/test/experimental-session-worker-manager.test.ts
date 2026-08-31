@@ -229,7 +229,7 @@ describe("Session worker operations", () => {
 			.find(({ type }) => type === "operation");
 		expect(operation).toMatchObject({
 			scope: { serverConnectionId: "server-generation-1", attachmentId: expect.any(String) },
-			call: { method: "service", args: [serviceCall] },
+			call: serviceCall,
 		});
 		workers.detach();
 		await release();

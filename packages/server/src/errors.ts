@@ -8,8 +8,6 @@ type ServerOperationErrorCode =
 			| "session_not_found"
 			| "session_ambiguous"
 			| "session_not_attached"
-			| "watch_not_found"
-			| "watch_in_use"
 			| "not_supported"
 			| "server_draining"
 	  >;
@@ -52,20 +50,6 @@ export class SessionNotAttachedError extends ServerError {
 	constructor() {
 		super("session_not_attached", "Session is not attached to this client");
 		this.name = "SessionNotAttachedError";
-	}
-}
-
-export class WatchNotFoundError extends ServerError {
-	constructor() {
-		super("watch_not_found", "Lane watch was not found");
-		this.name = "WatchNotFoundError";
-	}
-}
-
-export class WatchInUseError extends ServerError {
-	constructor() {
-		super("watch_in_use", "Session attachment already has a lane watch");
-		this.name = "WatchInUseError";
 	}
 }
 

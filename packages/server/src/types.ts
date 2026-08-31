@@ -1,11 +1,5 @@
 import type { Context, SessionMetadata } from "@earendil-works/pi-agent-core";
-import type {
-	LaneEvent,
-	LaneSnapshot,
-	ProtocolRpcCall,
-	ProtocolRpcResult,
-	ServiceProviderUpdate,
-} from "@earendil-works/pi-protocol";
+import type { ProtocolRpcCall, ProtocolRpcResult, ServiceProviderUpdate } from "@earendil-works/pi-protocol";
 import type { ServerListener } from "./listener.ts";
 
 export interface ServerOptions {
@@ -28,8 +22,6 @@ export interface RoutedSessionAttachment {
 		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => MaybePromise<void>,
 		context: Context,
 	): Promise<ProtocolRpcResult>;
-	/** Observe the attached main lane when supported by this host. */
-	watch?(context: Context): Promise<RoutedSessionWatch>;
 	release(context: Context): MaybePromise<void>;
 }
 
@@ -53,14 +45,6 @@ export interface RoutedServerServiceAttachment {
 
 export interface RoutedServerServiceHost {
 	attachClient(presentation: RoutedServerPresentation, context: Context): MaybePromise<RoutedServerServiceAttachment>;
-}
-
-/** Snapshot-first observation handle supplied by a routed Session attachment. */
-export interface RoutedSessionWatch {
-	readonly snapshot: LaneSnapshot;
-	start(listener: (event: LaneEvent, context: Context) => MaybePromise<void>, context: Context): MaybePromise<void>;
-	resnapshot(context: Context): Promise<LaneSnapshot>;
-	unsubscribe(context: Context): MaybePromise<void>;
 }
 
 /** A process-safe handle that acquires presentation-scoped Session capabilities. */

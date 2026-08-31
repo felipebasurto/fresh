@@ -1,7 +1,6 @@
 import {
 	type Context,
 	createRemoteServiceBinding,
-	type JsonValue,
 	type MutableReplicatedState,
 	type RemoteServiceBinding,
 	type RemoteServiceSource,
@@ -367,7 +366,7 @@ function createRemoteServiceTransport(client: Client, getTarget: () => RpcTarget
 				member: call.member,
 				args: [...call.args],
 			};
-			return client.request(target, wireCall, context.abortSignal) as Promise<JsonValue | undefined>;
+			return client.request(target, wireCall, context.abortSignal);
 		},
 		subscribe: async (serviceId, mode, listener, context) => {
 			const target = getTarget();
