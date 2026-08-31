@@ -1,5 +1,5 @@
+import type { ServiceCall } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, type JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
-import type { ProtocolRpcCall } from "@earendil-works/pi-protocol";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CoordinatorConnectionEvent } from "../src/experimental/coordinator.ts";
 import { SessionWorkerManager } from "../src/experimental/session-worker-manager.ts";
@@ -194,7 +194,7 @@ describe("Session worker lifecycle failures", () => {
 });
 
 describe("Session worker operations", () => {
-	const serviceCall = { serviceId: "test.session", member: "run", args: ["Hello"] } satisfies ProtocolRpcCall;
+	const serviceCall = { serviceId: "test.session", member: "run", args: ["Hello"] } satisfies ServiceCall;
 
 	test("correlates service results to the worker generation and attachment", async () => {
 		const { coordinator, workers, attachment, release } = await createAttachedWorker();

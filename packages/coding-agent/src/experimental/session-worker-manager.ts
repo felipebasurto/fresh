@@ -1,19 +1,20 @@
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
-import type { ServiceProviderUpdate } from "@earendil-works/chord";
+import {
+	createServiceUnsubscribeCall,
+	decodeServiceControlCall,
+	type JsonValue,
+	parseServiceProviderUpdate,
+	type ServiceCall,
+	type ServiceProviderUpdate,
+} from "@earendil-works/chord";
 import {
 	BACKGROUND_CONTEXT,
 	type Context,
 	type JsonlSessionMetadata,
 	TODO_CONTEXT,
 } from "@earendil-works/pi-agent-core";
-import {
-	createServiceUnsubscribeCall,
-	decodeServiceControlCall,
-	type ProtocolRpcCall,
-	type ProtocolRpcResult,
-} from "@earendil-works/pi-protocol";
 import { type RoutedSessionAttachment, type RoutedSessionHandle, ServerError } from "@earendil-works/pi-server";
 import { Check } from "typebox/value";
 import type { CoordinatorConnection, CoordinatorConnectionEvent } from "./coordinator.ts";
@@ -241,10 +242,10 @@ export class SessionWorkerManager {
 	async #invokeService(
 		worker: WorkerRecord,
 		scope: WorkerOperationScope,
-		call: ProtocolRpcCall,
+		call: ServiceCall,
 		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>,
 		context: Context,
-	): Promise<ProtocolRpcResult> {
+	): Promise<JsonValue | undefined> {
 		const control = decodeServiceControlCall(call);
 		let addedSubscriptionKey: string | undefined;
 		if (control?.type === "subscribe") {
@@ -321,7 +322,7 @@ export class SessionWorkerManager {
 	#invoke(
 		worker: WorkerRecord,
 		scope: WorkerOperationScope,
-		call: ProtocolRpcCall,
+		call: ServiceCall,
 		context: Context,
 	): Promise<ServiceOperationResult> {
 		try {
@@ -573,7 +574,7 @@ export class SessionWorkerManager {
 				message.sessionKey,
 				message.scope,
 				message.subscriptionId,
-				message.update as unknown as ServiceProviderUpdate,
+				message.update,
 			);
 			return;
 		}
@@ -620,7 +621,7 @@ export class SessionWorkerManager {
 		sessionKey: string,
 		scope: WorkerOperationScope,
 		subscriptionId: string,
-		update: ServiceProviderUpdate,
+		update: unknown,
 	): void {
 		const entry = this.#serviceSubscriptions.get(scopedServiceSubscriptionKey(scope, subscriptionId));
 		if (
@@ -632,7 +633,13 @@ export class SessionWorkerManager {
 		) {
 			return;
 		}
-		entry.deliveryTail = entry.deliveryTail.then(() => entry.listener(update, TODO_CONTEXT)).catch(() => {});
+		let parsed: ServiceProviderUpdate;
+		try {
+			parsed = parseServiceProviderUpdate(update);
+		} catch {
+			return;
+		}
+		entry.deliveryTail = entry.deliveryTail.then(() => entry.listener(parsed, TODO_CONTEXT)).catch(() => {});
 	}
 
 	#recordReadyWorker(peerId: string, message: Extract<SessionWorkerEvent, { type: "worker_ready" }>): void {

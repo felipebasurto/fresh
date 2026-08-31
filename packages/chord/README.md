@@ -66,6 +66,25 @@ the root API.
 Chord-owned identifiers use the `chord.*` namespace and its reserved service
 prefix is `$chord.*`.
 
+## Remote service adapters
+
+Chord owns its transport-independent service wire grammar. Adapters use
+`createServiceCatalogueCall()`, `createServiceSubscribeCall()`, and
+`createServiceUnsubscribeCall()` for `$chord.service` control calls, then
+`decodeServiceControlCall()` on the provider side. `parseServiceCall()`,
+`parseServiceCatalogue()`, and the decoded/wire snapshot and update parsers
+validate Chord semantics after an adapter has established a strict-JSON
+boundary. `RemoteServiceErrorCode` and `REMOTE_SERVICE_ERROR_CODES` define the
+service errors that may cross that boundary.
+
+Replicated state operations use one `createServiceStateEncoder()` at the
+provider side and one `createServiceStateDecoder()` at the consumer side for
+each subscription. Those registries create an independent Delta path dictionary
+for every instance/member state and reset it on replacement, unavailability,
+close, or fresh hydration. Applications may place these values inside any
+routing, request, response, or event envelope; Chord does not prescribe that
+outer protocol.
+
 ## Tracking JSON deltas
 
 Import the standalone delta primitive from `@earendil-works/chord/delta`:

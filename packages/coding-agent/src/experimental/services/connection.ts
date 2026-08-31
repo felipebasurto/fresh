@@ -9,10 +9,12 @@ import {
 	type ReplicatedState,
 	replicatedState,
 	type Service,
+	type ServiceCall,
+	type ServiceCatalogueEntry,
 } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Client } from "@earendil-works/pi-client";
-import type { ProtocolRpcCall, RpcTarget, ServiceCatalogueEntry, SessionTarget } from "@earendil-works/pi-protocol";
+import type { RpcTarget, SessionTarget } from "@earendil-works/pi-protocol";
 
 export type ServerConnectionState =
 	| { status: "connecting"; attempt: number }
@@ -374,7 +376,7 @@ function createRemoteServiceTransport(client: Client, getTarget: () => RpcTarget
 		invoke: async (call, context) => {
 			const target = getTarget();
 			if (target === undefined) throw new Error("Service connection is not routed");
-			const wireCall: ProtocolRpcCall = {
+			const wireCall: ServiceCall = {
 				serviceId: call.serviceId,
 				...(call.instance === undefined ? {} : { instance: call.instance }),
 				member: call.member,

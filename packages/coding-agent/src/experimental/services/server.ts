@@ -1,12 +1,12 @@
 import {
 	type Context,
+	decodeServiceControlCall,
 	type JsonValue,
 	RemoteServiceProvider,
 	replicatedState,
 	type ServiceSubscription,
 } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { decodeServiceControlCall } from "@earendil-works/pi-protocol";
 import type { RoutedServerServiceAttachment, RoutedServerServiceHost } from "@earendil-works/pi-server";
 import { PresentationPlugins } from "./plugins.ts";
 import {

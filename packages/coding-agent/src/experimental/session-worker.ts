@@ -1,6 +1,14 @@
 import { createConnection, type Socket } from "node:net";
 import { isAbsolute } from "node:path";
-import { RemoteServiceError, type ServiceProviderUpdate } from "@earendil-works/chord";
+import {
+	isJsonValue,
+	parseServiceProviderUpdate,
+	REMOTE_SERVICE_ERROR_CODES,
+	RemoteServiceError,
+	type RemoteServiceErrorCode,
+	type ServiceCall,
+	type ServiceProviderUpdate,
+} from "@earendil-works/chord";
 import {
 	AgentHarness,
 	type AgentHarness as AgentHarnessInstance,
@@ -16,12 +24,6 @@ import {
 	withCancel,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import {
-	ProtocolRpcCallSchema,
-	type ServiceErrorCode,
-	ServiceErrorCodeSchema,
-	ServiceProviderUpdateSchema,
-} from "@earendil-works/pi-protocol";
 import lockfile from "proper-lockfile";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -48,6 +50,19 @@ export type { SessionWorkerRuntime } from "./services/worker.ts";
 
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 	Type.Object(properties, { additionalProperties: false });
+const ServiceCallSchema = Type.Unsafe<ServiceCall>(
+	StrictObject({
+		serviceId: Type.String({ minLength: 1 }),
+		instance: Type.Optional(
+			StrictObject({ key: Type.String({ minLength: 1 }), generation: Type.Integer({ minimum: 1 }) }),
+		),
+		member: Type.String({ minLength: 1 }),
+		args: Type.Array(Type.Unknown()),
+	}),
+);
+const RemoteServiceErrorCodeSchema = Type.Unsafe<RemoteServiceErrorCode>(
+	Type.String({ pattern: `^(?:${REMOTE_SERVICE_ERROR_CODES.join("|")})$` }),
+);
 
 export const SESSION_WORKER_CONTROL_ADDRESS_ENV = "PI_SESSION_WORKER_CONTROL_ADDRESS";
 export const SESSION_WORKER_CONTROL_TOKEN_ENV = "PI_SESSION_WORKER_CONTROL_TOKEN";
@@ -84,7 +99,7 @@ export const WorkerOperationRequestSchema = StrictObject({
 	type: Type.Literal("operation"),
 	requestId: Type.String({ minLength: 1 }),
 	scope: WorkerOperationScopeSchema,
-	call: ProtocolRpcCallSchema,
+	call: ServiceCallSchema,
 });
 export type WorkerOperationRequest = Static<typeof WorkerOperationRequestSchema>;
 
@@ -99,7 +114,7 @@ export const WorkerOperationResponseSchema = Type.Union([
 		type: Type.Literal("operation_error"),
 		requestId: Type.String({ minLength: 1 }),
 		scope: WorkerOperationScopeSchema,
-		code: Type.Optional(ServiceErrorCodeSchema),
+		code: Type.Optional(RemoteServiceErrorCodeSchema),
 		message: Type.String(),
 	}),
 ]);
@@ -167,7 +182,7 @@ export const SessionWorkerEventSchema = Type.Union([
 		sessionKey: Type.String(),
 		scope: WorkerOperationScopeSchema,
 		subscriptionId: Type.String({ minLength: 1 }),
-		update: ServiceProviderUpdateSchema,
+		update: Type.Unknown(),
 	}),
 ]);
 export type SessionWorkerEvent = Static<typeof SessionWorkerEventSchema>;
@@ -441,10 +456,9 @@ function writeJsonLine(socket: Socket, message: unknown): Promise<void> {
 	});
 }
 
-function toWorkerServiceUpdate(update: ServiceProviderUpdate): Static<typeof ServiceProviderUpdateSchema> {
-	const candidate: unknown = update;
-	if (!Check(ServiceProviderUpdateSchema, candidate)) throw new Error("Service produced an invalid update");
-	return candidate;
+function toWorkerServiceUpdate(update: ServiceProviderUpdate): ServiceProviderUpdate {
+	if (!isJsonValue(update)) throw new Error("Service produced a non-JSON update");
+	return parseServiceProviderUpdate(update);
 }
 
 function demandKey(serverConnectionId: string, attachmentId: string): string {
@@ -627,12 +641,12 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 				response: { type: "operation_result", requestId: request.requestId, scope: request.scope, result },
 			});
 		} catch (error) {
-			let code: ServiceErrorCode | undefined;
+			let code: RemoteServiceErrorCode | undefined;
 			if (error instanceof RemoteServiceError) {
 				code = error.code;
 			} else if (error instanceof Error && "code" in error) {
 				const candidate = error.code;
-				if (Check(ServiceErrorCodeSchema, candidate)) code = candidate;
+				if (Check(RemoteServiceErrorCodeSchema, candidate)) code = candidate;
 			}
 			await control.send({
 				type: "operation_response",

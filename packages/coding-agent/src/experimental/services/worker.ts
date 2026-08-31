@@ -2,16 +2,17 @@ import {
 	type Context,
 	createFacetHost,
 	createStaticFacetLoader,
+	decodeServiceControlCall,
 	defineFacet,
 	type FacetHost,
 	type FacetLoader,
 	isJsonValue,
 	type JsonValue,
+	type ServiceCall,
 	type ServiceProviderUpdate,
 	type ServiceSubscription,
 } from "@earendil-works/chord";
 import type { AgentHarness, AgentLane } from "@earendil-works/pi-agent-core";
-import { decodeServiceControlCall, type ProtocolRpcCall } from "@earendil-works/pi-protocol";
 import Type, { type Static } from "typebox";
 import type { ModelRuntime } from "../../core/model-runtime.ts";
 import type { SettingsManager } from "../../core/settings-manager.ts";
@@ -48,7 +49,7 @@ interface WorkerServiceSubscription {
 }
 
 export interface SessionWorkerServices {
-	invoke(call: ProtocolRpcCall, scope: WorkerServiceScope, context: Context): Promise<JsonValue | undefined>;
+	invoke(call: ServiceCall, scope: WorkerServiceScope, context: Context): Promise<JsonValue | undefined>;
 	removeSubscriptions(matches: (scope: WorkerServiceScope) => boolean): void;
 	dispose(): Promise<void>;
 }

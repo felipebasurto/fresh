@@ -1,27 +1,30 @@
 import {
-	type AttachmentEnvelope,
 	createServiceCatalogueCall,
 	createServiceStateDecoder,
 	createServiceSubscribeCall,
 	createServiceUnsubscribeCall,
-	type DecodedServiceProviderUpdate,
-	type DecodedServiceSubscriptionSnapshot,
+	type JsonValue,
+	parseServiceCall,
+	parseServiceCatalogue,
+	parseWireServiceProviderUpdate,
+	parseWireServiceSubscriptionSnapshot,
+	type ServiceCall,
+	type ServiceCatalogueEntry,
+	type ServiceMode,
+	type ServiceProviderUpdate,
+	type ServiceStateDecoder,
+	type ServiceSubscriptionSnapshot,
+} from "@earendil-works/chord";
+import {
+	type AttachmentEnvelope,
 	encodeClientMessage,
 	isServerId,
-	type ProtocolRpcCall,
-	type ProtocolRpcResult,
 	ProtocolValidationError,
-	parseServiceCatalogue,
-	parseServiceSubscriptionSnapshot,
 	type ResponseEnvelope,
 	type RpcTarget,
 	type ServerHello,
-	type ServiceCatalogueEntry,
 	type ServiceEventEnvelope,
-	type ServiceMode,
-	type ServiceStateDecoder,
 	type SessionTarget,
-	type ServiceProviderUpdate as WireServiceProviderUpdate,
 } from "@earendil-works/pi-protocol";
 import { Connection } from "./connection.ts";
 import { ClientDisposedError, DisconnectedError, ServerError, toError } from "./errors.ts";
@@ -35,18 +38,20 @@ import type {
 	Unsubscribe,
 } from "./types.ts";
 
+type ServiceResult = JsonValue | undefined;
+
 interface PendingRequest {
-	resolve(result: ProtocolRpcResult): void;
+	resolve(result: ServiceResult): void;
 	reject(error: Error): void;
 	cleanup(): void;
 }
 
 interface ActiveServiceListener {
 	readonly target: RpcTarget;
-	readonly listener: (update: DecodedServiceProviderUpdate) => void | Promise<void>;
+	readonly listener: (update: ServiceProviderUpdate) => void | Promise<void>;
 	readonly decoder: ServiceStateDecoder;
-	readonly queuedWireUpdates: WireServiceProviderUpdate[];
-	readonly queued: DecodedServiceProviderUpdate[];
+	readonly queuedWireUpdates: JsonValue[];
+	readonly queued: ServiceProviderUpdate[];
 	deliveryTail: Promise<void>;
 	hydrated: boolean;
 	ready: boolean;
@@ -145,7 +150,7 @@ export class Client {
 	}
 
 	/** Invoke one low-level protocol call against an explicit routed target. */
-	request(target: RpcTarget, call: ProtocolRpcCall, signal?: AbortSignal): Promise<ProtocolRpcResult> {
+	request(target: RpcTarget, call: ServiceCall, signal?: AbortSignal): Promise<ServiceResult> {
 		return this.#request(target, call, signal);
 	}
 
@@ -166,7 +171,7 @@ export class Client {
 		target: RpcTarget,
 		serviceId: string,
 		mode: ServiceMode,
-		listener: (update: DecodedServiceProviderUpdate) => void | Promise<void>,
+		listener: (update: ServiceProviderUpdate) => void | Promise<void>,
 		signal?: AbortSignal,
 	): Promise<ServiceSubscription> {
 		const subscriptionId = `service-${++this.#serviceSubscriptionSequence}`;
@@ -181,17 +186,17 @@ export class Client {
 			ready: false,
 		};
 		this.#serviceListeners.set(subscriptionId, active);
-		let snapshot: DecodedServiceSubscriptionSnapshot;
+		let snapshot: ServiceSubscriptionSnapshot;
 		try {
 			snapshot = await this.#request(
 				target,
 				createServiceSubscribeCall(subscriptionId, serviceId, mode),
 				signal,
 				(result) => {
-					const decoded = active.decoder.decodeSnapshot(parseServiceSubscriptionSnapshot(result));
+					const decoded = active.decoder.decodeSnapshot(parseWireServiceSubscriptionSnapshot(result));
 					active.hydrated = true;
 					for (const update of active.queuedWireUpdates.splice(0)) {
-						active.queued.push(active.decoder.decodeUpdate(update));
+						active.queued.push(active.decoder.decodeUpdate(parseWireServiceProviderUpdate(update)));
 					}
 					return decoded;
 				},
@@ -228,11 +233,11 @@ export class Client {
 		};
 	}
 
-	#request<T = ProtocolRpcResult>(
+	#request<T = ServiceResult>(
 		target: RpcTarget,
-		call: ProtocolRpcCall,
+		call: ServiceCall,
 		signal?: AbortSignal,
-		transform?: (result: ProtocolRpcResult) => T,
+		transform?: (result: ServiceResult) => T,
 	): Promise<T> {
 		if (this.#disposed) return Promise.reject(new ClientDisposedError());
 		if (!this.connected) return Promise.reject(new DisconnectedError());
@@ -281,7 +286,7 @@ export class Client {
 		let frame: Uint8Array;
 		try {
 			frame = encodeClientMessage(
-				{ type: "request", id, target, call },
+				{ type: "request", id, target, call: parseServiceCall(call) as unknown as JsonValue },
 				{ maxFrameLength: this.#connection.maxFrameLength },
 			);
 		} catch (error) {
@@ -310,9 +315,9 @@ export class Client {
 				active.queuedWireUpdates.push(message.update);
 				return;
 			}
-			let update: DecodedServiceProviderUpdate;
+			let update: ServiceProviderUpdate;
 			try {
-				update = active.decoder.decodeUpdate(message.update);
+				update = active.decoder.decodeUpdate(parseWireServiceProviderUpdate(message.update));
 			} catch (error) {
 				this.#connection.fail(
 					new ProtocolValidationError(error instanceof Error ? error.message : "Invalid service operation stream"),
@@ -407,7 +412,7 @@ export class Client {
 		}
 	}
 
-	#deliverServiceUpdate(active: ActiveServiceListener, update: DecodedServiceProviderUpdate): void {
+	#deliverServiceUpdate(active: ActiveServiceListener, update: ServiceProviderUpdate): void {
 		active.deliveryTail = active.deliveryTail
 			.then(() => active.listener(update))
 			.catch((error: unknown) => this.#reportListenerError(error));
