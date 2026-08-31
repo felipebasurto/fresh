@@ -69,8 +69,7 @@ append when the old suffix exactly matches the new prefix:
 tracker.state.output = tracker.state.output.slice(200) + nextChunk;
 ```
 
-An unrelated replacement produces a normal set operation. Overlap is always
-verified; Delta never applies a guessed string match.
+An unrelated replacement produces a normal set operation.
 
 ### Arrays
 
