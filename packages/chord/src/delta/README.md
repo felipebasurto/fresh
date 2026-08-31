@@ -1,7 +1,7 @@
 # Chord Delta
 
-Chord Delta synchronizes one mutable JSON value from an authoritative producer
-to an ordered replica. It is available from `@earendil-works/chord/delta`.
+Chord Delta synchronizes one mutable JSON object or array from an authoritative
+producer to an ordered replica. It is available from `@earendil-works/chord/delta`.
 
 A change is represented by an `Op`: a JSON tuple for replacing, setting,
 deleting, updating a string, or splicing an array. `flush()` returns `Op[]`;
@@ -197,8 +197,18 @@ elements remain separate, regardless of whether they happen before or after the
 pushes. Changes to newly pushed elements are included in the pushed values.
 
 Front or middle insertion, removal, sorting, reversing, `fill()`, and
-`copyWithin()` are supported. These operations can require comparison or
-replacement of a larger array region than a tail append.
+`copyWithin()` are supported. A structural change combined with edits to elements
+whose indices moved may compare and publish the retained suffix positionally:
+
+```ts
+tracker.state.items.shift();
+tracker.state.items[0].status = "changed";
+// A shift followed by push in the same flush has the same issue.
+```
+
+The emitted data can then scale with the retained suffix, or with the complete
+array, rather than only the changed element. When batching is under your control,
+flush the structural change before editing elements at their new indices.
 
 Sparse arrays are unsupported. Writing beyond the next index throws. Increasing
 `length` creates explicit `null` elements; decreasing it removes elements.
@@ -230,20 +240,29 @@ array position or explicit empty value must remain present.
 The object passed to `track()` becomes tracker-owned. The same applies to objects
 later assigned into state or inserted into arrays.
 
-After insertion, retained references may be read or reused, but must not be
-mutated directly:
+After insertion, a retained reference may be read but must not be mutated or
+inserted at another live location:
 
 ```ts
 const item = { status: "new" };
 tracker.state.item = item;
 
-tracker.state.item.status = "ready"; // tracked
+tracker.state.item.status = "ready"; // supported: tracked mutation
 item.status = "broken"; // unsupported: bypasses tracking
+tracker.state.other = item; // unsupported: one object at two live paths
 ```
 
-Perform mutations through `tracker.state`. Do not put a proxy read from
-`tracker.state` back into tracked state. Mutate it in place or construct a
-replacement from plain data.
+The same restriction applies across separate array calls:
+
+```ts
+tracker.state.items.push(item);
+tracker.state.items.push(item); // unsupported alias
+```
+
+Use distinct objects when values must appear at multiple paths. Perform
+mutations through `tracker.state`. Do not put a proxy read from `tracker.state`
+back into tracked state; mutate it in place or construct a replacement from
+plain data.
 
 Tracked state must be a mutable JSON tree:
 
@@ -272,6 +291,10 @@ batch before applying it, and do not apply one in-memory batch to multiple
 replicas unless each replica receives its own clone. A serialized and decoded
 batch is already detached.
 
+A `decode()` or `apply()` error terminates that stream. Discard its decoder and
+replica, then recover from a later base batch. `apply()` is not transactional;
+operations before the failing operation may already have changed the replica.
+
 ## Limits
 
 - Delta assumes one authoritative writer and ordered delivery. Sequence numbers,
@@ -281,8 +304,8 @@ batch is already detached.
   aliases or cycles.
 - Object key insertion order is not replicated. Do not compare or hash replicas
   using serialized key order.
-- Array operations that change indices may publish a wider array region than a
-  tail append.
+- Array operations that change indices may publish a wider array region, as
+  described under Arrays.
 - Object-valued keys named `__proto__`, `constructor`, or `prototype` can be read
   and serialized, but cannot be mutated through that key. Replace the nearest
   ordinarily named parent instead.

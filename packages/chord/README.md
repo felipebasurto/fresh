@@ -39,7 +39,7 @@ The design has a few connected pieces:
 - **Delta tracking** derives compact operations from tracked plain JSON at
   flush time. It preserves string append/front-truncation and array-append
   behavior without retaining mutation history, supports durable base batches,
-  and validates untrusted operations before applying them.
+  and validates untrusted operations as they are applied.
 
 - **Remote service sources** advertise services available outside a facet host
   and open bindings for the services its facets require. Bindings carry logical
