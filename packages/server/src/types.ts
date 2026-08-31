@@ -1,5 +1,6 @@
+import type { ServiceProviderUpdate } from "@earendil-works/chord";
 import type { Context, SessionMetadata } from "@earendil-works/pi-agent-core";
-import type { ProtocolRpcCall, ProtocolRpcResult, ServiceProviderUpdate } from "@earendil-works/pi-protocol";
+import type { ProtocolRpcCall, ProtocolRpcResult } from "@earendil-works/pi-protocol";
 import type { ServerListener } from "./listener.ts";
 
 export interface ServerOptions {

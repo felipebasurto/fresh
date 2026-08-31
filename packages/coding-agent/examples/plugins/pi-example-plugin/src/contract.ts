@@ -6,7 +6,7 @@ export interface ExampleFacetReply {
 }
 
 export interface ExampleFacetService {
-	readonly workerActivations: ReplicatedState<number>;
+	readonly workerActivations: ReplicatedState<{ count: number }>;
 	greet(input: { readonly name: string }, context: Context): Promise<ExampleFacetReply>;
 }
 

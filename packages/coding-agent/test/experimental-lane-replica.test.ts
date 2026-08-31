@@ -1,11 +1,11 @@
-import { cloneJsonValue, replicatedState } from "@earendil-works/chord";
+import { replicatedState } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { LaneSnapshot } from "@earendil-works/pi-agent-core";
+import type { LaneTranscriptSnapshot } from "@earendil-works/pi-agent-core";
 import { describe, expect, test, vi } from "vitest";
 import { openLaneReplica } from "../src/experimental/lane-replica.ts";
-import type { TranscriptUpdate } from "../src/experimental/services/transcript.ts";
+import type { TranscriptState } from "../src/experimental/services/transcript.ts";
 
-function snapshot(tipId: string | null = null): LaneSnapshot {
+function snapshot(tipId: string | null = null): LaneTranscriptSnapshot {
 	return {
 		lane: "main",
 		transcript: [],
@@ -33,69 +33,35 @@ function snapshot(tipId: string | null = null): LaneSnapshot {
 }
 
 describe("experimental lane replica", () => {
-	test("uses the Harness reducer and installs provider rebases", async () => {
-		const updates = replicatedState<TranscriptUpdate | null>(null);
-		const readSnapshot = vi.fn(async () => ({ revision: 0, snapshot: cloneJsonValue(snapshot()) }));
-		const replica = await openLaneReplica({ updates, snapshot: readSnapshot }, "session-1");
+	test("installs complete transcript state and forwards only live events", async () => {
+		const staleEvent = { type: "run_start", lane: "main", runId: "stale", startedAt: 1 } as const;
+		const state = replicatedState<TranscriptState>({ snapshot: snapshot(), event: staleEvent });
+		const onEvent = vi.fn();
+		const replica = await openLaneReplica({ state }, "session-1", onEvent);
 		const changed = vi.fn();
 		replica.subscribe(changed);
+		expect(onEvent).not.toHaveBeenCalled();
 
-		updates.set(
-			{
-				type: "event",
-				revision: 1,
-				event: { type: "run_start", lane: "main", runId: "run-1", startedAt: 1 },
-			},
-			BACKGROUND_CONTEXT,
-		);
-		await vi.waitFor(() => expect(replica.state().operation).toMatchObject({ id: "run-1", kind: "run" }));
+		state.state.snapshot = snapshot("replacement-tip");
+		state.state.event = null;
+		state.publish(BACKGROUND_CONTEXT);
+		expect(replica.state().tipId).toBe("replacement-tip");
 		expect(changed).toHaveBeenCalledOnce();
 
-		updates.set(
-			{
-				type: "event",
-				revision: 2,
-				event: {
-					type: "navigation_end",
-					lane: "main",
-					runId: "navigation-1",
-					status: "completed",
-					fromTipId: null,
-					tipId: "replacement-tip",
-					endedAt: 2,
-				},
-			},
-			BACKGROUND_CONTEXT,
-		);
-		updates.set(
-			{ type: "snapshot", revision: 3, snapshot: cloneJsonValue(snapshot("replacement-tip")) },
-			BACKGROUND_CONTEXT,
-		);
-		await vi.waitFor(() => expect(replica.state().tipId).toBe("replacement-tip"));
-		expect(readSnapshot).toHaveBeenCalledOnce();
-
+		const liveEvent = { type: "run_resume", lane: "main", runId: "run-1" } as const;
+		state.state.event = liveEvent;
+		state.publish(BACKGROUND_CONTEXT);
+		await vi.waitFor(() => expect(onEvent).toHaveBeenCalledWith(liveEvent));
 		await replica.close();
 	});
 
-	test("repairs an application revision gap from a fresh snapshot", async () => {
-		const updates = replicatedState<TranscriptUpdate | null>(null);
-		const readSnapshot = vi
-			.fn()
-			.mockResolvedValueOnce({ revision: 0, snapshot: cloneJsonValue(snapshot()) })
-			.mockResolvedValueOnce({ revision: 2, snapshot: cloneJsonValue(snapshot("caught-up")) });
-		const replica = await openLaneReplica({ updates, snapshot: readSnapshot }, "session-1");
-
-		updates.set(
-			{
-				type: "event",
-				revision: 2,
-				event: { type: "run_start", lane: "main", runId: "run-2", startedAt: 2 },
-			},
-			BACKGROUND_CONTEXT,
-		);
-
-		await vi.waitFor(() => expect(replica.state().tipId).toBe("caught-up"));
-		expect(readSnapshot).toHaveBeenCalledTimes(2);
+	test("waits for the first initialized transcript value", async () => {
+		const state = replicatedState<TranscriptState>({ snapshot: null, event: null });
+		const opening = openLaneReplica({ state }, "session-1");
+		state.state.snapshot = snapshot("ready");
+		state.publish(BACKGROUND_CONTEXT);
+		const replica = await opening;
+		expect(replica.state().tipId).toBe("ready");
 		await replica.close();
 	});
 });

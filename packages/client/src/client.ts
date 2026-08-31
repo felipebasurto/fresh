@@ -1,8 +1,11 @@
 import {
 	type AttachmentEnvelope,
 	createServiceCatalogueCall,
+	createServiceStateDecoder,
 	createServiceSubscribeCall,
 	createServiceUnsubscribeCall,
+	type DecodedServiceProviderUpdate,
+	type DecodedServiceSubscriptionSnapshot,
 	encodeClientMessage,
 	isServerId,
 	type ProtocolRpcCall,
@@ -16,9 +19,9 @@ import {
 	type ServiceCatalogueEntry,
 	type ServiceEventEnvelope,
 	type ServiceMode,
-	type ServiceProviderUpdate,
-	type ServiceSubscriptionSnapshot,
+	type ServiceStateDecoder,
 	type SessionTarget,
+	type ServiceProviderUpdate as WireServiceProviderUpdate,
 } from "@earendil-works/pi-protocol";
 import { Connection } from "./connection.ts";
 import { ClientDisposedError, DisconnectedError, ServerError, toError } from "./errors.ts";
@@ -40,9 +43,12 @@ interface PendingRequest {
 
 interface ActiveServiceListener {
 	readonly target: RpcTarget;
-	readonly listener: (update: ServiceProviderUpdate) => void | Promise<void>;
-	readonly queued: ServiceProviderUpdate[];
+	readonly listener: (update: DecodedServiceProviderUpdate) => void | Promise<void>;
+	readonly decoder: ServiceStateDecoder;
+	readonly queuedWireUpdates: WireServiceProviderUpdate[];
+	readonly queued: DecodedServiceProviderUpdate[];
 	deliveryTail: Promise<void>;
+	hydrated: boolean;
 	ready: boolean;
 }
 
@@ -160,34 +166,36 @@ export class Client {
 		target: RpcTarget,
 		serviceId: string,
 		mode: ServiceMode,
-		listener: (update: ServiceProviderUpdate) => void | Promise<void>,
+		listener: (update: DecodedServiceProviderUpdate) => void | Promise<void>,
 		signal?: AbortSignal,
 	): Promise<ServiceSubscription> {
 		const subscriptionId = `service-${++this.#serviceSubscriptionSequence}`;
 		const active: ActiveServiceListener = {
 			target,
 			listener,
+			decoder: createServiceStateDecoder(),
+			queuedWireUpdates: [],
 			queued: [],
 			deliveryTail: Promise.resolve(),
+			hydrated: false,
 			ready: false,
 		};
 		this.#serviceListeners.set(subscriptionId, active);
-		let snapshot: ServiceSubscriptionSnapshot;
+		let snapshot: DecodedServiceSubscriptionSnapshot;
 		try {
-			const result = await this.#request(
+			snapshot = await this.#request(
 				target,
 				createServiceSubscribeCall(subscriptionId, serviceId, mode),
 				signal,
+				(result) => {
+					const decoded = active.decoder.decodeSnapshot(parseServiceSubscriptionSnapshot(result));
+					active.hydrated = true;
+					for (const update of active.queuedWireUpdates.splice(0)) {
+						active.queued.push(active.decoder.decodeUpdate(update));
+					}
+					return decoded;
+				},
 			);
-			try {
-				snapshot = parseServiceSubscriptionSnapshot(result);
-			} catch (error) {
-				const validationError = new ProtocolValidationError(
-					error instanceof Error ? error.message : "Invalid service subscription snapshot",
-				);
-				this.#connection.fail(validationError);
-				throw validationError;
-			}
 		} catch (error) {
 			if (this.#serviceListeners.get(subscriptionId) === active) this.#serviceListeners.delete(subscriptionId);
 			throw error;
@@ -213,18 +221,24 @@ export class Client {
 					}
 					await active.deliveryTail;
 				} finally {
+					active.queuedWireUpdates.length = 0;
 					active.queued.length = 0;
 				}
 			},
 		};
 	}
 
-	#request(target: RpcTarget, call: ProtocolRpcCall, signal?: AbortSignal): Promise<ProtocolRpcResult> {
+	#request<T = ProtocolRpcResult>(
+		target: RpcTarget,
+		call: ProtocolRpcCall,
+		signal?: AbortSignal,
+		transform?: (result: ProtocolRpcResult) => T,
+	): Promise<T> {
 		if (this.#disposed) return Promise.reject(new ClientDisposedError());
 		if (!this.connected) return Promise.reject(new DisconnectedError());
 		if (signal?.aborted) return Promise.reject(abortError(signal));
 		const id = `request-${++this.#requestSequence}`;
-		const { promise, resolve, reject } = createPromiseResolvers<ProtocolRpcResult>();
+		const { promise, resolve, reject } = createPromiseResolvers<T>();
 		let sent = false;
 		let aborted = false;
 		let onAbort: (() => void) | undefined;
@@ -248,7 +262,17 @@ export class Client {
 			signal.addEventListener("abort", onAbort, { once: true });
 		}
 		this.#pendingRequests.set(id, {
-			resolve,
+			resolve: (result) => {
+				try {
+					resolve(transform === undefined ? (result as T) : transform(result));
+				} catch (error) {
+					const validationError = new ProtocolValidationError(
+						error instanceof Error ? error.message : "Invalid service operation stream",
+					);
+					this.#connection.fail(validationError);
+					reject(validationError);
+				}
+			},
 			reject,
 			cleanup: () => {
 				if (signal !== undefined && onAbort !== undefined) signal.removeEventListener("abort", onAbort);
@@ -282,8 +306,21 @@ export class Client {
 		if (message.type === "service_update") {
 			const active = this.#serviceListeners.get(message.subscriptionId);
 			if (active === undefined) return;
-			if (active.ready) this.#deliverServiceUpdate(active, message.update);
-			else active.queued.push(message.update);
+			if (!active.hydrated) {
+				active.queuedWireUpdates.push(message.update);
+				return;
+			}
+			let update: DecodedServiceProviderUpdate;
+			try {
+				update = active.decoder.decodeUpdate(message.update);
+			} catch (error) {
+				this.#connection.fail(
+					new ProtocolValidationError(error instanceof Error ? error.message : "Invalid service operation stream"),
+				);
+				return;
+			}
+			if (active.ready) this.#deliverServiceUpdate(active, update);
+			else active.queued.push(update);
 			return;
 		}
 		const pending = this.#takePendingRequest(message.id);
@@ -370,7 +407,7 @@ export class Client {
 		}
 	}
 
-	#deliverServiceUpdate(active: ActiveServiceListener, update: ServiceProviderUpdate): void {
+	#deliverServiceUpdate(active: ActiveServiceListener, update: DecodedServiceProviderUpdate): void {
 		active.deliveryTail = active.deliveryTail
 			.then(() => active.listener(update))
 			.catch((error: unknown) => this.#reportListenerError(error));

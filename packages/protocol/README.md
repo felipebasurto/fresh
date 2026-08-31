@@ -2,17 +2,17 @@
 
 Runtime-neutral schemas, types, CBOR encoding, and byte-stream framing for the experimental Pi protocol.
 
-Protocol version `7` carries the current server- and Session-scoped facet-service slice, including Session-branch plugin preparation:
+Protocol version `8` carries the current server- and Session-scoped facet-service slice, including operation-based replicated state and Session-branch plugin preparation:
 
 - a version handshake that identifies the logical `serverId`;
 - explicit server and Session request targets;
 - contract-agnostic service calls with optional keyed-instance identity;
-- singleton and keyed-service subscription snapshots plus ordered state, spawn, and close updates;
+- singleton and keyed-service subscription snapshots plus ordered operation-based state, spawn, and close updates;
 - correlated responses, request cancellation, out-of-band attachment updates, attachment-scoped events, and bounded protocol errors.
 
 The transport carries `{ serviceId, instance?, member, args }` calls. A server target contains `{ serverId }`; a Session target contains `{ serverId, sessionId, attachmentId }`. Keyed addresses contain an application key and provider-owned generation so delayed calls cannot reach a replacement instance. Service subscriptions return a complete member/state snapshot before update delivery starts. Service updates carry state, keyed spawn/close, temporary unavailability, and complete singleton replacement; there is no remote service-event member kind. Session-directory state and management results are opaque application service data, not protocol DTOs. Management `attach()` and `detach()` return no routing identifiers; the server publishes the selected live route in an out-of-band `attachment` message. The real `Session` and `AgentHarness` remain process-local. Disconnecting releases only that presentation's attachment after admitted service calls settle.
 
-Experimental presentations consume server-owned `SessionDirectory` and `SessionManagement` plus provider-generated Session service catalogues; there is no handwritten worker service inventory. `Models` has an implemented provider. `AgentController` is the presentation-safe command facade over the worker-owned main `AgentLane`. `Transcript` publishes coherent snapshots and ordered reducer events through ordinary Chord service state. Session service calls and updates route opaquely to the attached worker, where the provider validates and invokes them. The protocol does not define Agent, lane, transcript-entry, branch, model, or plugin business schemas.
+Experimental presentations consume server-owned `SessionDirectory` and `SessionManagement` plus provider-generated Session service catalogues; there is no handwritten worker service inventory. `Models` has an implemented provider. `AgentController` is the presentation-safe command facade over the worker-owned main `AgentLane`. `Transcript` publishes through ordinary tracked Chord state. Chord flushes decoded operations behind the state API; each client subscription owns one stateful encoder and decoder per replicated member so hydration bases and path dictionaries remain independent. Session service calls and updates route opaquely to the attached worker, where the provider validates and invokes them. The protocol does not define Agent, lane, transcript-entry, branch, model, or plugin business schemas.
 
 Server and worker lifecycle is intentionally outside this public protocol. The experimental local coordinator is only an opaque message router; each replaceable server process owns the private lifecycle protocol.
 

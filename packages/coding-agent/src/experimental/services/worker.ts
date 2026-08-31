@@ -1,13 +1,12 @@
 import {
 	type Context,
-	type ServiceProviderUpdate as CoreServiceProviderUpdate,
-	cloneJsonValue,
 	createFacetHost,
 	createStaticFacetLoader,
 	defineFacet,
 	type FacetHost,
 	type FacetLoader,
 	type ServiceCatalogueEntry,
+	type ServiceProviderUpdate,
 	type ServiceSubscription,
 } from "@earendil-works/chord";
 import type { AgentHarness, AgentLane } from "@earendil-works/pi-agent-core";
@@ -16,8 +15,6 @@ import {
 	type JsonValue,
 	JsonValueSchema,
 	type ProtocolRpcCall,
-	type ServiceProviderUpdate as ProtocolServiceProviderUpdate,
-	ServiceProviderUpdateSchema,
 } from "@earendil-works/pi-protocol";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -66,7 +63,7 @@ export async function createSessionWorkerServices(options: {
 	readonly modelRuntime: ModelRuntime | undefined;
 	readonly settingsManager?: SettingsManager;
 	readonly facetLoader?: FacetLoader;
-	publish(scope: WorkerServiceScope, subscriptionId: string, update: ProtocolServiceProviderUpdate): Promise<void>;
+	publish(scope: WorkerServiceScope, subscriptionId: string, update: ServiceProviderUpdate): Promise<void>;
 }): Promise<SessionWorkerServices> {
 	const agentControllerRuntimeFacet = defineFacet({
 		id: "@pi/agent-controller-runtime",
@@ -136,16 +133,16 @@ export async function createSessionWorkerServices(options: {
 		catalogue: provider.catalogue,
 		async invoke(call, scope, context) {
 			const controlCall = decodeServiceControlCall(call);
-			if (controlCall?.type === "catalogue") return cloneJsonValue(provider.catalogue);
+			if (controlCall?.type === "catalogue") return toProtocolJsonValue(provider.catalogue);
 			if (controlCall?.type === "subscribe") {
 				const key = scopedSubscriptionKey(scope, controlCall.subscriptionId);
 				if (subscriptions.has(key)) throw new Error("Service subscription ID is already active");
 				const subscription = provider.subscribe(controlCall.serviceId, controlCall.mode, (update) => {
-					void options.publish(scope, controlCall.subscriptionId, toProtocolServiceUpdate(update)).catch(() => {});
+					void options.publish(scope, controlCall.subscriptionId, update).catch(() => {});
 				});
 				subscriptions.set(key, { scope, subscription });
 				subscription.activate();
-				return cloneJsonValue(subscription.snapshot);
+				return toProtocolJsonValue(subscription.snapshot);
 			}
 			if (controlCall?.type === "unsubscribe") {
 				const key = scopedSubscriptionKey(scope, controlCall.subscriptionId);
@@ -180,8 +177,7 @@ function scopedSubscriptionKey(scope: WorkerServiceScope, subscriptionId: string
 	return `${scope.serverConnectionId}\0${scope.attachmentId}\0${subscriptionId}`;
 }
 
-function toProtocolServiceUpdate(update: CoreServiceProviderUpdate): ProtocolServiceProviderUpdate {
-	const candidate: unknown = update;
-	if (!Check(ServiceProviderUpdateSchema, candidate)) throw new Error("Service produced an invalid update");
-	return candidate;
+function toProtocolJsonValue(value: unknown): JsonValue {
+	if (!Check(JsonValueSchema, value)) throw new Error("Service produced invalid JSON");
+	return value;
 }

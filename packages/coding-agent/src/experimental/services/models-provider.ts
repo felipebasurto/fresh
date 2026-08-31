@@ -58,37 +58,31 @@ export function createModelsService(
 			const index = levels.indexOf(current);
 			const next = levels[(index + 1) % levels.length] ?? "off";
 			await lane.setThinkingLevel(next, context);
-			state.set({ ...state.value, configuration: await readConfiguration(context) }, context);
+			state.state.configuration = await readConfiguration(context);
+			state.publish(context);
 		},
 		async getThinkingLevels(context) {
 			return [...(await readThinkingLevels(context))];
 		},
 		async refresh(context) {
-			state.set({ ...state.value, refresh: { status: "refreshing" } }, context);
+			state.state.refresh = { status: "refreshing" };
+			state.publish(context);
 			const refresh = modelRuntime?.refresh({ signal: context.abortSignal });
 			if (refresh === undefined) {
-				state.set(
-					{
-						...state.value,
-						catalog: await readCatalog(context),
-						configuration: await readConfiguration(context),
-						refresh: { status: "done" },
-					},
-					context,
-				);
+				const [catalog, configuration] = await Promise.all([readCatalog(context), readConfiguration(context)]);
+				state.state.catalog = catalog;
+				state.state.configuration = configuration;
+				state.state.refresh = { status: "done" };
+				state.publish(context);
 				return;
 			}
 			const result = await refresh;
 			const errors = Object.fromEntries([...result.errors].map(([id, error]) => [id, error.message]));
-			state.set(
-				{
-					...state.value,
-					catalog: await readCatalog(context),
-					configuration: await readConfiguration(context),
-					refresh: Object.keys(errors).length === 0 ? { status: "done" } : { status: "warning", errors },
-				},
-				context,
-			);
+			const [catalog, configuration] = await Promise.all([readCatalog(context), readConfiguration(context)]);
+			state.state.catalog = catalog;
+			state.state.configuration = configuration;
+			state.state.refresh = Object.keys(errors).length === 0 ? { status: "done" } : { status: "warning", errors };
+			state.publish(context);
 		},
 		async select(model, context) {
 			const selected = modelRuntime?.getModel(model.provider, model.modelId);
@@ -96,7 +90,8 @@ export function createModelsService(
 			await lane.setModel({ provider: selected.provider, modelId: selected.id }, context);
 			settingsManager?.setDefaultModelAndProvider(selected.provider, selected.id);
 			await settingsManager?.flush();
-			state.set({ ...state.value, configuration: await readConfiguration(context) }, context);
+			state.state.configuration = await readConfiguration(context);
+			state.publish(context);
 		},
 		async selectThinking(level, context) {
 			const levels = await readThinkingLevels(context);
@@ -104,14 +99,18 @@ export function createModelsService(
 				throw new Error(`Thinking level ${level} is unavailable; choose one of: ${levels.join(", ")}`);
 			}
 			await lane.setThinkingLevel(level, context);
-			state.set({ ...state.value, configuration: await readConfiguration(context) }, context);
+			state.state.configuration = await readConfiguration(context);
+			state.publish(context);
 		},
 	};
 	return {
 		service,
 		async activate(context) {
 			const [catalog, configuration] = await Promise.all([readCatalog(context), readConfiguration(context)]);
-			state.set({ catalog, configuration, refresh: { status: "idle" } }, context);
+			state.state.catalog = catalog;
+			state.state.configuration = configuration;
+			state.state.refresh = { status: "idle" };
+			state.publish(context);
 		},
 	};
 }

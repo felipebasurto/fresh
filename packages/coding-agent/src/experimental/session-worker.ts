@@ -1,6 +1,6 @@
 import { createConnection, type Socket } from "node:net";
 import { isAbsolute } from "node:path";
-import { RemoteServiceError } from "@earendil-works/chord";
+import { RemoteServiceError, type ServiceProviderUpdate } from "@earendil-works/chord";
 import {
 	AgentHarness,
 	type AgentHarness as AgentHarnessInstance,
@@ -441,6 +441,12 @@ function writeJsonLine(socket: Socket, message: unknown): Promise<void> {
 	});
 }
 
+function toWorkerServiceUpdate(update: ServiceProviderUpdate): Static<typeof ServiceProviderUpdateSchema> {
+	const candidate: unknown = update;
+	if (!Check(ServiceProviderUpdateSchema, candidate)) throw new Error("Service produced an invalid update");
+	return candidate;
+}
+
 function demandKey(serverConnectionId: string, attachmentId: string): string {
 	return `${serverConnectionId}\0${attachmentId}`;
 }
@@ -540,7 +546,7 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 					sessionKey,
 					scope,
 					subscriptionId,
-					update,
+					update: toWorkerServiceUpdate(update),
 				}),
 		});
 	} catch (error) {

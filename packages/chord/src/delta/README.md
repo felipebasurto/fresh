@@ -1,11 +1,11 @@
 # Chord Delta
 
-Chord Delta synchronizes one mutable JSON object or array from an authoritative
-producer to an ordered replica. It is available from `@earendil-works/chord/delta`.
+Chord Delta synchronizes JSON values from an authoritative producer to an
+ordered replica. It is available from `@earendil-works/chord/delta`.
 
 A change is represented by an `Op`: a JSON tuple for replacing, setting,
-deleting, updating a string, or splicing an array. `flush()` returns `Op[]`;
-`apply()` replays an `Op[]` on a replica.
+deleting, updating a string, or splicing an array. Producers use `track()`;
+replicas use `apply()` or `applyImmutable()`.
 
 ```ts
 import { apply, track } from "@earendil-works/chord/delta";
@@ -21,6 +21,11 @@ replica = apply(replica, tracker.flush());
 The first `flush()` returns one operation containing the complete value. Each
 later flush returns the operations needed to transform the previously published
 value into the current value. It returns `[]` when the value has not changed.
+
+`applyImmutable()` copies only containers along changed paths and shares
+unchanged subtrees. It does not mutate, clone, or freeze either complete input.
+Chord's replicated-state producers mutate a tracked proxy and publish operation
+batches; consumers still observe complete immutable values.
 
 ## Sending or storing changes
 
@@ -55,8 +60,10 @@ encoder assigns numeric IDs to paths used across batches; the decoder remembers
 the corresponding definitions. A complete-value operation resets both path
 dictionaries, so replay can begin at that batch with a fresh decoder.
 
-Path omission is local to one batch. Numeric path IDs may span batches. A second
-consumer needs its own stream and encoder state.
+Path omission is local to one batch. Numeric path IDs may span batches. Each
+independently hydrated replicated-state stream needs its own encoder and decoder.
+Do not share a pair between state members or subscriptions, even when their
+batches use the same ordered transport connection.
 
 ## Operation vocabulary
 
@@ -213,9 +220,8 @@ flush the structural change before editing elements at their new indices.
 Sparse arrays are unsupported. Writing beyond the next index throws. Increasing
 `length` creates explicit `null` elements; decreasing it removes elements.
 
-`fill(object)` copies the object independently into each affected position.
-`copyWithin()` likewise separates duplicated objects. This keeps tracked state a
-tree rather than creating shared mutable array elements.
+`fill()` and `copyWithin()` keep normal JavaScript reference semantics. Do not use
+them to place one mutable object at multiple live paths.
 
 ### Optional properties
 
@@ -241,7 +247,8 @@ The object passed to `track()` becomes tracker-owned. The same applies to object
 later assigned into state or inserted into arrays.
 
 After insertion, a retained reference may be read but must not be mutated or
-inserted at another live location:
+inserted at another live location. The tracker relies on this ownership rule; it
+does not recursively validate values or detect aliases:
 
 ```ts
 const item = { status: "new" };
@@ -260,9 +267,8 @@ tracker.state.items.push(item); // unsupported alias
 ```
 
 Use distinct objects when values must appear at multiple paths. Perform
-mutations through `tracker.state`. Do not put a proxy read from `tracker.state`
-back into tracked state; mutate it in place or construct a replacement from
-plain data.
+mutations through `tracker.state`; do not put a proxy read from `tracker.state`
+back into tracked state.
 
 Tracked state must be a mutable JSON tree:
 
@@ -288,20 +294,22 @@ replicas. Use it only when those replicas do not need the discarded changes.
 
 `apply()` adopts object and array payloads from its input batch. Do not freeze a
 batch before applying it, and do not apply one in-memory batch to multiple
-replicas unless each replica receives its own clone. A serialized and decoded
-batch is already detached.
+mutable replicas unless each replica owns that batch. A serialized and decoded
+batch is already detached. `applyImmutable()` instead treats its previous value
+and operation payloads as immutable, so one batch can safely fan out in-process.
 
-A `decode()` or `apply()` error terminates that stream. Discard its decoder and
-replica, then recover from a later base batch. `apply()` is not transactional;
-operations before the failing operation may already have changed the replica.
+A `decode()`, `apply()`, or `applyImmutable()` error terminates that stream.
+Discard its decoder and replica, then recover from a later base batch. `apply()`
+is not transactional; operations before the failing operation may already have
+changed the replica.
 
 ## Limits
 
 - Delta assumes one authoritative writer and ordered delivery. Sequence numbers,
   gap detection, retries, and persistence policy belong to the surrounding
   protocol or storage format.
-- Object identity is not replicated. State must have tree structure rather than
-  aliases or cycles.
+- Object identity is not replicated. Tracked mutable state must be a tree;
+  immutable inputs may share references, but replicas need not preserve them.
 - Object key insertion order is not replicated. Do not compare or hash replicas
   using serialized key order.
 - Array operations that change indices may publish a wider array region, as

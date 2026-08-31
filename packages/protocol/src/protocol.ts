@@ -1,9 +1,10 @@
 import { isJsonValue } from "@earendil-works/chord";
+import type { WireOp } from "@earendil-works/chord/delta";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 import { type JsonValue, JsonValueSchema } from "./json-value.ts";
 
-export const PROTOCOL_VERSION = 7 as const;
+export const PROTOCOL_VERSION = 8 as const;
 
 const IdSchema = Type.String({ minLength: 1 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
@@ -49,6 +50,41 @@ export const ProtocolRpcCallSchema = StrictObject({
 export type ProtocolRpcCall = Static<typeof ProtocolRpcCallSchema>;
 export type ProtocolRpcResult = JsonValue | undefined;
 
+const DeltaPathSegmentSchema = Type.Union([Type.String(), Type.Integer({ minimum: 0 })]);
+const DeltaPathSchema = Type.Array(DeltaPathSegmentSchema);
+const DeltaNonEmptyPathSchema = Type.Array(DeltaPathSegmentSchema, { minItems: 1 });
+const DeltaPathRefSchema = Type.Union([DeltaPathSchema, Type.Integer({ minimum: 0 })]);
+const DeltaNonEmptyPathRefSchema = Type.Union([DeltaNonEmptyPathSchema, Type.Integer({ minimum: 0 })]);
+const DeltaOpsSchema = Type.Array(
+	Type.Unsafe<WireOp>(
+		Type.Union([
+			Type.Tuple([Type.Literal("r"), JsonValueSchema]),
+			Type.Tuple([Type.Literal("#"), Type.Integer({ minimum: 0 }), DeltaPathSchema]),
+			Type.Tuple([Type.Literal("s"), DeltaNonEmptyPathRefSchema, JsonValueSchema]),
+			Type.Tuple([Type.Literal("s"), JsonValueSchema]),
+			Type.Tuple([Type.Literal("d"), DeltaNonEmptyPathRefSchema]),
+			Type.Tuple([Type.Literal("d")]),
+			Type.Tuple([Type.Literal("a"), DeltaNonEmptyPathRefSchema, Type.String()]),
+			Type.Tuple([Type.Literal("a"), Type.String()]),
+			Type.Tuple([Type.Literal("t"), DeltaNonEmptyPathRefSchema, Type.Integer({ minimum: 0 })]),
+			Type.Tuple([Type.Literal("t"), Type.Integer({ minimum: 0 })]),
+			Type.Tuple([
+				Type.Literal("p"),
+				DeltaPathRefSchema,
+				Type.Integer({ minimum: 0 }),
+				Type.Integer({ minimum: 0 }),
+				Type.Array(JsonValueSchema),
+			]),
+			Type.Tuple([
+				Type.Literal("p"),
+				Type.Integer({ minimum: 0 }),
+				Type.Integer({ minimum: 0 }),
+				Type.Array(JsonValueSchema),
+			]),
+		]),
+	),
+);
+
 const ServiceMemberSnapshotSchema = Type.Union([
 	StrictObject({
 		name: IdSchema,
@@ -58,7 +94,7 @@ const ServiceMemberSnapshotSchema = Type.Union([
 		name: IdSchema,
 		kind: Type.Literal("state"),
 		sequence: Type.Integer({ minimum: 0 }),
-		value: JsonValueSchema,
+		ops: DeltaOpsSchema,
 	}),
 ]);
 const ServiceInstanceSnapshotSchema = StrictObject({
@@ -85,7 +121,7 @@ export const ServiceProviderUpdateSchema = Type.Union([
 		instance: Type.Optional(ServiceInstanceAddressSchema),
 		member: IdSchema,
 		sequence: Type.Integer({ minimum: 1 }),
-		value: JsonValueSchema,
+		ops: DeltaOpsSchema,
 	}),
 	StrictObject({
 		type: Type.Literal("unavailable"),

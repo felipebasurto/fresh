@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
+import type { ServiceProviderUpdate } from "@earendil-works/chord";
 import {
 	BACKGROUND_CONTEXT,
 	type Context,
@@ -12,7 +13,6 @@ import {
 	decodeServiceControlCall,
 	type ProtocolRpcCall,
 	type ProtocolRpcResult,
-	type ServiceProviderUpdate,
 } from "@earendil-works/pi-protocol";
 import { type RoutedSessionAttachment, type RoutedSessionHandle, ServerError } from "@earendil-works/pi-server";
 import { Check } from "typebox/value";
@@ -573,7 +573,7 @@ export class SessionWorkerManager {
 				message.sessionKey,
 				message.scope,
 				message.subscriptionId,
-				message.update,
+				message.update as unknown as ServiceProviderUpdate,
 			);
 			return;
 		}

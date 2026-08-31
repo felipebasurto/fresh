@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import {
-	cloneJsonValue,
 	createRemoteServiceBinding,
+	type MutableReplicatedState,
 	RemoteServiceProvider,
 	type RemoteServiceTransport,
 	replicatedState,
@@ -16,6 +16,7 @@ import {
 import {
 	type AgentLane,
 	type LaneSnapshot,
+	type LaneTranscriptSnapshot,
 	type LaneWatchEvent,
 	reduceLaneSnapshot,
 } from "@earendil-works/pi-agent-core";
@@ -39,7 +40,7 @@ import {
 	SessionManagement,
 	type SessionSummary,
 } from "../src/experimental/services/sessions.ts";
-import { Transcript, type TranscriptUpdate } from "../src/experimental/services/transcript.ts";
+import { Transcript, type TranscriptState } from "../src/experimental/services/transcript.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 const serverId = "00000000-0000-4000-8000-000000000001";
@@ -60,6 +61,16 @@ function createLoopbackServiceTransport(provider: RemoteServiceProvider): Remote
 			};
 		},
 	};
+}
+
+function publishReplacement<T extends object>(state: MutableReplicatedState<T>, value: T): void {
+	const target = state.state as unknown as Record<string, unknown>;
+	const replacement = value as unknown as Record<string, unknown>;
+	for (const key of Object.keys(target)) {
+		if (!Object.hasOwn(replacement, key)) delete target[key];
+	}
+	Object.assign(target, replacement);
+	state.publish(BACKGROUND_CONTEXT);
 }
 
 function laneSnapshot(): LaneSnapshot {
@@ -115,36 +126,30 @@ describe("experimental client TUI", () => {
 			});
 			const create = vi.fn(async () => {
 				const created = session("two", 2);
-				directoryState.set(
-					{ revision: 2, sessions: [...directoryState.value.sessions, created] },
-					BACKGROUND_CONTEXT,
-				);
+				directoryState.state.revision = 2;
+				directoryState.state.sessions.push(created);
+				directoryState.publish(BACKGROUND_CONTEXT);
 				return created;
 			});
 			const select = vi.fn(async (model: { provider: string; modelId: string }) => {
-				modelsState.set(
-					{ ...modelsState.value, configuration: { ...modelsState.value.configuration, model } },
-					BACKGROUND_CONTEXT,
-				);
+				modelsState.state.configuration.model = model;
+				modelsState.publish(BACKGROUND_CONTEXT);
 			});
 			const selectThinking = vi.fn(async (thinkingLevel: "off" | "high") => {
-				modelsState.set(
-					{ ...modelsState.value, configuration: { ...modelsState.value.configuration, thinkingLevel } },
-					BACKGROUND_CONTEXT,
-				);
+				modelsState.state.configuration.thinkingLevel = thinkingLevel;
+				modelsState.publish(BACKGROUND_CONTEXT);
 			});
-			let snapshot = laneSnapshot();
-			let transcriptRevision = 0;
-			const transcriptUpdates = replicatedState<TranscriptUpdate | null>(null);
-			const transcriptSnapshot = vi.fn(async () => ({
-				revision: transcriptRevision,
-				snapshot: cloneJsonValue(snapshot),
-			}));
+			const transcriptState = replicatedState<TranscriptState>({
+				snapshot: laneSnapshot() as LaneTranscriptSnapshot,
+				event: null,
+			});
 			const emitTranscriptEvent = (event: LaneWatchEvent): void => {
-				const reduced = reduceLaneSnapshot(snapshot, event);
-				if (!("rebase" in reduced)) snapshot = reduced;
-				transcriptRevision += 1;
-				transcriptUpdates.set({ type: "event", revision: transcriptRevision, event }, BACKGROUND_CONTEXT);
+				const snapshot = transcriptState.state.snapshot as LaneSnapshot;
+				if (reduceLaneSnapshot(snapshot, event) === "rebase") {
+					throw new Error("Test transcript event unexpectedly requires a rebase");
+				}
+				transcriptState.state.event = event;
+				transcriptState.publish(BACKGROUND_CONTEXT);
 			};
 			const prompt = vi.fn(async () => {
 				emitTranscriptEvent({
@@ -174,7 +179,7 @@ describe("experimental client TUI", () => {
 							provider: "test",
 							model: "one",
 							api: "test",
-							usage: snapshot.stats.usage,
+							usage: transcriptState.value.snapshot!.stats.usage,
 							stopReason: "stop",
 							timestamp: 2,
 						},
@@ -222,10 +227,10 @@ describe("experimental client TUI", () => {
 				create,
 				async remove() {},
 				async attach(sessionId) {
-					attachment.set({ status: "attaching", sessionId }, BACKGROUND_CONTEXT);
+					publishReplacement(attachment, { status: "attaching", sessionId });
 				},
 				async detach() {
-					attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);
+					publishReplacement(attachment, { status: "detached" });
 				},
 			});
 			const sessionProvider = new RemoteServiceProvider([Models, AgentController, SessionPlugins, Transcript]);
@@ -241,7 +246,7 @@ describe("experimental client TUI", () => {
 				selectThinking,
 			});
 			sessionProvider.provide(AgentController, createAgentController({ prompt } as unknown as AgentLane));
-			sessionProvider.provide(Transcript, { updates: transcriptUpdates, snapshot: transcriptSnapshot });
+			sessionProvider.provide(Transcript, { state: transcriptState });
 
 			const serverNamespace = createRemoteServiceBinding({
 				services: [SessionDirectory, SessionManagement, PresentationPlugins],
@@ -293,11 +298,11 @@ describe("experimental client TUI", () => {
 				async whenAttached(sessionId: string) {
 					await sessionNamespace.rebind(true, BACKGROUND_CONTEXT);
 					await sessionNamespace.ready(BACKGROUND_CONTEXT);
-					attachment.set({ status: "attached", sessionId }, BACKGROUND_CONTEXT);
+					publishReplacement(attachment, { status: "attached", sessionId });
 				},
 				async whenDetached() {
 					await sessionNamespace.rebind(false, BACKGROUND_CONTEXT);
-					attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);
+					publishReplacement(attachment, { status: "detached" });
 				},
 			});
 			const server: ClientTuiServer = {
@@ -331,7 +336,6 @@ describe("experimental client TUI", () => {
 					expect.anything(),
 				);
 				expect(attachment.value).toEqual({ status: "attached", sessionId });
-				expect(transcriptSnapshot).toHaveBeenCalledOnce();
 				expect(select).not.toHaveBeenCalled();
 				expect(component.render(80).join("\n")).toContain(`Server: ${serverId}`);
 				expect(component.render(80).join("\n")).toContain(`Session: ${sessionId}`);
@@ -358,11 +362,13 @@ describe("experimental client TUI", () => {
 				});
 				await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("Reloaded plugins."));
 
-				attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);
-				connectionState.set(
-					{ status: "disconnected", since: "later", reason: "network lost", retryAt: null },
-					BACKGROUND_CONTEXT,
-				);
+				publishReplacement(attachment, { status: "detached" });
+				publishReplacement(connectionState, {
+					status: "disconnected",
+					since: "later",
+					reason: "network lost",
+					retryAt: null,
+				});
 				await vi.waitFor(() => expect(component.render(80).join("\n")).toContain("retrying"));
 				component.handleInput("\u0003");
 				expect(finished).toBe(true);
@@ -370,10 +376,9 @@ describe("experimental client TUI", () => {
 				component.handleInput("\u0004");
 				expect(finished).toBe(true);
 				finished = false;
-				connectionState.set({ status: "connecting", attempt: 1 }, BACKGROUND_CONTEXT);
-				connectionState.set({ status: "connected", since: "reconnected" }, BACKGROUND_CONTEXT);
-				attachment.set({ status: "attached", sessionId }, BACKGROUND_CONTEXT);
-				await vi.waitFor(() => expect(transcriptSnapshot).toHaveBeenCalledTimes(2));
+				publishReplacement(connectionState, { status: "connecting", attempt: 1 });
+				publishReplacement(connectionState, { status: "connected", since: "reconnected" });
+				publishReplacement(attachment, { status: "attached", sessionId });
 				await vi.waitFor(() => expect(component.render(80).join("\n")).not.toContain("Reattaching"));
 
 				component.handleInput("/model");
@@ -402,9 +407,12 @@ describe("experimental client TUI", () => {
 
 				await component.close();
 				const rendersAfterClose = requestRender.mock.calls.length;
-				directoryState.set({ revision: 3, sessions: [] }, BACKGROUND_CONTEXT);
-				attachment.set({ status: "detached" }, BACKGROUND_CONTEXT);
-				modelsState.set({ ...modelsState.value, refresh: { status: "refreshing" } }, BACKGROUND_CONTEXT);
+				directoryState.state.revision = 3;
+				directoryState.state.sessions = [];
+				directoryState.publish(BACKGROUND_CONTEXT);
+				publishReplacement(attachment, { status: "detached" });
+				modelsState.state.refresh = { status: "refreshing" };
+				modelsState.publish(BACKGROUND_CONTEXT);
 				expect(requestRender).toHaveBeenCalledTimes(rendersAfterClose);
 			} finally {
 				await component.close();

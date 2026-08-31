@@ -1,6 +1,5 @@
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type LaneSnapshot, type LaneWatchEvent, reduceLaneSnapshot } from "@earendil-works/pi-agent-core";
-import type { Transcript, TranscriptSnapshot, TranscriptUpdate } from "./services/transcript.ts";
+import type { LaneSnapshot, LaneWatchEvent } from "@earendil-works/pi-agent-core";
+import type { Transcript } from "./services/transcript.ts";
 
 export interface LaneReplica {
 	readonly sessionId: string;
@@ -9,68 +8,42 @@ export interface LaneReplica {
 	close(): Promise<void>;
 }
 
-/** Open a presentation-local Harness replica from the Session's Transcript service. */
+/** Open a presentation-local replica from the Session's Transcript state. */
 export async function openLaneReplica(
 	transcript: Transcript,
 	sessionId: string,
 	onEvent?: (event: LaneWatchEvent) => void | Promise<void>,
 ): Promise<LaneReplica> {
 	const listeners = new Set<() => void>();
-	const pending: TranscriptUpdate[] = [];
 	let snapshot: LaneSnapshot | undefined;
-	let revision = 0;
 	let initialized = false;
 	let closed = false;
 	let deliveryTail = Promise.resolve();
+	let resolveReady!: () => void;
+	const ready = new Promise<void>((resolve) => {
+		resolveReady = resolve;
+	});
 
 	const publish = (): void => {
 		if (closed) return;
 		for (const listener of listeners) listener();
 	};
-	const installSnapshot = (captured: TranscriptSnapshot): void => {
-		revision = captured.revision;
-		snapshot = captured.snapshot;
+	const unsubscribe = transcript.state.subscribe((value, _context, delivery) => {
+		if (closed || value.snapshot === null) return;
+		snapshot = value.snapshot;
 		publish();
-	};
-	const apply = async (update: TranscriptUpdate): Promise<void> => {
-		if (closed || update.revision <= revision) return;
-		if (update.revision !== revision + 1) {
-			installSnapshot(await transcript.snapshot(BACKGROUND_CONTEXT));
-			if (update.revision <= revision) return;
-			if (update.revision !== revision + 1) throw new Error("Transcript snapshot did not repair its revision gap");
+		if (!initialized) {
+			initialized = true;
+			resolveReady();
 		}
-		if (update.type === "snapshot") {
-			revision = update.revision;
-			snapshot = update.snapshot;
-			publish();
-			return;
+		if (delivery.kind === "update" && value.event !== null) {
+			const event = value.event;
+			deliveryTail = deliveryTail.then(() => onEvent?.(event));
 		}
-		const event = update.event;
-		const current = snapshot;
-		if (current === undefined) throw new Error("Transcript replica has no snapshot");
-		const reduced = reduceLaneSnapshot(current, event);
-		revision = update.revision;
-		if (!("rebase" in reduced)) {
-			snapshot = reduced;
-			publish();
-		}
-		await onEvent?.(event);
-	};
-	const enqueue = (update: TranscriptUpdate): void => {
-		const detached = structuredClone(update);
-		deliveryTail = deliveryTail.then(() => apply(detached));
-	};
-	const unsubscribe = transcript.updates.subscribe((update) => {
-		if (closed || update === null) return;
-		if (initialized) enqueue(update);
-		else pending.push(structuredClone(update));
 	});
 
 	try {
-		installSnapshot(await transcript.snapshot(BACKGROUND_CONTEXT));
-		initialized = true;
-		for (const update of pending.splice(0)) enqueue(update);
-		await deliveryTail;
+		await ready;
 	} catch (error) {
 		closed = true;
 		unsubscribe();

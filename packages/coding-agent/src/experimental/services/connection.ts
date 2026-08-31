@@ -12,13 +12,7 @@ import {
 } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Client } from "@earendil-works/pi-client";
-import type {
-	ProtocolRpcCall,
-	RpcTarget,
-	ServiceCatalogueEntry,
-	ServiceProviderUpdate,
-	SessionTarget,
-} from "@earendil-works/pi-protocol";
+import type { ProtocolRpcCall, RpcTarget, ServiceCatalogueEntry, SessionTarget } from "@earendil-works/pi-protocol";
 
 export type ServerConnectionState =
 	| { status: "connecting"; attempt: number }
@@ -133,7 +127,11 @@ class ServerServiceSourceImpl implements ServerServiceSource {
 		this.connection = connectionState;
 		this.#removeConnectionListener = client.onConnectionStateChange(({ state, error }) => {
 			if (state === "connecting") this.#connectionAttempt += 1;
-			connectionState.set(toServerConnectionState(client, this.#connectionAttempt, error), BACKGROUND_CONTEXT);
+			publishReplacement(
+				connectionState,
+				toServerConnectionState(client, this.#connectionAttempt, error),
+				BACKGROUND_CONTEXT,
+			);
 			this.#transition = this.#transition
 				.then(async () => {
 					const results = await Promise.allSettled(
@@ -213,7 +211,11 @@ class SessionServiceSourceImpl implements SessionServiceSource {
 		this.#removeAttachmentListener = client.onAttachmentChange((attachment) => {
 			const revision = ++this.#attachmentRevision;
 			if (attachment !== undefined) {
-				this.#attachmentState.set({ status: "attaching", sessionId: attachment.sessionId }, BACKGROUND_CONTEXT);
+				publishReplacement(
+					this.#attachmentState,
+					{ status: "attaching", sessionId: attachment.sessionId },
+					BACKGROUND_CONTEXT,
+				);
 				void this.#client.serviceCatalogue(attachment).then(
 					(catalogue) => {
 						if (this.#attachmentRevision === revision && sameAttachment(this.#client.attachment, attachment)) {
@@ -230,7 +232,8 @@ class SessionServiceSourceImpl implements SessionServiceSource {
 					this.#transitions.delete(transition);
 					if (this.#attachmentRevision !== revision || !sameAttachment(this.#client.attachment, attachment))
 						return;
-					this.#attachmentState.set(
+					publishReplacement(
+						this.#attachmentState,
 						attachment === undefined
 							? { status: "detached" }
 							: { status: "attached", sessionId: attachment.sessionId },
@@ -241,7 +244,8 @@ class SessionServiceSourceImpl implements SessionServiceSource {
 					this.#transitions.delete(transition);
 					if (this.#attachmentRevision !== revision || !sameAttachment(this.#client.attachment, attachment))
 						return;
-					this.#attachmentState.set(
+					publishReplacement(
+						this.#attachmentState,
 						attachment === undefined
 							? { status: "detached" }
 							: { status: "degraded", sessionId: attachment.sessionId },
@@ -321,7 +325,7 @@ class SessionServiceSourceImpl implements SessionServiceSource {
 			await Promise.all([...this.#bindings].map((binding) => binding.serviceReady(context)));
 		} catch (error) {
 			if (this.#attachmentRevision === revision && sameAttachment(this.#client.attachment, attachment)) {
-				this.#attachmentState.set({ status: "degraded", sessionId: attachment.sessionId }, context);
+				publishReplacement(this.#attachmentState, { status: "degraded", sessionId: attachment.sessionId }, context);
 			}
 			throw error;
 		}
@@ -330,7 +334,7 @@ class SessionServiceSourceImpl implements SessionServiceSource {
 		}
 		const state = this.#attachmentState.value;
 		if (state.status !== "attached" || state.sessionId !== attachment.sessionId) {
-			this.#attachmentState.set({ status: "attached", sessionId: attachment.sessionId }, context);
+			publishReplacement(this.#attachmentState, { status: "attached", sessionId: attachment.sessionId }, context);
 		}
 	}
 
@@ -340,7 +344,7 @@ class SessionServiceSourceImpl implements SessionServiceSource {
 			throw new Error("The Session attachment changed while detaching");
 		}
 		if (this.#attachmentState.value.status !== "detached") {
-			this.#attachmentState.set({ status: "detached" }, context);
+			publishReplacement(this.#attachmentState, { status: "detached" }, context);
 		}
 	}
 }
@@ -353,6 +357,16 @@ export function createServerServiceSource(client: Client, options: ServiceSource
 /** Create the selected-Session remote service source for one presentation client. */
 export function createSessionServiceSource(client: Client, options: ServiceSourceOptions = {}): SessionServiceSource {
 	return new SessionServiceSourceImpl(client, options);
+}
+
+function publishReplacement<T extends object>(state: MutableReplicatedState<T>, value: T, context: Context): void {
+	const target = state.state as Record<string, unknown>;
+	const replacement = value as Record<string, unknown>;
+	for (const key of Object.keys(target)) {
+		if (!Object.hasOwn(replacement, key)) delete target[key];
+	}
+	Object.assign(target, replacement);
+	state.publish(context);
 }
 
 function createRemoteServiceTransport(client: Client, getTarget: () => RpcTarget | undefined): RemoteServiceTransport {
@@ -375,7 +389,7 @@ function createRemoteServiceTransport(client: Client, getTarget: () => RpcTarget
 				target,
 				serviceId,
 				mode,
-				(update: ServiceProviderUpdate) => listener(update, BACKGROUND_CONTEXT),
+				(update) => listener(update, BACKGROUND_CONTEXT),
 				context.abortSignal,
 			);
 			return {

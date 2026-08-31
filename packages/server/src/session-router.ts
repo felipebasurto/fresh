@@ -1,12 +1,7 @@
 import { randomUUID } from "node:crypto";
+import type { ServiceProviderUpdate } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, type Context, type SessionMetadata } from "@earendil-works/pi-agent-core";
-import type {
-	ProtocolRpcCall,
-	ProtocolRpcResult,
-	RpcTarget,
-	ServiceEventEnvelope,
-	SessionTarget,
-} from "@earendil-works/pi-protocol";
+import type { ProtocolRpcCall, ProtocolRpcResult, RpcTarget, SessionTarget } from "@earendil-works/pi-protocol";
 import { NotSupportedError, ServerDrainingError, SessionNotAttachedError } from "./errors.ts";
 import type { RoutedSessionAttachment, RoutedSessionHandle, ServerHost } from "./types.ts";
 
@@ -53,7 +48,7 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		call: ProtocolRpcCall,
 		target: RpcTarget,
 		client: object,
-		publish: (message: ServiceEventEnvelope, context: Context) => Promise<void>,
+		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => Promise<void>,
 		context: Context,
 	): Promise<ProtocolRpcResult> {
 		const admitted = await this.runForClient(client, () =>
@@ -205,7 +200,7 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		client: object,
 		target: RpcTarget,
 		call: ProtocolRpcCall,
-		publish: (message: ServiceEventEnvelope, context: Context) => Promise<void>,
+		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => Promise<void>,
 		context: Context,
 	): Promise<{ result: Promise<ProtocolRpcResult> }> {
 		const attachment = this.requireAttachment(client, target);
@@ -214,8 +209,7 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		const result = invoke.call(
 			attachment.lease,
 			call,
-			(subscriptionId, update, updateContext) =>
-				publish({ type: "service_update", subscriptionId, update }, updateContext),
+			(subscriptionId, update, updateContext) => publish(subscriptionId, update, updateContext),
 			context,
 		);
 		this.trackOperation(attachment, result);

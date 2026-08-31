@@ -32,9 +32,11 @@ The design has a few connected pieces:
   stable facade while a provider disconnects or is replaced.
 
 - **Replicated state** exposes authoritative state to local and remote
-  connected consumers.  Replicas become ready from a complete snapshot, apply
-  ordered updates, and become unready on disconnect or replacement until they
-  are rehydrated.
+  connected consumers. Producers mutate the tracked `state` proxy and call
+  `publish(context)`; consumers receive complete immutable values. Chord flushes
+  one decoded operation batch per publication, while each remote client/state
+  stream owns independent path-codec state. Replicas become unready on disconnect
+  or replacement until they are rehydrated.
 
 - **Delta tracking** derives compact operations from tracked plain JSON at
   flush time. It preserves string append/front-truncation and array-append
@@ -47,9 +49,8 @@ The design has a few connected pieces:
   requires strict-JSON arguments, results, snapshots, updates, and catalogues,
   but does not prescribe framing, routing, transport, or an application wire
   envelope. `JsonRepresentation<T>` derives a wire-safe type for application data
-  with unknown payloads; `isJsonValue()` validates received values, while
-  `cloneJsonValue()` validates, normalizes optional fields, and detaches outbound
-  values at an adapter boundary. Symmetric RPC peers are planned as one optional
+  with unknown payloads, while `isJsonValue()` validates received values at an
+  adapter boundary. Symmetric RPC peers are planned as one optional
   implementation of this boundary.
 
 - **Context** Chord provides a Go-like context system for cancellation and
@@ -82,11 +83,23 @@ const replica = apply({ output: "", count: 0 }, ops);
 ```
 
 The first flush is always a complete base batch. Later flushes contain path-based
-changes. String assignments preserve pure appends and rolling-window movement as
-append and front-truncate operations; unrelated rewrites fall back to a set.
-Values inserted into tracked state become tracker-owned and must subsequently be
-mutated only through `state`. See the [Delta guide](src/delta/README.md) for
-mutation, array, lifecycle, and consumer-ownership rules.
+changes. `applyImmutable()` applies those batches while preserving prior replica
+revisions. `replicatedState(initial)` uses tracking directly:
+
+```ts
+const status = env.replicatedState({ output: "", count: 0 });
+status.state.output += "done\n";
+status.state.count += 1;
+status.publish(context);
+```
+
+`publish()` flushes once; remote connection plumbing encodes that operation batch
+independently for every client/state pairing. String assignments preserve pure
+appends and rolling-window movement as append and front-truncate operations;
+unrelated rewrites fall back to a set. Values inserted into tracked state become
+tracker-owned and must subsequently be mutated only through `state`. See the
+[Delta guide](src/delta/README.md) for mutation, array, lifecycle, and
+consumer-ownership rules.
 
 ## Bundling and loading facets
 

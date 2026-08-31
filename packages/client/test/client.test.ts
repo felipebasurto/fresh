@@ -76,9 +76,9 @@ describe("Client service operations", () => {
 		const client = await connectClient(server);
 		await attachClient(client, server, "session-1");
 		const target = client.attachment!;
-		const updates: string[] = [];
+		const updates: Array<{ readonly type: string; readonly ops?: readonly unknown[] }> = [];
 		const opening = client.subscribeService(target, "pi.models", "singleton", (update) => {
-			updates.push(update.type);
+			updates.push(update);
 		});
 		await server.waitForMessages(3);
 		expect(server.messages[2]).toMatchObject({
@@ -93,7 +93,7 @@ describe("Client service operations", () => {
 		server.send({
 			type: "service_update",
 			subscriptionId: "service-1",
-			update: { type: "state", member: "state", sequence: 1, value: { revision: 1 } },
+			update: { type: "state", member: "state", sequence: 1, ops: [["s", ["revision"], 1]] },
 		});
 		await Promise.resolve();
 		expect(updates).toEqual([]);
@@ -104,16 +104,43 @@ describe("Client service operations", () => {
 			result: {
 				serviceId: "pi.models",
 				mode: "singleton",
-				instances: [{ members: [{ name: "state", kind: "state", sequence: 0, value: { revision: 0 } }] }],
+				instances: [{ members: [{ name: "state", kind: "state", sequence: 0, ops: [["r", { revision: 0 }]] }] }],
 			},
 		});
 		const subscription = await opening;
 		expect(updates).toEqual([]);
+		server.send({
+			type: "service_update",
+			subscriptionId: "closed-subscription",
+			update: { type: "state", member: "state", sequence: 99, ops: [["s", 99, 99]] },
+		});
+		await Promise.resolve();
+		expect(client.connected).toBe(true);
 		expect(subscription.snapshot.instances[0]?.members).toEqual([
-			{ name: "state", kind: "state", sequence: 0, value: { revision: 0 } },
+			{ name: "state", kind: "state", sequence: 0, ops: [["r", { revision: 0 }]] },
 		]);
 		subscription.start();
-		await vi.waitFor(() => expect(updates).toEqual(["state"]));
+		await vi.waitFor(() => expect(updates.map(({ type }) => type)).toEqual(["state"]));
+		server.send({
+			type: "service_update",
+			subscriptionId: "service-1",
+			update: { type: "state", member: "state", sequence: 2, ops: [["s", ["revision"], 2]] },
+		});
+		server.send({
+			type: "service_update",
+			subscriptionId: "service-1",
+			update: {
+				type: "state",
+				member: "state",
+				sequence: 3,
+				ops: [
+					["#", 0, ["revision"]],
+					["s", 0, 3],
+				],
+			},
+		});
+		await vi.waitFor(() => expect(updates).toHaveLength(3));
+		expect(updates[2]?.ops).toEqual([["s", ["revision"], 3]]);
 
 		const disposing = subscription.dispose();
 		await server.waitForMessages(4);

@@ -1,19 +1,7 @@
-import {
-	type Context,
-	type ServiceProviderUpdate as CoreServiceProviderUpdate,
-	RemoteServiceProvider,
-	replicatedState,
-	type ServiceSubscription,
-} from "@earendil-works/chord";
+import { type Context, RemoteServiceProvider, replicatedState, type ServiceSubscription } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import {
-	decodeServiceControlCall,
-	type JsonValue,
-	type ServiceProviderUpdate as ProtocolServiceProviderUpdate,
-	ServiceProviderUpdateSchema,
-} from "@earendil-works/pi-protocol";
+import { decodeServiceControlCall, type JsonValue } from "@earendil-works/pi-protocol";
 import type { RoutedServerServiceAttachment, RoutedServerServiceHost } from "@earendil-works/pi-server";
-import { Check } from "typebox/value";
 import { PresentationPlugins } from "./plugins.ts";
 import {
 	type SessionCreateOptions,
@@ -51,7 +39,9 @@ export async function createExperimentalServerServices(options: {
 	const refreshNow = async (context: Context): Promise<void> => {
 		const sessions = await options.list(context);
 		revision += 1;
-		directory.set({ revision, sessions }, context);
+		directory.state.revision = revision;
+		directory.state.sessions = sessions;
+		directory.publish(context);
 	};
 	const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
 		const result = mutationTail.catch(() => {}).then(operation);
@@ -149,9 +139,7 @@ function createProviderAttachment(
 					throw new Error("Service subscription ID is already active");
 				}
 				const subscription = provider.subscribe(control.serviceId, control.mode, (update, updateContext) => {
-					void Promise.resolve(
-						publish(control.subscriptionId, toProtocolServiceUpdate(update), updateContext),
-					).catch(() => {});
+					void Promise.resolve(publish(control.subscriptionId, update, updateContext)).catch(() => {});
 				});
 				subscriptions.set(control.subscriptionId, subscription);
 				subscription.activate();
@@ -179,10 +167,4 @@ function createProviderAttachment(
 
 function toProtocolJson(value: unknown): JsonValue {
 	return value as JsonValue;
-}
-
-function toProtocolServiceUpdate(update: CoreServiceProviderUpdate): ProtocolServiceProviderUpdate {
-	const candidate: unknown = update;
-	if (!Check(ServiceProviderUpdateSchema, candidate)) throw new Error("Service produced an invalid update");
-	return candidate;
 }

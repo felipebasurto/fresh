@@ -1,4 +1,4 @@
-import type { RpcTarget, ServiceSubscriptionSnapshot, SessionTarget } from "@earendil-works/pi-protocol";
+import type { DecodedServiceSubscriptionSnapshot, RpcTarget, SessionTarget } from "@earendil-works/pi-protocol";
 import type { ByteTransportFactory } from "./transport.ts";
 
 export type ConnectionState = "disconnected" | "connecting" | "connected";
@@ -15,7 +15,7 @@ export type AttachmentChangeListener = (attachment: SessionTarget | undefined) =
 export interface ServiceSubscription {
 	readonly id: string;
 	readonly target: RpcTarget;
-	readonly snapshot: ServiceSubscriptionSnapshot;
+	readonly snapshot: DecodedServiceSubscriptionSnapshot;
 	/** Begin ordered update delivery after the caller has installed the snapshot. */
 	start(): void;
 	dispose(): Promise<void>;

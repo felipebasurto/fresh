@@ -37,3 +37,4 @@ export {
 	type ServiceSubscriptionSnapshot,
 	type SessionTarget,
 } from "./protocol.ts";
+export * from "./service-state.ts";

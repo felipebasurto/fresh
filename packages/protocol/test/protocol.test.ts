@@ -4,8 +4,12 @@ import {
 	type ClientMessage,
 	ClientMessageDecoder,
 	createServiceCatalogueCall,
+	createServiceStateDecoder,
+	createServiceStateEncoder,
 	createServiceSubscribeCall,
 	createServiceUnsubscribeCall,
+	type DecodedServiceProviderUpdate,
+	type DecodedServiceSubscriptionSnapshot,
 	decodeCbor,
 	decodeServiceControlCall,
 	encodeCbor,
@@ -33,11 +37,11 @@ const serverHello: ServerHello = {
 };
 
 describe("protocol validation", () => {
-	test("negotiates protocol version 7", () => {
-		expect(PROTOCOL_VERSION).toBe(7);
-		expect(isSupportedProtocolVersion(7)).toBe(true);
-		expect(isSupportedProtocolVersion(6)).toBe(false);
-		expect(isSupportedProtocolVersion(7.5)).toBe(false);
+	test("negotiates protocol version 8", () => {
+		expect(PROTOCOL_VERSION).toBe(8);
+		expect(isSupportedProtocolVersion(8)).toBe(true);
+		expect(isSupportedProtocolVersion(7)).toBe(false);
+		expect(isSupportedProtocolVersion(8.5)).toBe(false);
 	});
 
 	test.each([0, PROTOCOL_VERSION, PROTOCOL_VERSION + 1])(
@@ -98,7 +102,7 @@ describe("protocol validation", () => {
 				mode: "singleton",
 				instances: [
 					{
-						members: [{ name: "state", kind: "state", sequence: 0, value: { revision: 1 } }],
+						members: [{ name: "state", kind: "state", sequence: 0, ops: [["r", { revision: 1 }]] }],
 					},
 				],
 			}),
@@ -107,7 +111,7 @@ describe("protocol validation", () => {
 			mode: "singleton",
 			instances: [
 				{
-					members: [{ name: "state", kind: "state", sequence: 0, value: { revision: 1 } }],
+					members: [{ name: "state", kind: "state", sequence: 0, ops: [["r", { revision: 1 }]] }],
 				},
 			],
 		});
@@ -119,7 +123,7 @@ describe("protocol validation", () => {
 					type: "state",
 					member: "state",
 					sequence: 1,
-					value: { revision: 2 },
+					ops: [["s", ["revision"], 2]],
 				},
 			}),
 		).toMatchObject({ update: { type: "state", member: "state" } });
@@ -156,6 +160,141 @@ describe("protocol validation", () => {
 			},
 		};
 		expect(parseClientMessage(keyed)).toEqual(keyed);
+	});
+
+	test("keeps one operation codec pair for one subscription state", () => {
+		const enc = createServiceStateEncoder();
+		const dec = createServiceStateDecoder();
+		const snapshot: DecodedServiceSubscriptionSnapshot = {
+			serviceId: "pi.models",
+			mode: "singleton",
+			instances: [
+				{
+					members: [{ name: "state", kind: "state", sequence: 0, ops: [["r", { revision: 0 }]] }],
+				},
+			],
+		};
+		expect(dec.decodeSnapshot(enc.encodeSnapshot(snapshot))).toEqual(snapshot);
+
+		const first: DecodedServiceProviderUpdate = {
+			type: "state",
+			member: "state",
+			sequence: 1,
+			ops: [["s", ["revision"], 1]],
+		};
+		const second: DecodedServiceProviderUpdate = {
+			type: "state",
+			member: "state",
+			sequence: 2,
+			ops: [["s", ["revision"], 2]],
+		};
+		const firstWire = enc.encodeUpdate(first);
+		const secondWire = enc.encodeUpdate(second);
+		expect(firstWire).toMatchObject({ ops: [["s", ["revision"], 1]] });
+		expect(secondWire).toMatchObject({
+			ops: [
+				["#", 0, ["revision"]],
+				["s", 0, 2],
+			],
+		});
+		expect(dec.decodeUpdate(firstWire)).toEqual(first);
+		expect(dec.decodeUpdate(secondWire)).toEqual(second);
+	});
+
+	test("isolates operation dictionaries between states and subscriptions", () => {
+		const snapshot: DecodedServiceSubscriptionSnapshot = {
+			serviceId: "pi.states",
+			mode: "singleton",
+			instances: [
+				{
+					members: [
+						{ name: "left", kind: "state", sequence: 0, ops: [["r", { revision: 0 }]] },
+						{ name: "right", kind: "state", sequence: 0, ops: [["r", { revision: 0 }]] },
+					],
+				},
+			],
+		};
+		const firstEncoder = createServiceStateEncoder();
+		const firstDecoder = createServiceStateDecoder();
+		const secondEncoder = createServiceStateEncoder();
+		const secondDecoder = createServiceStateDecoder();
+		firstDecoder.decodeSnapshot(firstEncoder.encodeSnapshot(snapshot));
+		secondDecoder.decodeSnapshot(secondEncoder.encodeSnapshot(snapshot));
+
+		const update = (member: string, sequence: number, revision: number): DecodedServiceProviderUpdate => ({
+			type: "state",
+			member,
+			sequence,
+			ops: [["s", ["revision"], revision]],
+		});
+		const firstLeft = firstEncoder.encodeUpdate(update("left", 1, 1));
+		const firstRight = firstEncoder.encodeUpdate(update("right", 1, 1));
+		const secondLeft = firstEncoder.encodeUpdate(update("left", 2, 2));
+		const secondRight = firstEncoder.encodeUpdate(update("right", 2, 2));
+		expect(firstLeft).toMatchObject({ ops: [["s", ["revision"], 1]] });
+		expect(firstRight).toMatchObject({ ops: [["s", ["revision"], 1]] });
+		expect(secondLeft).toMatchObject({
+			ops: [
+				["#", 0, ["revision"]],
+				["s", 0, 2],
+			],
+		});
+		expect(secondRight).toMatchObject({
+			ops: [
+				["#", 0, ["revision"]],
+				["s", 0, 2],
+			],
+		});
+		expect(firstDecoder.decodeUpdate(firstLeft)).toEqual(update("left", 1, 1));
+		expect(firstDecoder.decodeUpdate(firstRight)).toEqual(update("right", 1, 1));
+		expect(firstDecoder.decodeUpdate(secondLeft)).toEqual(update("left", 2, 2));
+		expect(firstDecoder.decodeUpdate(secondRight)).toEqual(update("right", 2, 2));
+
+		const independentLeft = secondEncoder.encodeUpdate(update("left", 1, 1));
+		expect(independentLeft).toMatchObject({ ops: [["s", ["revision"], 1]] });
+		expect(secondDecoder.decodeUpdate(independentLeft)).toEqual(update("left", 1, 1));
+
+		const leftBase: DecodedServiceProviderUpdate = {
+			type: "state",
+			member: "left",
+			sequence: 3,
+			ops: [["r", { revision: 3 }]],
+		};
+		expect(firstDecoder.decodeUpdate(firstEncoder.encodeUpdate(leftBase))).toEqual(leftBase);
+		const thirdRight = firstEncoder.encodeUpdate(update("right", 3, 3));
+		expect(thirdRight).toMatchObject({ ops: [["s", 0, 3]] });
+		expect(firstDecoder.decodeUpdate(thirdRight)).toEqual(update("right", 3, 3));
+	});
+
+	test("creates and removes keyed instance codecs with their lifecycle", () => {
+		const enc = createServiceStateEncoder();
+		const dec = createServiceStateDecoder();
+		const snapshot: DecodedServiceSubscriptionSnapshot = {
+			serviceId: "pi.dialogs",
+			mode: "keyed",
+			instances: [],
+		};
+		expect(dec.decodeSnapshot(enc.encodeSnapshot(snapshot))).toEqual(snapshot);
+		const address = { key: "dialog-1", generation: 1 };
+		const spawned: DecodedServiceProviderUpdate = {
+			type: "spawned",
+			instance: {
+				instance: address,
+				members: [{ name: "request", kind: "state", sequence: 0, ops: [["r", { value: 0 }]] }],
+			},
+		};
+		expect(dec.decodeUpdate(enc.encodeUpdate(spawned))).toEqual(spawned);
+		const update: DecodedServiceProviderUpdate = {
+			type: "state",
+			instance: address,
+			member: "request",
+			sequence: 1,
+			ops: [["s", ["value"], 1]],
+		};
+		expect(dec.decodeUpdate(enc.encodeUpdate(update))).toEqual(update);
+		const closed: DecodedServiceProviderUpdate = { type: "closed", instance: address };
+		expect(dec.decodeUpdate(enc.encodeUpdate(closed))).toEqual(closed);
+		expect(() => enc.encodeUpdate({ ...update, sequence: 2 })).toThrow("Unknown service state");
 	});
 
 	test("keeps transport RPC payloads opaque while validating their envelope", () => {
