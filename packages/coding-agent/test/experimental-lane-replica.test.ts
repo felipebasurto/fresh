@@ -37,7 +37,7 @@ describe("experimental lane replica", () => {
 		const staleEvent = { type: "run_start", lane: "main", runId: "stale", startedAt: 1 } as const;
 		const state = replicatedState<TranscriptState>({ snapshot: snapshot(), event: staleEvent });
 		const onEvent = vi.fn();
-		const replica = await openLaneReplica({ state }, "session-1", onEvent);
+		const replica = await openLaneReplica({ state }, onEvent);
 		const changed = vi.fn();
 		replica.subscribe(changed);
 		expect(onEvent).not.toHaveBeenCalled();
@@ -57,7 +57,7 @@ describe("experimental lane replica", () => {
 
 	test("waits for the first initialized transcript value", async () => {
 		const state = replicatedState<TranscriptState>({ snapshot: null, event: null });
-		const opening = openLaneReplica({ state }, "session-1");
+		const opening = openLaneReplica({ state });
 		state.state.snapshot = snapshot("ready");
 		state.publish(BACKGROUND_CONTEXT);
 		const replica = await opening;

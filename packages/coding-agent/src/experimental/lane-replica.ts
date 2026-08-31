@@ -2,7 +2,6 @@ import type { LaneSnapshot, LaneWatchEvent } from "@earendil-works/pi-agent-core
 import type { Transcript } from "./services/transcript.ts";
 
 export interface LaneReplica {
-	readonly sessionId: string;
 	state(): LaneSnapshot;
 	subscribe(listener: () => void): () => void;
 	close(): Promise<void>;
@@ -11,7 +10,6 @@ export interface LaneReplica {
 /** Open a presentation-local replica from the Session's Transcript state. */
 export async function openLaneReplica(
 	transcript: Transcript,
-	sessionId: string,
 	onEvent?: (event: LaneWatchEvent) => void | Promise<void>,
 ): Promise<LaneReplica> {
 	const listeners = new Set<() => void>();
@@ -51,7 +49,6 @@ export async function openLaneReplica(
 	}
 
 	return {
-		sessionId,
 		state() {
 			if (snapshot === undefined) throw new Error("Transcript replica has no snapshot");
 			return snapshot;

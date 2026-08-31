@@ -5,19 +5,14 @@ import {
 	defineFacet,
 	type FacetHost,
 	type FacetLoader,
-	type ServiceCatalogueEntry,
+	isJsonValue,
+	type JsonValue,
 	type ServiceProviderUpdate,
 	type ServiceSubscription,
 } from "@earendil-works/chord";
 import type { AgentHarness, AgentLane } from "@earendil-works/pi-agent-core";
-import {
-	decodeServiceControlCall,
-	type JsonValue,
-	JsonValueSchema,
-	type ProtocolRpcCall,
-} from "@earendil-works/pi-protocol";
+import { decodeServiceControlCall, type ProtocolRpcCall } from "@earendil-works/pi-protocol";
 import Type, { type Static } from "typebox";
-import { Check } from "typebox/value";
 import type { ModelRuntime } from "../../core/model-runtime.ts";
 import type { SettingsManager } from "../../core/settings-manager.ts";
 import { AgentController } from "./agent-controller.ts";
@@ -26,8 +21,10 @@ import { createModelsServiceFacet } from "./models-provider.ts";
 import { SessionPlugins } from "./plugins.ts";
 import { createTranscriptServiceFacet } from "./transcript-provider.ts";
 
+const OpaqueJsonValueSchema = Type.Unsafe<JsonValue>(Type.Unknown());
+
 export const ServiceOperationResultSchema = Type.Object(
-	{ result: Type.Optional(JsonValueSchema) },
+	{ result: Type.Optional(OpaqueJsonValueSchema) },
 	{ additionalProperties: false },
 );
 export type ServiceOperationResult = Static<typeof ServiceOperationResultSchema>;
@@ -51,10 +48,8 @@ interface WorkerServiceSubscription {
 }
 
 export interface SessionWorkerServices {
-	readonly catalogue: readonly ServiceCatalogueEntry[];
 	invoke(call: ProtocolRpcCall, scope: WorkerServiceScope, context: Context): Promise<JsonValue | undefined>;
 	removeSubscriptions(matches: (scope: WorkerServiceScope) => boolean): void;
-	reload(): Promise<void>;
 	dispose(): Promise<void>;
 }
 
@@ -130,7 +125,6 @@ export async function createSessionWorkerServices(options: {
 	};
 
 	return {
-		catalogue: provider.catalogue,
 		async invoke(call, scope, context) {
 			const controlCall = decodeServiceControlCall(call);
 			if (controlCall?.type === "catalogue") return toProtocolJsonValue(provider.catalogue);
@@ -155,7 +149,6 @@ export async function createSessionWorkerServices(options: {
 			return provider.invoke(call, context);
 		},
 		removeSubscriptions,
-		reload: () => reloadPlugins(),
 		async dispose() {
 			removeSubscriptions(() => true);
 			await reloadTail;
@@ -178,6 +171,6 @@ function scopedSubscriptionKey(scope: WorkerServiceScope, subscriptionId: string
 }
 
 function toProtocolJsonValue(value: unknown): JsonValue {
-	if (!Check(JsonValueSchema, value)) throw new Error("Service produced invalid JSON");
+	if (!isJsonValue(value)) throw new Error("Service produced invalid JSON");
 	return value;
 }

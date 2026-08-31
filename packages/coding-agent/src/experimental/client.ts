@@ -82,7 +82,7 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 
 		const agent = match.agent;
 		const completedText = new Map<string, string>();
-		const replica = await openLaneReplica(match.transcript, sessionId, async (event) => {
+		const replica = await openLaneReplica(match.transcript, async (event) => {
 			if (event.type === "message_end" && event.runId !== undefined && event.message.role === "assistant") {
 				completedText.set(event.runId, messageText(event.message));
 			}

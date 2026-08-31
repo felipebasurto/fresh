@@ -5,10 +5,10 @@ import {
 	defineFacet,
 	type FacetHost,
 	type FacetLoader,
+	type JsonValue,
 	type LoadedFacets,
 } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { JsonValue } from "@earendil-works/pi-protocol";
 import {
 	CombinedAutocompleteProvider,
 	type Component,
@@ -331,7 +331,7 @@ export class ExperimentalClientTui implements Component {
 		this.#selectedServerId = feature.serverId;
 		this.#sessionId = prepared.summary.sessionId;
 		this.#updateAutocomplete();
-		await this.#openLane(feature, prepared.summary.sessionId);
+		await this.#openLane(feature);
 		this.#screen = "chat";
 		this.#status = "";
 		this.#rebuild();
@@ -464,9 +464,8 @@ export class ExperimentalClientTui implements Component {
 	#handleAttachmentState(feature: SessionFeature, state: SessionAttachmentState): void {
 		if (this.#closed || this.#selectedServerId !== feature.serverId || this.#sessionId === undefined) return;
 		if (state.status === "attached" && state.sessionId === this.#sessionId) {
-			const sessionId = this.#sessionId;
 			this.#queueRecovery(async () => {
-				if (this.#laneReplica === undefined) await this.#openLane(feature, sessionId);
+				if (this.#laneReplica === undefined) await this.#openLane(feature);
 				this.#busy = false;
 				this.#status = "";
 				this.#rebuild();
@@ -493,9 +492,9 @@ export class ExperimentalClientTui implements Component {
 			});
 	}
 
-	async #openLane(feature: SessionFeature, sessionId: string): Promise<void> {
+	async #openLane(feature: SessionFeature): Promise<void> {
 		await this.#closeLane();
-		const replica = await openLaneReplica(feature.transcript, sessionId);
+		const replica = await openLaneReplica(feature.transcript);
 		const view = new ExperimentalChatView(this.#ui, process.cwd());
 		view.apply(replica.state());
 		this.#laneReplica = replica;

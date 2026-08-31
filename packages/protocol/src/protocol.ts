@@ -1,10 +1,11 @@
-import { isJsonValue } from "@earendil-works/chord";
+import { isJsonValue, type JsonValue } from "@earendil-works/chord";
 import type { WireOp } from "@earendil-works/chord/delta";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
-import { type JsonValue, JsonValueSchema } from "./json-value.ts";
 
 export const PROTOCOL_VERSION = 8 as const;
+
+const OpaqueJsonValueSchema = Type.Unsafe<JsonValue>(Type.Unknown());
 
 const IdSchema = Type.String({ minLength: 1 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
@@ -45,7 +46,7 @@ export const ProtocolRpcCallSchema = StrictObject({
 	serviceId: Type.String({ minLength: 1 }),
 	instance: Type.Optional(ServiceInstanceAddressSchema),
 	member: Type.String({ minLength: 1 }),
-	args: Type.Array(JsonValueSchema),
+	args: Type.Array(OpaqueJsonValueSchema),
 });
 export type ProtocolRpcCall = Static<typeof ProtocolRpcCallSchema>;
 export type ProtocolRpcResult = JsonValue | undefined;
@@ -58,10 +59,10 @@ const DeltaNonEmptyPathRefSchema = Type.Union([DeltaNonEmptyPathSchema, Type.Int
 const DeltaOpsSchema = Type.Array(
 	Type.Unsafe<WireOp>(
 		Type.Union([
-			Type.Tuple([Type.Literal("r"), JsonValueSchema]),
+			Type.Tuple([Type.Literal("r"), OpaqueJsonValueSchema]),
 			Type.Tuple([Type.Literal("#"), Type.Integer({ minimum: 0 }), DeltaPathSchema]),
-			Type.Tuple([Type.Literal("s"), DeltaNonEmptyPathRefSchema, JsonValueSchema]),
-			Type.Tuple([Type.Literal("s"), JsonValueSchema]),
+			Type.Tuple([Type.Literal("s"), DeltaNonEmptyPathRefSchema, OpaqueJsonValueSchema]),
+			Type.Tuple([Type.Literal("s"), OpaqueJsonValueSchema]),
 			Type.Tuple([Type.Literal("d"), DeltaNonEmptyPathRefSchema]),
 			Type.Tuple([Type.Literal("d")]),
 			Type.Tuple([Type.Literal("a"), DeltaNonEmptyPathRefSchema, Type.String()]),
@@ -73,13 +74,13 @@ const DeltaOpsSchema = Type.Array(
 				DeltaPathRefSchema,
 				Type.Integer({ minimum: 0 }),
 				Type.Integer({ minimum: 0 }),
-				Type.Array(JsonValueSchema),
+				Type.Array(OpaqueJsonValueSchema),
 			]),
 			Type.Tuple([
 				Type.Literal("p"),
 				Type.Integer({ minimum: 0 }),
 				Type.Integer({ minimum: 0 }),
-				Type.Array(JsonValueSchema),
+				Type.Array(OpaqueJsonValueSchema),
 			]),
 		]),
 	),
@@ -279,7 +280,7 @@ const ResponseEnvelopeSchema = Type.Union([
 		type: Type.Literal("response"),
 		id: IdSchema,
 		ok: Type.Literal(true),
-		result: Type.Optional(JsonValueSchema),
+		result: Type.Optional(OpaqueJsonValueSchema),
 	}),
 	StrictObject({
 		type: Type.Literal("response"),

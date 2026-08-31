@@ -1,6 +1,12 @@
-import { type Context, RemoteServiceProvider, replicatedState, type ServiceSubscription } from "@earendil-works/chord";
+import {
+	type Context,
+	type JsonValue,
+	RemoteServiceProvider,
+	replicatedState,
+	type ServiceSubscription,
+} from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { decodeServiceControlCall, type JsonValue } from "@earendil-works/pi-protocol";
+import { decodeServiceControlCall } from "@earendil-works/pi-protocol";
 import type { RoutedServerServiceAttachment, RoutedServerServiceHost } from "@earendil-works/pi-server";
 import { PresentationPlugins } from "./plugins.ts";
 import {
