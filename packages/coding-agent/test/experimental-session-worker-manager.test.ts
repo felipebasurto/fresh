@@ -219,8 +219,6 @@ describe("Session worker operations", () => {
 				});
 			});
 		};
-		if (attachment.invokeService === undefined) throw new Error("Missing service attachment");
-
 		await expect(attachment.invokeService(serviceCall, () => {}, BACKGROUND_CONTEXT)).resolves.toEqual({
 			accepted: true,
 		});
@@ -257,8 +255,6 @@ describe("Session worker operations", () => {
 				}),
 			);
 		};
-		if (attachment.invokeService === undefined) throw new Error("Missing service attachment");
-
 		await expect(attachment.invokeService(serviceCall, () => {}, BACKGROUND_CONTEXT)).rejects.toThrow(
 			/mismatched operation response/,
 		);
@@ -288,8 +284,6 @@ describe("Session worker operations", () => {
 				}),
 			);
 		};
-		if (attachment.invokeService === undefined) throw new Error("Missing service attachment");
-
 		await expect(attachment.invokeService(serviceCall, () => {}, BACKGROUND_CONTEXT)).rejects.toThrow(
 			/invalid operation response/,
 		);
@@ -300,7 +294,6 @@ describe("Session worker operations", () => {
 	test("rejects pending service calls on replacement without stopping the worker", async () => {
 		const { coordinator, workers, attachment } = await createAttachedWorker();
 		coordinator.onSend = () => {};
-		if (attachment.invokeService === undefined) throw new Error("Missing service attachment");
 		const calling = attachment.invokeService(serviceCall, () => {}, BACKGROUND_CONTEXT);
 		workers.detach();
 

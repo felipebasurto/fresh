@@ -118,7 +118,7 @@ describe("Session protocol", () => {
 			openSession: async (candidate) => {
 				received = candidate;
 				return {
-					attachClient: () => ({ release() {} }),
+					attachClient: () => ({ invokeService: async () => undefined, release() {} }),
 					close: async () => {},
 				};
 			},
@@ -413,6 +413,7 @@ describe("routed Session acquisition failures", () => {
 					acquiring.resolve(undefined);
 					await continueAcquiring.promise;
 					return {
+						invokeService: async () => undefined,
 						release: () => {
 							releaseCount += 1;
 						},

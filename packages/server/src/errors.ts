@@ -6,7 +6,6 @@ type ServerOperationErrorCode =
 	| "session_not_found"
 	| "session_ambiguous"
 	| "session_not_attached"
-	| "not_supported"
 	| "server_draining";
 
 export const INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error";
@@ -47,13 +46,6 @@ export class SessionNotAttachedError extends ServerError {
 	constructor() {
 		super("session_not_attached", "Session is not attached to this client");
 		this.name = "SessionNotAttachedError";
-	}
-}
-
-export class NotSupportedError extends ServerError {
-	constructor(message: string) {
-		super("not_supported", message);
-		this.name = "NotSupportedError";
 	}
 }
 

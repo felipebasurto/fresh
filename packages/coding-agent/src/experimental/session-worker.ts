@@ -78,7 +78,6 @@ export const SessionWorkerMetadataSchema = StrictObject({
 	path: Type.String(),
 	modifiedAt: Type.Number(),
 	parentSessionId: Type.Optional(Type.String()),
-	legacyParentSessionPath: Type.Optional(Type.String()),
 });
 
 export const SessionWorkerOptionsSchema = StrictObject({
@@ -521,7 +520,7 @@ export type CreateSessionWorkerHarness = (
 	session: Session<JsonlSessionMetadata>,
 	options: SessionWorkerOptions,
 	executionEnv: NodeExecutionEnv,
-) => Promise<AgentHarnessInstance | SessionWorkerRuntime>;
+) => Promise<SessionWorkerRuntime>;
 
 async function run(options: SessionWorkerOptions, createHarness: CreateSessionWorkerHarness): Promise<void> {
 	const { sessionDir, metadata } = options;
@@ -545,8 +544,7 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 	let services: SessionWorkerServices | undefined;
 	try {
 		session = await repo.open(metadata, TODO_CONTEXT);
-		const created = await createHarness(session, options, executionEnv);
-		const runtime: SessionWorkerRuntime = "harness" in created ? created : { harness: created };
+		const runtime = await createHarness(session, options, executionEnv);
 		harness = runtime.harness;
 		lane = runtime.lane ?? (await harness.lane("main", TODO_CONTEXT));
 		services = await createSessionWorkerServices({

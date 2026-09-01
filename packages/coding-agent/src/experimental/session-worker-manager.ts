@@ -461,7 +461,15 @@ export class SessionWorkerManager {
 		try {
 			const options: SessionWorkerOptions = {
 				sessionDir: this.#sessionDir,
-				metadata,
+				metadata: {
+					id: metadata.id,
+					createdAt: metadata.createdAt,
+					storageVersion: metadata.storageVersion,
+					cwd: metadata.cwd,
+					path: metadata.path,
+					modifiedAt: metadata.modifiedAt,
+					...(metadata.parentSessionId === undefined ? {} : { parentSessionId: metadata.parentSessionId }),
+				},
 				pluginManifestPaths: [...pluginManifestPaths],
 				...(this.#model ?? {}),
 			};

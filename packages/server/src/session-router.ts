@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { JsonValue, ServiceCall, ServiceProviderUpdate } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, type Context, type SessionMetadata } from "@earendil-works/pi-agent-core";
 import type { RpcTarget, SessionTarget } from "@earendil-works/pi-protocol";
-import { NotSupportedError, ServerDrainingError, SessionNotAttachedError } from "./errors.ts";
+import { ServerDrainingError, SessionNotAttachedError } from "./errors.ts";
 import type { RoutedSessionAttachment, RoutedSessionHandle, ServerHost } from "./types.ts";
 
 class SessionCleanupError extends AggregateError {}
@@ -204,10 +204,7 @@ export class SessionRouter<TMetadata extends SessionMetadata = SessionMetadata> 
 		context: Context,
 	): Promise<{ result: Promise<JsonValue | undefined> }> {
 		const attachment = this.requireAttachment(client, target);
-		const invoke = attachment.lease?.invokeService;
-		if (invoke === undefined) throw new NotSupportedError("Routed Session does not support plugin services");
-		const result = invoke.call(
-			attachment.lease,
+		const result = attachment.lease!.invokeService(
 			call,
 			(subscriptionId, update, updateContext) => publish(subscriptionId, update, updateContext),
 			context,
