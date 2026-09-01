@@ -193,8 +193,12 @@ receiving host.
 
 To reload, load a candidate, pass its facets to `FacetHost.reload()`, dispose the
 candidate on failure, and dispose the retired `LoadedFacets` only after a
-successful cutover. Reload retains the host's existing shape-preservation rules.
-The bundler writes a complete temporary directory before replacing the previous
+successful cutover. The host activates and validates the candidate while the old
+providers remain routed, atomically replaces singleton targets, then drains calls
+admitted by the retired targets before resolving reload. Stable service handles
+therefore do not become unavailable during an ordinary reload. Keyed instances
+remain incarnation-specific and replacements receive fresh generations. The
+bundler writes a complete temporary directory before replacing the previous
 output, so loaders do not observe partially built generations.
 
 See [PLANNING.md](PLANNING.md) for the broader RPC and generation-loading
