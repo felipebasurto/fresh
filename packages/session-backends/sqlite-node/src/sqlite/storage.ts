@@ -155,10 +155,9 @@ export class SqliteStorage implements Storage {
 			(stored) => stored.address.namespace === sourceAddress.namespace && stored.address.key === sourceAddress.key,
 		) as StoredValue<string | null> | undefined;
 		if (sourceTip === undefined) throw new Error(`Unknown source branch: ${options.branch}`);
-		const requested = options.entryId ?? sourceTip.value;
-		return requested === null
+		return sourceTip.value === null
 			? []
-			: scanBranchEntries(this.db, this.sessionId, { start: requested, order: "oldestFirst" });
+			: scanBranchEntries(this.db, this.sessionId, { start: sourceTip.value, order: "oldestFirst" });
 	}
 
 	private applyCommit(writes: Write[]): CommitResult {

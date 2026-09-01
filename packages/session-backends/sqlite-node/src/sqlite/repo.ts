@@ -114,8 +114,9 @@ function readForkSourceEntries(
 		(stored) => stored.address.namespace === sourceAddress.namespace && stored.address.key === sourceAddress.key,
 	) as StoredValue<string | null> | undefined;
 	if (sourceTip === undefined) throw new Error(`Unknown source branch: ${options.branch}`);
-	const requested = options.entryId ?? sourceTip.value;
-	return requested === null ? [] : scanBranchEntries(db, sessionId, { start: requested, order: "oldestFirst" });
+	return sourceTip.value === null
+		? []
+		: scanBranchEntries(db, sessionId, { start: sourceTip.value, order: "oldestFirst" });
 }
 
 function createSqliteForkSnapshot(
