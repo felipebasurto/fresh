@@ -8,6 +8,7 @@ import {
 	parseServiceCatalogue,
 	parseWireServiceProviderUpdate,
 	parseWireServiceSubscriptionSnapshot,
+	type RemoteServiceTransport,
 	type ServiceCall,
 	type ServiceCatalogueEntry,
 	type ServiceMode,
@@ -15,6 +16,7 @@ import {
 	type ServiceStateDecoder,
 	type ServiceSubscriptionSnapshot,
 } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	type AttachmentEnvelope,
 	encodeClientMessage,
@@ -440,6 +442,35 @@ export class Client {
 			// Diagnostics cannot affect protocol or transport state.
 		}
 	}
+}
+
+/** Adapts a lazily resolved routed client target to a Chord service transport. */
+export function createClientServiceTransport(
+	client: Client,
+	getTarget: () => RpcTarget | undefined,
+): RemoteServiceTransport {
+	const target = (): RpcTarget => {
+		const resolved = getTarget();
+		if (resolved === undefined) throw new Error("Remote service target is unavailable");
+		return resolved;
+	};
+	return {
+		invoke: async (call, context) => client.request(target(), call, context.abortSignal),
+		async subscribe(serviceId, mode, listener, context) {
+			const subscription = await client.subscribeService(
+				target(),
+				serviceId,
+				mode,
+				(update) => listener(update, BACKGROUND_CONTEXT),
+				context.abortSignal,
+			);
+			return {
+				snapshot: subscription.snapshot,
+				activate: () => subscription.start(),
+				close: () => subscription.dispose(),
+			};
+		},
+	};
 }
 
 function abortError(signal: AbortSignal): Error {

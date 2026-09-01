@@ -2,6 +2,7 @@ import { createConnection, type Socket } from "node:net";
 import { isAbsolute } from "node:path";
 import {
 	isJsonValue,
+	type JsonValue,
 	parseServiceProviderUpdate,
 	REMOTE_SERVICE_ERROR_CODES,
 	RemoteServiceError,
@@ -40,16 +41,16 @@ import {
 } from "./process.ts";
 import {
 	createSessionWorkerServices,
-	type ServiceOperationResult,
-	ServiceOperationResultSchema,
 	type SessionWorkerRuntime,
 	type SessionWorkerServices,
+	type WorkerServiceScope,
 } from "./services/worker.ts";
 
 export type { SessionWorkerRuntime } from "./services/worker.ts";
 
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 	Type.Object(properties, { additionalProperties: false });
+const OpaqueJsonValueSchema = Type.Unsafe<JsonValue>(Type.Unknown());
 const ServiceCallSchema = Type.Unsafe<ServiceCall>(
 	StrictObject({
 		serviceId: Type.String({ minLength: 1 }),
@@ -93,7 +94,7 @@ export const WorkerOperationScopeSchema = StrictObject({
 	serverConnectionId: Type.String(),
 	attachmentId: Type.String(),
 });
-export type WorkerOperationScope = Static<typeof WorkerOperationScopeSchema>;
+export type WorkerOperationScope = WorkerServiceScope;
 
 export const WorkerOperationRequestSchema = StrictObject({
 	type: Type.Literal("operation"),
@@ -108,7 +109,7 @@ export const WorkerOperationResponseSchema = Type.Union([
 		type: Type.Literal("operation_result"),
 		requestId: Type.String({ minLength: 1 }),
 		scope: WorkerOperationScopeSchema,
-		result: ServiceOperationResultSchema,
+		result: Type.Optional(OpaqueJsonValueSchema),
 	}),
 	StrictObject({
 		type: Type.Literal("operation_error"),
@@ -632,13 +633,18 @@ async function run(options: SessionWorkerOptions, createHarness: CreateSessionWo
 		try {
 			releaseRequest = lifecycle!.beginRequest(request.scope.serverConnectionId, request.scope.attachmentId);
 			activeRequests.set(request.requestId, { scope: request.scope, cancel: cancellable.cancel });
-			const serviceResult = await services.invoke(request.call, request.scope, cancellable.context);
-			const result: ServiceOperationResult = serviceResult === undefined ? {} : { result: serviceResult };
+			const result = await services.invoke(request.call, request.scope, cancellable.context);
+			if (result !== undefined && !isJsonValue(result)) throw new Error("Service produced a non-JSON result");
 			await control.send({
 				type: "operation_response",
 				token,
 				sessionKey,
-				response: { type: "operation_result", requestId: request.requestId, scope: request.scope, result },
+				response: {
+					type: "operation_result",
+					requestId: request.requestId,
+					scope: request.scope,
+					...(result === undefined ? {} : { result }),
+				},
 			});
 		} catch (error) {
 			let code: RemoteServiceErrorCode | undefined;

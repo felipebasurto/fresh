@@ -68,10 +68,11 @@ prefix is `$chord.*`.
 
 ## Remote service adapters
 
-Chord owns its transport-independent service wire grammar. Adapters use
-`createServiceCatalogueCall()`, `createServiceSubscribeCall()`, and
-`createServiceUnsubscribeCall()` for `$chord.service` control calls, then
-`decodeServiceControlCall()` on the provider side. `parseServiceCall()`,
+Chord owns its transport-independent service wire grammar. Consumer adapters
+use `createServiceCatalogueCall()`, `createServiceSubscribeCall()`, and
+`createServiceUnsubscribeCall()` for `$chord.service` control calls.
+`createRemoteServiceEndpoint()` handles those calls for one provider consumer,
+including subscription activation and cleanup. `parseServiceCall()`,
 `parseServiceCatalogue()`, and the decoded/wire snapshot and update parsers
 validate Chord semantics after an adapter has established a strict-JSON
 boundary. `RemoteServiceErrorCode` and `REMOTE_SERVICE_ERROR_CODES` define the

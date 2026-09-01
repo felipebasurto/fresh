@@ -31,7 +31,6 @@ import { InteractiveThemeController } from "../modes/interactive/theme/theme-con
 import { createInteractiveTui } from "../modes/interactive/tui-renderer.ts";
 import { type OpenClientRuntimeOptions, openClientRuntime } from "./client-runtime.ts";
 import { ExperimentalChatView } from "./client-tui-chat.ts";
-import { type LaneReplica, openLaneReplica } from "./lane-replica.ts";
 import { createPresentationFacetLoaders } from "./plugins/bundled.ts";
 import { AgentController, type AgentOperationResponse, type AgentQueueResponse } from "./services/agent-controller.ts";
 import type {
@@ -119,7 +118,6 @@ export class ExperimentalClientTui implements Component {
 	#closed = false;
 	#closePromise: Promise<void> | undefined;
 	#recoveryTransition: Promise<void> = Promise.resolve();
-	#laneReplica: LaneReplica | undefined;
 	#laneUnsubscribe: (() => void) | undefined;
 	#chatView: ExperimentalChatView | undefined;
 
@@ -221,7 +219,7 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	refreshTheme(): void {
-		const snapshot = this.#laneReplica?.state();
+		const snapshot = this.#laneSnapshot();
 		if (snapshot !== undefined) this.#chatView?.refreshTheme(snapshot);
 		this.#rebuild();
 	}
@@ -448,7 +446,7 @@ export class ExperimentalClientTui implements Component {
 	#handleConnectionState(serverId: string, state: ServerConnectionState): void {
 		if (this.#closed || this.#selectedServerId !== serverId) return;
 		if (state.status === "connected") {
-			if (this.#laneReplica === undefined) {
+			if (this.#laneUnsubscribe === undefined) {
 				this.#busy = true;
 				this.#status = "Reattaching Session…";
 				this.#rebuild();
@@ -465,7 +463,7 @@ export class ExperimentalClientTui implements Component {
 		if (this.#closed || this.#selectedServerId !== feature.serverId || this.#sessionId === undefined) return;
 		if (state.status === "attached" && state.sessionId === this.#sessionId) {
 			this.#queueRecovery(async () => {
-				if (this.#laneReplica === undefined) await this.#openLane(feature);
+				if (this.#laneUnsubscribe === undefined) await this.#openLane(feature);
 				this.#busy = false;
 				this.#status = "";
 				this.#rebuild();
@@ -494,18 +492,20 @@ export class ExperimentalClientTui implements Component {
 
 	async #openLane(feature: SessionFeature): Promise<void> {
 		await this.#closeLane();
-		const replica = await openLaneReplica(feature.transcript);
 		const view = new ExperimentalChatView(this.#ui, process.cwd());
-		view.apply(replica.state());
-		this.#laneReplica = replica;
 		this.#chatView = view;
 		this.#documentContainer.addChild(this.#sessionHeading);
 		this.#documentContainer.addChild(view.transcript);
 		this.#pendingMessagesContainer.addChild(view.pendingMessages);
-		this.#laneUnsubscribe = replica.subscribe(() => {
-			view.apply(replica.state());
+		this.#laneUnsubscribe = feature.transcript.state.subscribe((value) => {
+			if (value.snapshot === null) return;
+			view.apply(value.snapshot);
 			this.#rebuild();
 		});
+		if (feature.transcript.state.value?.snapshot === null || feature.transcript.state.value?.snapshot === undefined) {
+			await this.#closeLane();
+			throw new Error("Transcript has no initialized snapshot");
+		}
 	}
 
 	async #closeLane(): Promise<void> {
@@ -516,9 +516,6 @@ export class ExperimentalClientTui implements Component {
 		this.#documentContainer.clear();
 		this.#pendingMessagesContainer.clear();
 		this.#statusContainer.clear();
-		const replica = this.#laneReplica;
-		this.#laneReplica = undefined;
-		await replica?.close();
 	}
 
 	async #runPrompt(messageText: string): Promise<void> {
@@ -565,7 +562,7 @@ export class ExperimentalClientTui implements Component {
 	async #submitPrompt(prompt: string): Promise<void> {
 		const controller = this.#selectedController();
 		if (controller === undefined) throw new Error("No Session AgentController service is available");
-		const operation = this.#laneReplica?.state().operation;
+		const operation = this.#laneSnapshot()?.operation;
 		const running = operation !== null && operation !== undefined;
 		this.#status = running ? "Queueing steering message…" : "Running turn…";
 		this.#rebuild();
@@ -601,7 +598,7 @@ export class ExperimentalClientTui implements Component {
 	}
 
 	#interrupt(): void {
-		const operation = this.#laneReplica?.state().operation;
+		const operation = this.#laneSnapshot()?.operation;
 		const controller = this.#selectedController();
 		if (operation === null || operation === undefined || controller === undefined) return;
 		this.#status = `Aborting ${operation.id}…`;
@@ -616,8 +613,13 @@ export class ExperimentalClientTui implements Component {
 		return this.#controller;
 	}
 
+	#laneSnapshot() {
+		const snapshot = this.#session?.transcript.state.value?.snapshot;
+		return snapshot === null ? undefined : snapshot;
+	}
+
 	#footer(): string {
-		const snapshot = this.#laneReplica?.state();
+		const snapshot = this.#laneSnapshot();
 		if (!snapshot) return "/model · /thinking · /compact · /reload";
 		return `${snapshot.configuration.model.provider}/${snapshot.configuration.model.modelId} · thinking:${snapshot.configuration.thinkingLevel} · ${snapshot.stats.messageCount} messages · /model · /thinking · /compact · /reload`;
 	}

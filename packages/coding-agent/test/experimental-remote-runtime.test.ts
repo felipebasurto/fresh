@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ExampleFacetService } from "../examples/plugins/pi-example-plugin/src/contract.ts";
 import { runClient } from "../src/experimental/client.ts";
 import { activateBuiltinClientServices, openClientRuntime } from "../src/experimental/client-runtime.ts";
-import { openLaneReplica } from "../src/experimental/lane-replica.ts";
 import { createPresentationFacetLoaders } from "../src/experimental/plugins/bundled.ts";
 import * as processRuntime from "../src/experimental/process.ts";
 import { type RunningServer, startServer } from "../src/experimental/server.ts";
@@ -645,20 +644,18 @@ describe("experimental durable server composition", () => {
 		const transcript = services.use(Transcript);
 		await services.ready(BACKGROUND_CONTEXT);
 		await services.use(SessionPlugins).reload(BACKGROUND_CONTEXT);
-		const replica = await openLaneReplica(transcript);
 		try {
 			for (const message of ["first question", "second question"]) {
 				const response = await controller.prompt({ message, images: null }, BACKGROUND_CONTEXT);
 				expect(response).toMatchObject({ accepted: true, operationId: expect.any(String) });
 				await vi.waitFor(() => {
-					expect(replica.state()).toMatchObject({
+					expect(transcript.state.value?.snapshot).toMatchObject({
 						operation: null,
 						lastResult: { operationId: response.operationId },
 					});
 				});
 			}
 		} finally {
-			await replica.close();
 			await services.dispose(BACKGROUND_CONTEXT);
 		}
 	});

@@ -19,7 +19,6 @@ import { type RoutedSessionAttachment, type RoutedSessionHandle, ServerError } f
 import { Check } from "typebox/value";
 import type { CoordinatorConnection, CoordinatorConnectionEvent } from "./coordinator.ts";
 import { spawnInternalProcess } from "./process.ts";
-import type { ServiceOperationResult } from "./services/worker.ts";
 import {
 	SESSION_WORKER_CONTROL_ADDRESS_ENV,
 	SESSION_WORKER_CONTROL_TOKEN_ENV,
@@ -72,7 +71,7 @@ interface PendingWorkerOperation {
 	readonly worker: WorkerRecord;
 	readonly scope: WorkerOperationScope;
 	cleanup(): void;
-	resolve(result: ServiceOperationResult): void;
+	resolve(result: JsonValue | undefined): void;
 	reject(error: Error): void;
 }
 
@@ -259,7 +258,7 @@ export class SessionWorkerManager {
 			});
 			addedSubscriptionKey = key;
 		}
-		let response: ServiceOperationResult;
+		let response: JsonValue | undefined;
 		try {
 			response = await this.#invoke(worker, scope, call, context);
 		} catch (error) {
@@ -277,7 +276,7 @@ export class SessionWorkerManager {
 		if (control?.type === "unsubscribe") {
 			this.#serviceSubscriptions.delete(scopedServiceSubscriptionKey(scope, control.subscriptionId));
 		}
-		return response.result;
+		return response;
 	}
 
 	async #applyDemand(
@@ -324,7 +323,7 @@ export class SessionWorkerManager {
 		scope: WorkerOperationScope,
 		call: ServiceCall,
 		context: Context,
-	): Promise<ServiceOperationResult> {
+	): Promise<JsonValue | undefined> {
 		try {
 			this.#operationScope(worker, scope.attachmentId);
 		} catch (error) {
@@ -332,9 +331,9 @@ export class SessionWorkerManager {
 		}
 		if (context.abortSignal?.aborted) return Promise.reject(abortError(context.abortSignal));
 		const requestId = randomUUID();
-		let resolve!: (result: ServiceOperationResult) => void;
+		let resolve!: (result: JsonValue | undefined) => void;
 		let reject!: (error: Error) => void;
-		const result = new Promise<ServiceOperationResult>((resolvePromise, rejectPromise) => {
+		const result = new Promise<JsonValue | undefined>((resolvePromise, rejectPromise) => {
 			resolve = resolvePromise;
 			reject = rejectPromise;
 		});
