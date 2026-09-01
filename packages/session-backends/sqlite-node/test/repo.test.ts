@@ -577,7 +577,11 @@ describe("SqliteSessionRepo", () => {
 			);
 
 			await source.close(BACKGROUND_CONTEXT);
-			const fork = await repo.fork(source.metadata, { id: "fork", entryId: "child" }, BACKGROUND_CONTEXT);
+			const fork = await repo.fork(
+				source.metadata,
+				{ id: "fork", scope: "branch", branch: "main", entryId: "child" },
+				BACKGROUND_CONTEXT,
+			);
 
 			await withDb(fork.metadata.path, (db) => {
 				expect(
@@ -776,7 +780,11 @@ describe("SqliteSessionRepo", () => {
 				BACKGROUND_CONTEXT,
 			);
 
-			const fork = await rightRepo.fork(left.metadata, { id: "fork-left" }, BACKGROUND_CONTEXT);
+			const fork = await rightRepo.fork(
+				left.metadata,
+				{ id: "fork-left", scope: "branch", branch: "main" },
+				BACKGROUND_CONTEXT,
+			);
 			expect((await fork.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)).map(({ id }) => id)).toEqual([
 				"left-root",
 			]);
@@ -827,7 +835,11 @@ describe("SqliteSessionRepo", () => {
 					now: () => 2,
 				});
 
-				const first = await serverRepo.fork(source.metadata, { id: "first-fork" }, BACKGROUND_CONTEXT);
+				const first = await serverRepo.fork(
+					source.metadata,
+					{ id: "first-fork", scope: "branch", branch: "main" },
+					BACKGROUND_CONTEXT,
+				);
 
 				expect(laterCommitCompleted).toBe(true);
 				expect(databaseFactory.readOnlyOpenCount).toBe(1);
@@ -841,7 +853,11 @@ describe("SqliteSessionRepo", () => {
 				);
 				expect((await first.getStats(BACKGROUND_CONTEXT)).messageCount).toBe(0);
 
-				const second = await serverRepo.fork(source.metadata, { id: "second-fork" }, BACKGROUND_CONTEXT);
+				const second = await serverRepo.fork(
+					source.metadata,
+					{ id: "second-fork", scope: "branch", branch: "main" },
+					BACKGROUND_CONTEXT,
+				);
 				expect(databaseFactory.readOnlyOpenCount).toBe(2);
 				expect((await second.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)).map(({ id }) => id)).toEqual([
 					"root",
