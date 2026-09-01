@@ -22,7 +22,7 @@ Base everything on a clean checkout of `origin/dev`.
 **Three units ship working code. Four are specifications.** The table above says
 which. Do not assume a doc describes something that exists.
 
-**`01-delta/FINDINGS.md` is not optional.** The production implementation now lives in `packages/chord/src/delta/index.ts`. Its flush-time dirty-tree design fixes D1 (interleaved paths no longer retain one op per write); D2 remains relevant to rolling-window producers that assign sliced strings, but its 94.5% figure predates flush-time tracking. Re-measure it against production Chord and add an explicit append/truncate producer API before `04-tool-output` if it remains hot. The code beside the handoff is historical prototype evidence, not production source.
+**`01-delta/FINDINGS.md` is historical evidence, not an implementation queue.** Production lives in `packages/chord/src/delta/index.ts`: flush-time dirty tracking fixed D1, and production remeasurement closed D2. The explicit append/truncate API is rejected; see [`01-harness/01-delta/append-decision.md`](01-harness/01-delta/append-decision.md). The code beside the handoff remains prototype and benchmark evidence.
 
 **If a doc and the code disagree, the code wins** — fix the doc and say so in the
 commit.
@@ -39,7 +39,7 @@ five more measurement traps, each of which produced a confident wrong conclusion
 
 | unit | ships | state |
 | --- | --- | --- |
-| **01-delta** | production implementation and tests in `packages/chord`; prototype evidence here | landed; D1 fixed by flush-time tracking, D2 remains for rolling-window producers |
+| **01-delta** | production implementation and tests in `packages/chord`; prototype evidence here | landed; D1 fixed, explicit text API rejected after production remeasurement |
 | **02-scopes** | spec + `scopes.variance.ts` | spec aligned to code; not implemented. The variance check compiles. |
 | **03-execenv** | impl, rewritten bash, 2 diffs, spec | ran green (29 tests). **Its checkpoint policy is wrong** — see `04-tool-output/rate-limiting.md` §5 |
 | **04-tool-output** | spec + design notes | **not built.** The piece every measurement of the op encoding depends on |
@@ -49,11 +49,10 @@ five more measurement traps, each of which produced a confident wrong conclusion
 
 ## Suggested order
 
-1. **`01-delta` D2** — re-measure against production Chord; if it remains hot, add the explicit append/truncate producer API before the rolling tool-output path depends on it.
-2. **`03-execenv`** — land the shipped code, minus the checkpoint policy and the two redundant knobs (`rate-limiting.md` §5).
-3. **`02-scopes`** — the compiler finds the call sites for you once `Write<Sc>` is invariant.
-4. **`04-tool-output`** — decide the cadence question first (`rate-limiting.md` §4.3 lists what is undecided), then build.
-5. **05**, then **02-plugins**.
+1. **`03-execenv`** — land the shipped code, minus the checkpoint policy and the two redundant knobs (`rate-limiting.md` §5).
+2. **`02-scopes`** — the compiler finds the call sites for you once `Write<Sc>` is invariant.
+3. **`04-tool-output`** — decide the cadence question first (`rate-limiting.md` §4.3 lists what is undecided), then build.
+4. **05**, then **02-plugins**.
 
 ## Live bugs on `origin/dev`, independent of this design
 

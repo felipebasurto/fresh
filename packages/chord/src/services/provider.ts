@@ -13,9 +13,11 @@ import type {
 	ServiceSubscription,
 	ServiceSubscriptionSnapshot,
 } from "../types.ts";
+import { CallTracker } from "./calls.ts";
 import { RemoteServiceError } from "./errors.ts";
 import { serviceDeliveryContext } from "./state.ts";
 import { getReplicatedStateInternals, type ReplicatedStateInternals } from "./state-internals.ts";
+import { decodeServiceControlCall } from "./wire.ts";
 
 type RemoteMethod = (...args: unknown[]) => unknown;
 
@@ -35,6 +37,7 @@ interface ProviderInstance {
 	readonly implementation: object;
 	readonly members: ReadonlyMap<string, InstanceMember>;
 	readonly removeMemberListeners: readonly (() => void)[];
+	readonly calls: CallTracker;
 	active: boolean;
 }
 
@@ -59,6 +62,18 @@ interface ServiceRegistration {
 	readonly instances: Map<string, ProviderInstance>;
 	readonly generations: Map<string, number>;
 	readonly subscribers: Set<ProviderSubscriber>;
+}
+
+export type ServiceUpdatePublisher = (
+	subscriptionId: string,
+	update: ServiceProviderUpdate,
+	context: Context,
+) => void | Promise<void>;
+
+/** Hosts one provider for one remote consumer and owns that consumer's subscriptions. */
+export interface RemoteServiceEndpoint {
+	invoke(call: ServiceCall, publish: ServiceUpdatePublisher, context: Context): Promise<JsonValue | undefined>;
+	dispose(): void;
 }
 
 export class RemoteServiceProvider {
@@ -110,18 +125,20 @@ export class RemoteServiceProvider {
 		registration.singletonShape = shape;
 	}
 
-	/** Disconnect one singleton while preserving its active subscriptions and remote facades. */
-	withdraw<T>(service: Service<T>): void {
+	/** Disconnect one singleton and resolve after calls admitted by the retired target settle. */
+	withdraw<T>(service: Service<T>): Promise<void> {
 		this.#assertActive();
 		this.#assertRemotable(service);
 		this.#assertAllowed(service.id);
 		const registration = this.#registration(service.id, "singleton");
 		const previous = registration.singleton;
-		if (previous === undefined) return;
+		if (previous === undefined) return Promise.resolve();
 		previous.active = false;
 		for (const remove of previous.removeMemberListeners) remove();
 		delete registration.singleton;
+		const retired = previous.calls.retire();
 		this.#emit(registration, { type: "unavailable" });
+		return retired;
 	}
 
 	/** Check a singleton replacement without changing the active provider. */
@@ -134,8 +151,8 @@ export class RemoteServiceProvider {
 		this.#assertSingletonShape(registration, serviceMemberShape(classified.members));
 	}
 
-	/** Replace one singleton while preserving its active subscriptions and remote facades. */
-	replace<T>(service: Service<T>, implementation: NoInfer<RemoteServiceContract<T>>): void {
+	/** Replace one singleton immediately and resolve after calls admitted by the retired target settle. */
+	replace<T>(service: Service<T>, implementation: NoInfer<RemoteServiceContract<T>>): Promise<void> {
 		this.#assertActive();
 		this.#assertRemotable(service);
 		this.#assertAllowed(service.id);
@@ -151,7 +168,9 @@ export class RemoteServiceProvider {
 		}
 		registration.singleton = replacement;
 		registration.singletonShape = shape;
+		const retired = previous?.calls.retire() ?? Promise.resolve();
 		this.#emit(registration, { type: "replaced", snapshot: this.#snapshotInstance(replacement) });
+		return retired;
 	}
 
 	use<T>(service: Service<T>): T {
@@ -185,14 +204,17 @@ export class RemoteServiceProvider {
 		registration.instances.set(key, instance);
 		this.#emit(registration, { type: "spawned", instance: this.#snapshotInstance(instance) });
 		let closed = false;
+		let retired: Promise<void> | undefined;
 		return () => {
-			if (closed) return;
+			if (closed) return retired;
 			closed = true;
-			if (registration.instances.get(key) !== instance) return;
+			if (registration.instances.get(key) !== instance) return undefined;
 			instance.active = false;
 			for (const remove of instance.removeMemberListeners) remove();
 			registration.instances.delete(key);
+			retired = instance.calls.retire();
 			this.#emit(registration, { type: "closed", instance: address });
+			return retired;
 		};
 	}
 
@@ -217,7 +239,9 @@ export class RemoteServiceProvider {
 				`Remote service member ${call.serviceId}.${call.member} is not a method`,
 			);
 		}
-		const result: unknown = await Reflect.apply(member.method, instance.implementation, [...call.args, context]);
+		const result: unknown = await instance.calls.run(() =>
+			Reflect.apply(member.method, instance.implementation, [...call.args, context]),
+		);
 		return result as JsonValue | undefined;
 	}
 
@@ -328,6 +352,7 @@ export class RemoteServiceProvider {
 			implementation: classified.implementation,
 			members: classified.members,
 			removeMemberListeners,
+			calls: new CallTracker(),
 			active: true,
 		};
 		for (const [name, member] of classified.members) {
@@ -467,6 +492,44 @@ export class RemoteServiceProvider {
 	#assertActive(): void {
 		if (this.#disposed) throw new Error("Remote service provider is disposed");
 	}
+}
+
+export function createRemoteServiceEndpoint(provider: RemoteServiceProvider): RemoteServiceEndpoint {
+	const subscriptions = new Map<string, ServiceSubscription>();
+	let disposed = false;
+
+	return {
+		async invoke(call, publish, context) {
+			if (disposed) throw new Error("Remote service endpoint is disposed");
+			const control = decodeServiceControlCall(call);
+			if (control?.type === "catalogue") return provider.catalogue as unknown as JsonValue;
+			if (control?.type === "subscribe") {
+				if (subscriptions.has(control.subscriptionId)) {
+					throw new Error("Service subscription ID is already active");
+				}
+				const subscription = provider.subscribe(control.serviceId, control.mode, (update, updateContext) => {
+					void Promise.resolve(publish(control.subscriptionId, update, updateContext)).catch(() => {});
+				});
+				subscriptions.set(control.subscriptionId, subscription);
+				subscription.activate();
+				return subscription.snapshot as unknown as JsonValue;
+			}
+			if (control?.type === "unsubscribe") {
+				const subscription = subscriptions.get(control.subscriptionId);
+				if (subscription === undefined) throw new Error("Service subscription was not found");
+				subscription.close();
+				subscriptions.delete(control.subscriptionId);
+				return undefined;
+			}
+			return provider.invoke(call, context);
+		},
+		dispose() {
+			if (disposed) return;
+			disposed = true;
+			for (const subscription of subscriptions.values()) subscription.close();
+			subscriptions.clear();
+		},
+	};
 }
 
 export function validateRemoteServiceImplementation(serviceId: string, implementation: unknown): void {
