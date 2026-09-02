@@ -49,5 +49,7 @@ export function createPresentationFacetLoaders(data: JsonValue): readonly FacetL
 }
 
 function resolvePluginExternal(specifier: string): string | undefined {
-	return specifier === PI_PLUGIN_API ? import.meta.resolve(specifier) : undefined;
+	if (specifier !== PI_PLUGIN_API) return undefined;
+	const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
+	return new URL(`../plugin.${extension}`, import.meta.url).href;
 }
