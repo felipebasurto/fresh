@@ -51,6 +51,7 @@ type RenderSessionContextThis = {
 	getRegisteredToolDefinition(toolName: string): undefined;
 	maybeShowAssistantDiagnostics(message: AssistantMessage): void;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
+	maybeShowAssistantDiagnostics(message: AssistantMessage): void;
 	renderSessionItems: RenderSessionItems;
 };
 
