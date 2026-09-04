@@ -10,6 +10,10 @@
 
 - Added a `TuiAltScreen` `scrollToEndIndicator` option that renders a clickable jump-to-end label on a follow-end primary scroll view while it is scrolled away from the end ([#9080](https://github.com/earendil-works/pi/pull/9080) by [@rwachtler](https://github.com/rwachtler)).
 
+### Changed
+
+- Reduced fullscreen transcript search latency on large transcripts by caching unchanged search results, indexing ASCII runs, and limiting highlight work to visible matches.
+
 ## [0.84.4] - 2026-08-28
 
 ### Added
