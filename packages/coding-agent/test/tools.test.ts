@@ -88,7 +88,11 @@ describe("Coding Agent Tools", () => {
 			expect(getTextOutput(result)).toBe(content);
 			// No truncation message since file fits within limits
 			expect(getTextOutput(result)).not.toContain("Use offset=");
-			expect(result.details).toBeUndefined();
+			// FreshCtx observation rides in details; user-visible output is unchanged.
+			expect(result.details).not.toHaveProperty("truncation");
+			expect(result.details).toMatchObject({
+				freshctxObs: expect.objectContaining({ obsId: "test-call-1", status: "observed" }),
+			});
 		});
 
 		it("should handle non-existent files", async () => {

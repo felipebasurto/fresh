@@ -6,6 +6,12 @@ import { type Static, Type } from "typebox";
 import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
+import {
+	buildImageReadObservation,
+	buildTextReadObservation,
+	detectLocalSymlink,
+	type FreshCtxReadObservation,
+} from "../freshctx/observations.ts";
 import { resolveReadPathAsync } from "./path-utils.ts";
 import { readRenderers } from "./renderers/read.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -26,6 +32,12 @@ export type ReadToolInput = Static<typeof readSchema>;
 
 export interface ReadToolDetails {
 	truncation?: TruncationResult;
+	/**
+	 * Exact source observation for FreshCtx. Computed from the same buffer
+	 * used to produce the result; never affects user-visible output.
+	 * Absent only when the read failed (thrown error, no result to link).
+	 */
+	freshctxObs?: FreshCtxReadObservation;
 }
 
 /**
@@ -76,7 +88,7 @@ export function createReadToolDefinition(
 		parameters: readSchema,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		async execute(
-			_toolCallId,
+			toolCallId,
 			{ path, offset, limit }: { path: string; offset?: number; limit?: number },
 			signal?: AbortSignal,
 			_onUpdate?,
@@ -103,6 +115,9 @@ export function createReadToolDefinition(
 							await ops.access(absolutePath);
 							if (aborted) return;
 							const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
+							if (aborted) return;
+							const symlink = await detectLocalSymlink(absolutePath);
+							if (aborted) return;
 							let content: (TextContent | ImageContent)[];
 							let details: ReadToolDetails | undefined;
 							const nonVisionImageNote = getNonVisionImageNote(ctx?.model);
@@ -123,6 +138,16 @@ export function createReadToolDefinition(
 										{ type: "image", data: processed.data, mimeType: processed.mimeType },
 									];
 								}
+								details = {
+									freshctxObs: buildImageReadObservation({
+										obsId: toolCallId,
+										absolutePath,
+										cwd: ctx?.cwd || cwd,
+										buffer,
+										mimeType: processed.ok ? processed.mimeType : mimeType,
+										symlink,
+									}),
+								};
 							} else {
 								// Read text content.
 								const buffer = await ops.readFile(absolutePath);
@@ -149,11 +174,17 @@ export function createReadToolDefinition(
 								// Apply truncation, respecting both line and byte limits.
 								const truncation = truncateHead(selectedContent);
 								let outputText: string;
+								// Lines of the selected slice actually shown (before notices).
+								let shownLineCount: number;
+								let userLimited = false;
+								let firstLineExceedsLimit = false;
 								if (truncation.firstLineExceedsLimit) {
 									// First line alone exceeds the byte limit. Point the model at a bash fallback.
 									const firstLineSize = formatSize(Buffer.byteLength(allLines[startLine], "utf-8"));
 									outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${path} | head -c ${DEFAULT_MAX_BYTES}]`;
 									details = { truncation };
+									shownLineCount = 0;
+									firstLineExceedsLimit = true;
 								} else if (truncation.truncated) {
 									// Truncation occurred. Build an actionable continuation notice.
 									const endLineDisplay = startLineDisplay + truncation.outputLines - 1;
@@ -165,15 +196,37 @@ export function createReadToolDefinition(
 										outputText += `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Use offset=${nextOffset} to continue.]`;
 									}
 									details = { truncation };
+									shownLineCount = truncation.outputLines;
 								} else if (userLimitedLines !== undefined && startLine + userLimitedLines < allLines.length) {
 									// User-specified limit stopped early, but the file still has more content.
 									const remaining = allLines.length - (startLine + userLimitedLines);
 									const nextOffset = startLine + userLimitedLines + 1;
 									outputText = `${truncation.content}\n\n[${remaining} more lines in file. Use offset=${nextOffset} to continue.]`;
+									shownLineCount = userLimitedLines;
+									userLimited = true;
 								} else {
 									// No truncation and no remaining user-limited content.
 									outputText = truncation.content;
+									shownLineCount = allLines.length - startLine;
 								}
+								details = {
+									...details,
+									freshctxObs: buildTextReadObservation({
+										obsId: toolCallId,
+										absolutePath,
+										cwd: ctx?.cwd || cwd,
+										buffer,
+										allLines,
+										startLine,
+										shownLineCount,
+										totalFileLines,
+										truncated: truncation.truncated,
+										truncatedBy: truncation.truncatedBy,
+										userLimited,
+										firstLineExceedsLimit,
+										symlink,
+									}),
+								};
 								content = [{ type: "text", text: outputText }];
 							}
 

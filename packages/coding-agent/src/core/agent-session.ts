@@ -96,6 +96,24 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { buildRetainedRefsMessage, FRESHCTX_REFS_CUSTOM_TYPE, stripTrackedBodies } from "./freshctx/compaction-view.ts";
+import { FRESHCTX_OBSERVATION_CUSTOM_TYPE, type FreshCtxReadObservation } from "./freshctx/observations.ts";
+import { FRESHCTX_PREPARE_ADAPTER, FreshCtxBlockedError, FreshCtxRequestPreparer } from "./freshctx/prepare-context.ts";
+import {
+	createFreshCtxInspectToolDefinition,
+	createFreshCtxRecoverToolDefinition,
+	type FreshCtxInspection,
+} from "./freshctx/recover-tool.ts";
+import { FreshCtxRuntime } from "./freshctx/runtime.ts";
+import {
+	collectPersistedUnits,
+	FRESHCTX_SESSION_STATE_VERSION,
+	FRESHCTX_UNITS_CUSTOM_TYPE,
+	type FreshCtxResolvedUnit,
+	refreshSessionObservations,
+	resolvedUnitsEqual,
+	withFreshCtxViewMarker,
+} from "./freshctx/session-state.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -225,8 +243,27 @@ export interface AgentSessionConfig {
 	baseToolsOverride?: Record<string, AgentTool>;
 	/** Mutable ref used by Agent to access the current ExtensionRunner */
 	extensionRunnerRef?: { current?: ExtensionRunner };
+	/**
+	 * Mutable ref used by the SDK to run session-owned payload preparation
+	 * (currently native FreshCtx) before extension handlers. Fail-closed:
+	 * a rejection aborts the request with zero HTTP sent.
+	 */
+	payloadPreparationRef?: { current?: PayloadPreparation };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+}
+
+/**
+ * Session-owned outgoing-payload preparation.
+ * Generic transport: receives the serialized provider payload plus the
+ * target model, returns the payload to dispatch. shared here so the SDK
+ * can invoke it outside the extension chain (whose errors fall back to
+ * the unprepared payload and therefore cannot host strict preparation).
+ */
+export interface PayloadPreparation {
+	prepare: (payload: unknown, model?: { api?: string }) => Promise<unknown>;
+	/** Latest stream signal, refreshed per model request for abort racing. */
+	signal?: AbortSignal;
 }
 
 export interface ExtensionBindings {
@@ -355,6 +392,11 @@ export class AgentSession {
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _cwd: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
+	private _payloadPreparationRef?: { current?: PayloadPreparation };
+	private _freshCtxRuntime?: FreshCtxRuntime;
+	private _freshCtxRuntimePromise?: Promise<FreshCtxRuntime>;
+	private _freshCtxPreparer?: FreshCtxRequestPreparer;
+	private _freshCtxLastUnits?: FreshCtxResolvedUnit[];
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
 	private _excludedToolNames?: Set<string>;
@@ -388,9 +430,33 @@ export class AgentSession {
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
+		if (this.settingsManager.getFreshCtxMode() === "native" && config.allowedToolNames) {
+			// FreshCtx recovery tools stay completely unregistered unless
+			// explicitly listed: the default tool surface must stay exact
+			// (see tool-registry regression tests).
+			if (config.allowedToolNames.includes("freshctx_recover")) {
+				this._customTools = [
+					...this._customTools,
+					createFreshCtxRecoverToolDefinition(() => this._getFreshCtxRuntime()),
+				];
+			}
+			if (config.allowedToolNames.includes("freshctx_inspect")) {
+				this._customTools = [
+					...this._customTools,
+					createFreshCtxInspectToolDefinition(() => this.getFreshCtxInspection()),
+				];
+			}
+		}
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
 		this._extensionRunnerRef = config.extensionRunnerRef;
+		this._payloadPreparationRef = config.payloadPreparationRef;
+		if (this._payloadPreparationRef && this.settingsManager.getFreshCtxMode() === "native") {
+			this._payloadPreparationRef.current = {
+				prepare: (payload, model) => this._prepareFreshCtxPayload(payload, model),
+				signal: undefined,
+			};
+		}
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
@@ -558,6 +624,157 @@ export class AgentSession {
 		};
 	}
 
+	// =========================================================================
+	// Native FreshCtx payload preparation
+	// =========================================================================
+
+	/**
+	 * Session-owned strict preparation (see PayloadPreparation). Throws
+	 * FreshCtxBlockedError on any verification failure; the SDK lets it
+	 * propagate so zero HTTP is sent. Never falls back to the payload.
+	 */
+	private async _prepareFreshCtxPayload(payload: unknown, model?: { api?: string }): Promise<unknown> {
+		if (this.settingsManager.getFreshCtxMode() !== "native") {
+			return payload;
+		}
+		if (model?.api !== undefined && model.api !== "openai-completions") {
+			throw new FreshCtxBlockedError(
+				"unsupported-provider",
+				`FreshCtx native mode supports openai-completions only (got ${model.api}); set freshctx.mode to "off" for other providers`,
+			);
+		}
+		const runtime = await this._getFreshCtxRuntime();
+		if (!this._freshCtxPreparer) {
+			const model = this.model;
+			const contextWindow = model?.contextWindow && model.contextWindow > 0 ? model.contextWindow : undefined;
+			const reservedOutput = model?.maxTokens && model.maxTokens > 0 ? model.maxTokens : undefined;
+			this._freshCtxPreparer = new FreshCtxRequestPreparer(runtime, {
+				budgetBytes: this.settingsManager.getFreshCtxBudgetBytes(),
+				maxRequestTokens: contextWindow,
+				reservedOutputTokens: reservedOutput,
+			});
+		}
+		const prepared = await this._freshCtxPreparer.prepare(
+			payload,
+			this._getFreshCtxObservations(),
+			this._payloadPreparationRef?.current?.signal,
+		);
+		this._persistFreshCtxUnits();
+		return prepared;
+	}
+
+	/** Active observations on the current branch; malformed entries are skipped. */
+	private _getFreshCtxObservations(): FreshCtxReadObservation[] {
+		return refreshSessionObservations(this.sessionManager.getBranch(), this.sessionManager.getCwd()).active;
+	}
+
+	/** Persist newly resolved archive units (change-triggered, for recover discovery). */
+	private _persistFreshCtxUnits(): void {
+		if (!this._freshCtxPreparer) {
+			return;
+		}
+		if (!this._freshCtxLastUnits) {
+			this._freshCtxLastUnits = collectPersistedUnits(this.sessionManager.getBranch());
+		}
+		const drained = this._freshCtxPreparer.drainResolvedUnits();
+		if (drained.length === 0) {
+			return;
+		}
+		const merged = new Map<string, FreshCtxResolvedUnit>();
+		for (const unit of [...this._freshCtxLastUnits, ...drained]) {
+			merged.set(`${unit.unitId}\n${unit.revision}`, unit);
+		}
+		const next = [...merged.values()];
+		if (resolvedUnitsEqual(this._freshCtxLastUnits, next)) {
+			return;
+		}
+		this._freshCtxLastUnits = next;
+		this.sessionManager.appendCustomEntry(FRESHCTX_UNITS_CUSTOM_TYPE, {
+			version: FRESHCTX_SESSION_STATE_VERSION,
+			units: next,
+			timestamp: new Date().toISOString(),
+		});
+	}
+
+	/** Inspection snapshot for the freshctx_inspect tool. */
+	async getFreshCtxInspection(): Promise<FreshCtxInspection> {
+		const branch = this.sessionManager.getBranch();
+		const refresh = refreshSessionObservations(branch, this.sessionManager.getCwd());
+		const persisted = this._freshCtxLastUnits ?? collectPersistedUnits(branch);
+		let server: FreshCtxInspection["server"];
+		try {
+			const runtime = await this._getFreshCtxRuntime();
+			const status = (await runtime.request("status")) as { healthy?: boolean; session_id?: string };
+			server = status?.healthy ? { healthy: true, session_id: status.session_id } : { error: "unhealthy" };
+		} catch (error) {
+			server = { error: error instanceof Error ? error.message : String(error) };
+		}
+		return {
+			mode: this.settingsManager.getFreshCtxMode(),
+			observations: refresh.active.map((obs) => ({
+				obsId: obs.obsId,
+				path: obs.workspaceRelativePath ?? obs.absolutePath,
+				status: obs.status,
+				startByte: obs.startByte,
+				endByte: obs.endByte,
+			})),
+			excluded: refresh.excluded,
+			units: persisted,
+			server,
+		};
+	}
+
+	private _getFreshCtxRuntime(): Promise<FreshCtxRuntime> {
+		if (this._freshCtxRuntime) {
+			return Promise.resolve(this._freshCtxRuntime);
+		}
+		if (!this._freshCtxRuntimePromise) {
+			this._freshCtxRuntimePromise = this._startFreshCtxRuntime().catch((error: unknown) => {
+				// Allow retry on the next request instead of caching the failure.
+				this._freshCtxRuntimePromise = undefined;
+				throw error;
+			});
+		}
+		return this._freshCtxRuntimePromise;
+	}
+
+	private async _startFreshCtxRuntime(): Promise<FreshCtxRuntime> {
+		const workspaceRoot = this.sessionManager.getCwd();
+		const settings = this.settingsManager.getFreshCtxSettings(workspaceRoot);
+		const [command, ...args] = settings.serverCommand;
+		if (!command) {
+			throw new FreshCtxBlockedError("transport", "empty freshctx.serverCommand");
+		}
+		try {
+			const runtime = await FreshCtxRuntime.start({
+				server: { command, args },
+				root: workspaceRoot,
+				sessionId: this.sessionManager.getSessionId(),
+				adapter: FRESHCTX_PREPARE_ADAPTER,
+				timeoutMs: settings.timeoutMs,
+				env: { ...process.env, ...settings.serverEnv },
+			});
+			this._freshCtxRuntime = runtime;
+			return runtime;
+		} catch (error) {
+			if (error instanceof FreshCtxBlockedError) {
+				throw error;
+			}
+			throw new FreshCtxBlockedError(
+				"transport",
+				`cannot start FreshCtx server (${command}); install freshctx or set freshctx.mode to "off"`,
+				{ cause: error },
+			);
+		}
+	}
+
+	private _closeFreshCtxRuntime(): void {
+		this._freshCtxRuntimePromise?.then((runtime) => runtime.close()).catch(() => {});
+		this._freshCtxRuntime = undefined;
+		this._freshCtxRuntimePromise = undefined;
+		this._freshCtxPreparer = undefined;
+	}
+
 	private _installAgentNextTurnRefresh(): void {
 		const previousPrepareNextTurnWithContext =
 			this.agent.prepareNextTurnWithContext ??
@@ -709,6 +926,15 @@ export class AgentSession {
 					});
 					this._retryAttempt = 0;
 				}
+			}
+		}
+
+		// Persist exact read observations as custom entries. Custom entries never
+		// enter LLM context; FreshCtx preparation (Phase C) scans them on reload.
+		if (event.type === "tool_execution_end" && event.toolName === "read" && !event.isError) {
+			const details = event.result.details as { freshctxObs?: FreshCtxReadObservation } | undefined;
+			if (details?.freshctxObs) {
+				this.sessionManager.appendCustomEntry(FRESHCTX_OBSERVATION_CUSTOM_TYPE, details.freshctxObs);
 			}
 		}
 
@@ -893,6 +1119,10 @@ export class AgentSession {
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
 		this._disconnectFromAgent();
+		this._closeFreshCtxRuntime();
+		if (this._payloadPreparationRef) {
+			this._payloadPreparationRef.current = undefined;
+		}
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
 	}
@@ -1907,8 +2137,20 @@ export class AgentSession {
 		env: Record<string, string> | undefined,
 		reason: "manual" | "threshold" | "overflow",
 	): Promise<CompactionResult> {
+		// FreshCtx input view: tracked raw source never reaches the summarizer.
+		// Only Pi's default path in native mode is covered; extension
+		// compactions summarize the original preparation at their own
+		// responsibility, and off mode keeps ordinary Pi behavior.
+		const viewed: CompactionPreparation =
+			this.settingsManager.getFreshCtxMode() === "native"
+				? {
+						...preparation,
+						messagesToSummarize: stripTrackedBodies(preparation.messagesToSummarize).messages,
+						turnPrefixMessages: stripTrackedBodies(preparation.turnPrefixMessages).messages,
+					}
+				: preparation;
 		return compact(
-			preparation,
+			viewed,
 			requestModel,
 			apiKey,
 			headers,
@@ -1921,6 +2163,17 @@ export class AgentSession {
 			this._summarizationRetryCallbacks({ source: "compaction", reason }),
 			undefined, // sessionId
 		);
+	}
+
+	/** Append code-free retained references after a default-path compaction. */
+	private _appendFreshCtxRefs(firstKeptEntryId: string): void {
+		if (this.settingsManager.getFreshCtxMode() !== "native") {
+			return;
+		}
+		const refs = buildRetainedRefsMessage(this.sessionManager.getBranch(), firstKeptEntryId);
+		if (refs) {
+			this.sessionManager.appendCustomMessageEntry(FRESHCTX_REFS_CUSTOM_TYPE, refs.content, false, refs.details);
+		}
 	}
 
 	private _clearManualCompactionState(): void {
@@ -2021,7 +2274,10 @@ export class AgentSession {
 				firstKeptEntryId = result.firstKeptEntryId;
 				tokensBefore = result.tokensBefore;
 				usage = result.usage;
-				details = result.details;
+				details =
+					this.settingsManager.getFreshCtxMode() === "native"
+						? withFreshCtxViewMarker(result.details)
+						: result.details;
 			}
 
 			if (this._compactionAbortController.signal.aborted) {
@@ -2029,6 +2285,7 @@ export class AgentSession {
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			this._appendFreshCtxRefs(firstKeptEntryId);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -2333,7 +2590,10 @@ export class AgentSession {
 				firstKeptEntryId = compactResult.firstKeptEntryId;
 				tokensBefore = compactResult.tokensBefore;
 				usage = compactResult.usage;
-				details = compactResult.details;
+				details =
+					this.settingsManager.getFreshCtxMode() === "native"
+						? withFreshCtxViewMarker(compactResult.details)
+						: compactResult.details;
 			}
 
 			if (this._autoCompactionAbortController.signal.aborted) {
@@ -2354,6 +2614,7 @@ export class AgentSession {
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			this._appendFreshCtxRefs(firstKeptEntryId);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -2684,6 +2945,9 @@ export class AgentSession {
 				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
 			})),
 		].filter((tool) => isAllowedTool(tool.definition.name));
+		const manualTools = new Set(
+			allCustomTools.filter((tool) => tool.definition.autoActivate === false).map((tool) => tool.definition.name),
+		);
 		const definitionRegistry = new Map<string, ToolDefinitionEntry>(
 			Array.from(this._baseToolDefinitions.entries())
 				.filter(([name]) => isAllowedTool(name))
@@ -2748,11 +3012,13 @@ export class AgentSession {
 			}
 		} else if (options?.includeAllExtensionTools) {
 			for (const tool of wrappedExtensionTools) {
-				nextActiveToolNames.push(tool.name);
+				if (!manualTools.has(tool.name)) {
+					nextActiveToolNames.push(tool.name);
+				}
 			}
 		} else if (!options?.activeToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (!previousRegistryNames.has(toolName)) {
+				if (!previousRegistryNames.has(toolName) && !manualTools.has(toolName)) {
 					nextActiveToolNames.push(toolName);
 				}
 			}

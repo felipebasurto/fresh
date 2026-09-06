@@ -3,7 +3,7 @@ import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
-import { AgentSession } from "./agent-session.ts";
+import { AgentSession, type PayloadPreparation } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
@@ -302,6 +302,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
+	const payloadPreparationRef: { current?: PayloadPreparation } = {};
 
 	agent = new Agent({
 		initialState: {
@@ -321,6 +322,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const websocketConnectTimeoutMs =
 				options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
 			const headerRunner = extensionRunnerRef.current;
+			if (payloadPreparationRef.current) {
+				// Latest stream signal for abort racing inside preparation.
+				// Requests are sequential per session; the signal is always
+				// refreshed here before the onPayload below can observe it.
+				payloadPreparationRef.current.signal = options?.signal;
+			}
 			return modelRuntime.streamSimple(model, context, {
 				...options,
 				timeoutMs,
@@ -340,12 +347,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				},
 			});
 		},
-		onPayload: async (payload, _model) => {
+		onPayload: async (payload, model) => {
+			// Session-owned strict preparation runs first and fail-closed: a
+			// rejection propagates to the provider client (zero HTTP sent).
+			// It must not go through the extension chain below, whose handler
+			// errors fall back to the unprepared payload.
+			const preparation = payloadPreparationRef.current;
+			const prepared = preparation ? await preparation.prepare(payload, model) : payload;
 			const runner = extensionRunnerRef.current;
 			if (!runner?.hasHandlers("before_provider_request")) {
-				return payload;
+				return prepared;
 			}
-			return runner.emitBeforeProviderRequest(payload);
+			return runner.emitBeforeProviderRequest(prepared);
 		},
 		onResponse: async (response, _model) => {
 			const runner = extensionRunnerRef.current;
@@ -398,6 +411,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		allowedToolNames,
 		excludedToolNames,
 		extensionRunnerRef,
+		payloadPreparationRef,
 		sessionStartEvent: options.sessionStartEvent,
 	});
 	const extensionsResult = resourceLoader.getExtensions();

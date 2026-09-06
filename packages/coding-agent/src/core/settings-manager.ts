@@ -34,6 +34,16 @@ export interface RetrySettings {
 	provider?: ProviderRetrySettings;
 }
 
+export type FreshCtxMode = "native" | "off";
+
+export interface FreshCtxSettings {
+	mode?: FreshCtxMode; // default: "native" (strict verified preparation); "off" is ordinary Pi behavior
+	serverCommand?: string[]; // full server argv; "{root}" tokens are replaced with the workspace root. Default: ["freshctx", "serve", "--stdio", "--root", "{root}"]
+	serverEnv?: Record<string, string>; // extra environment entries for the server child
+	timeoutMs?: number; // per-request server timeout in milliseconds; default: 10000
+	budgetBytes?: number; // projection budget cap in bytes; default: 131072
+}
+
 export type TuiMode = RendererTuiMode;
 export type FullscreenExitOutput = "transcript" | "resume-hint";
 
@@ -104,6 +114,7 @@ export interface Settings {
 	compaction?: CompactionSettings;
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
+	freshctx?: FreshCtxSettings;
 	hideThinkingBlock?: boolean;
 	showCacheMissNotices?: boolean; // default: false - show cache cost and provider recovery notices
 	externalEditor?: string; // Command for Ctrl+G external editor; takes precedence over VISUAL/EDITOR
@@ -884,6 +895,44 @@ export class SettingsManager {
 			enabled: this.getRetryEnabled(),
 			maxRetries: this.settings.retry?.maxRetries ?? 3,
 			baseDelayMs: this.settings.retry?.baseDelayMs ?? 2000,
+		};
+	}
+
+	getFreshCtxMode(): FreshCtxMode {
+		return this.settings.freshctx?.mode ?? "native";
+	}
+
+	getFreshCtxServerCommand(workspaceRoot: string): string[] {
+		const configured = this.settings.freshctx?.serverCommand;
+		const argv = configured ?? ["freshctx", "serve", "--stdio", "--root", "{root}"];
+		return argv.map((part) => (part === "{root}" ? workspaceRoot : part));
+	}
+
+	getFreshCtxServerEnv(): Record<string, string> {
+		return this.settings.freshctx?.serverEnv ?? {};
+	}
+
+	getFreshCtxTimeoutMs(): number {
+		return this.settings.freshctx?.timeoutMs ?? 10000;
+	}
+
+	getFreshCtxBudgetBytes(): number {
+		return this.settings.freshctx?.budgetBytes ?? 131072;
+	}
+
+	getFreshCtxSettings(workspaceRoot: string): {
+		mode: FreshCtxMode;
+		serverCommand: string[];
+		serverEnv: Record<string, string>;
+		timeoutMs: number;
+		budgetBytes: number;
+	} {
+		return {
+			mode: this.getFreshCtxMode(),
+			serverCommand: this.getFreshCtxServerCommand(workspaceRoot),
+			serverEnv: this.getFreshCtxServerEnv(),
+			timeoutMs: this.getFreshCtxTimeoutMs(),
+			budgetBytes: this.getFreshCtxBudgetBytes(),
 		};
 	}
 

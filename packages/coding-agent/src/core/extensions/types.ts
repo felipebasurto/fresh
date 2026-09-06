@@ -478,6 +478,14 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 */
 	executionMode?: ToolExecutionMode;
 
+	/**
+	 * Whether the tool joins automatic activation (default: true).
+	 * Set false for tools that must stay registered but dormant until
+	 * explicitly listed (e.g. FreshCtx recovery tools). Explicit allowlists
+	 * still activate them; noTools/excluded still filter them.
+	 */
+	autoActivate?: boolean;
+
 	/** Execute the tool. */
 	execute(
 		toolCallId: string,

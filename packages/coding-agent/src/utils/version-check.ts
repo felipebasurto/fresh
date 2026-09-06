@@ -1,6 +1,6 @@
 import { compare, valid } from "semver";
+import { getFreshUserAgent } from "./fresh-user-agent.ts";
 import { fetchWithRetry } from "./management-http.ts";
-import { getPiUserAgent } from "./pi-user-agent.ts";
 
 const LATEST_VERSION_URL = "https://pi.dev/api/latest-version";
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
@@ -58,7 +58,7 @@ export async function getLatestPiRelease(
 		LATEST_VERSION_URL,
 		{
 			headers: {
-				"User-Agent": getPiUserAgent(currentVersion),
+				"User-Agent": getFreshUserAgent(currentVersion),
 				accept: "application/json",
 			},
 		},
