@@ -70,6 +70,7 @@ class StubServer implements FreshCtxClient {
 	private planSeq = 0;
 	failNextCommits = 0;
 	corruptProjection = false;
+	malformedSelected = false;
 	extraReplacements: Array<{ resultId: string; expectedSha256: string; marker: string }> = [];
 	wrongExpectationFor: string | null = null;
 
@@ -77,17 +78,18 @@ class StubServer implements FreshCtxClient {
 		this.calls.push(op);
 		if (op === "observe") {
 			const content = Buffer.from(fields.content_utf8_base64 as string, "base64");
+			const path = fields.path as string;
 			this.observed.set(fields.result_id as string, {
-				path: fields.path as string,
+				path,
 				revision: `sha256:${sha256Hex(content)}`,
 			});
-			return { observed: true };
+			return { result_id: fields.result_id, unit_id: `unit:${path}`, marker: `[unit:${path}]`, idempotent: false };
 		}
 		if (op === "prepare") {
 			const resultIds = fields.result_ids as string[];
 			this.requestIds.push(fields.request_id as string);
 			const replacements: Array<{ result_id: string; expected_sha256: string; marker: string }> = [];
-			const selected: Array<{ result_id: string; unit_id: string; revision: string }> = [];
+			const selected: string[] = [];
 			const refs: Array<{ path: string; revision: string }> = [];
 			const parts: string[] = [];
 			for (const resultId of resultIds) {
@@ -99,11 +101,7 @@ class StubServer implements FreshCtxClient {
 				const current = this.disk.get(obs.path) ?? "";
 				refs.push({ path: obs.path, revision: `sha256:${sha256Hex(Buffer.from(current, "utf-8"))}` });
 				parts.push(`--- ${obs.path} ---\n${current}`);
-				selected.push({
-					result_id: resultId,
-					unit_id: `unit:${obs.path}`,
-					revision: `sha256:${sha256Hex(Buffer.from(current, "utf-8"))}`,
-				});
+				selected.push(`unit:${obs.path}`);
 			}
 			for (const extra of this.extraReplacements) {
 				replacements.push({
@@ -119,7 +117,7 @@ class StubServer implements FreshCtxClient {
 			return {
 				plan_id: planId,
 				replacements,
-				selected,
+				selected: this.malformedSelected ? [{ unit_id: "unit:x" }] : selected,
 				omitted: [],
 				projection_utf8_base64: Buffer.from(sent, "utf-8").toString("base64"),
 				projection_sha256: revisionForText(projection),
@@ -339,6 +337,19 @@ describe("FreshCtxRequestPreparer", () => {
 		const roomy = new FreshCtxRequestPreparer(server, { maxRequestTokens: 100000, reservedOutputTokens: 1024 });
 		const result = (await roomy.prepare(original, [textObs("read_1", "code\n")])) as Record<string, unknown>;
 		expect(JSON.stringify(result)).toContain("[unit:read_1.txt]");
+	});
+
+	it("blocks malformed selected units without mutating", async () => {
+		const server = new StubServer();
+		server.disk.set("read_1.txt", "code\n");
+		server.malformedSelected = true;
+		const preparer = new FreshCtxRequestPreparer(server);
+		const original = toolPayload([{ id: "read_1", content: "code\n" }]);
+		const before = structuredClone(original);
+		await expect(preparer.prepare(original, [textObs("read_1", "code\n")])).rejects.toMatchObject({
+			code: "invalid-plan",
+		});
+		expect(original).toEqual(before);
 	});
 
 	function preparer(server: StubServer): FreshCtxRequestPreparer {

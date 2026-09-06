@@ -74,7 +74,10 @@ Settings live in `~/.pi/agent/settings.json` (global) or
 - Historical recovery tools are opt-in via the tool allowlist:
   `"tools": ["read", "bash", "edit", "write", "freshctx_recover", "freshctx_inspect"]`
   (`freshctx_inspect` lists tracked reads and archive units so the model
-  never invents IDs; `freshctx_recover` returns labeled historical bytes).
+  never invents IDs; `freshctx_recover` returns labeled historical bytes.
+  Listed revisions are the observed revisions: whole-file reads are
+  guaranteed recoverable, partial reads report `unknown_revision` when the
+  archive does not hold that exact revision).
 
 ## Coverage and limits
 

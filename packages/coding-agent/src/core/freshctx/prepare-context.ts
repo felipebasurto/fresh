@@ -167,8 +167,10 @@ function collectToolMessages(payload: unknown): { toolById: Map<string, Completi
 interface ValidatedPlan {
 	planId: string;
 	replacements: Array<{ resultId: string; expectedSha256: string; marker: string }>;
-	selected: Array<{ resultId: string; unitId: string; revision: string }>;
-	omitted: Array<{ resultId: string; reason: string }>;
+	/** Unit IDs selected for the projection (opaque strings). */
+	selected: string[];
+	/** Omitted units keyed by unit ID. */
+	omitted: Array<{ unitId: string; reason: string }>;
 	projection: string;
 }
 
@@ -205,30 +207,19 @@ function validatePlan(plan: unknown, budgetBytes: number): ValidatedPlan {
 			marker: replacement.marker,
 		});
 	}
-	if (!Array.isArray(plan.selected)) {
+	if (!Array.isArray(plan.selected) || !plan.selected.every((entry) => typeof entry === "string")) {
 		throw new FreshCtxBlockedError("invalid-plan", "malformed selected units");
 	}
-	const selected: ValidatedPlan["selected"] = [];
-	for (const entry of plan.selected) {
-		if (
-			!isRecord(entry) ||
-			typeof entry.result_id !== "string" ||
-			typeof entry.unit_id !== "string" ||
-			typeof entry.revision !== "string"
-		) {
-			throw new FreshCtxBlockedError("invalid-plan", "malformed selected unit");
-		}
-		selected.push({ resultId: entry.result_id, unitId: entry.unit_id, revision: entry.revision });
-	}
+	const selected: string[] = [...plan.selected];
 	if (!Array.isArray(plan.omitted)) {
 		throw new FreshCtxBlockedError("invalid-plan", "malformed omitted units");
 	}
 	const omitted: ValidatedPlan["omitted"] = [];
 	for (const entry of plan.omitted) {
-		if (!isRecord(entry) || typeof entry.result_id !== "string" || typeof entry.reason !== "string") {
+		if (!isRecord(entry) || typeof entry.unitId !== "string" || typeof entry.reason !== "string") {
 			throw new FreshCtxBlockedError("invalid-plan", "malformed omitted unit");
 		}
-		omitted.push({ resultId: entry.result_id, reason: entry.reason });
+		omitted.push({ unitId: entry.unitId, reason: entry.reason });
 	}
 	return { planId: plan.plan_id, replacements, selected, omitted, projection };
 }
@@ -309,7 +300,7 @@ export class FreshCtxRequestPreparer {
 				continue;
 			}
 			try {
-				await this.runtime.request(
+				const response = await this.runtime.request(
 					"observe",
 					{
 						result_id: obs.obsId,
@@ -322,7 +313,23 @@ export class FreshCtxRequestPreparer {
 					},
 					signal,
 				);
+				if (!isRecord(response) || typeof response.unit_id !== "string") {
+					throw new Error("malformed observe response");
+				}
+				// Unit discovery happens here: the observed revision doubles
+				// as the recover revision for whole-unit observations (the
+				// server archives it); partial observations may fail recover
+				// later with unknown_revision, reported honestly.
+				this.resolvedBuffer.push({
+					resultId: obs.obsId,
+					unitId: response.unit_id,
+					revision: revisionForText(shownText),
+					path: obs.workspaceRelativePath,
+				});
 			} catch (error) {
+				if (error instanceof FreshCtxBlockedError) {
+					throw error;
+				}
 				throw new FreshCtxBlockedError("transport", `observe failed for ${obs.obsId}`, { cause: error });
 			}
 			this.observed.add(obs.obsId);
@@ -418,14 +425,6 @@ export class FreshCtxRequestPreparer {
 		}
 		if (!isRecord(committed) || committed.applied !== true) {
 			throw new FreshCtxBlockedError("commit-failed", "commit rejected (stale or failed)");
-		}
-		for (const entry of plan.selected) {
-			const verified = verifiedById.get(entry.resultId);
-			const path = verified?.obs.workspaceRelativePath;
-			if (!verified || !path) {
-				continue;
-			}
-			this.resolvedBuffer.push({ resultId: entry.resultId, unitId: entry.unitId, revision: entry.revision, path });
 		}
 		return copy;
 	}

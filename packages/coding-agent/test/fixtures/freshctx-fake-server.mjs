@@ -31,8 +31,20 @@ let planSeq = 0;
 const observations = new Map();
 /** unitId -> { path } (one unit per path) */
 const units = new Map();
+/** path -> unitId */
+const unitsByPath = new Map();
 /** planId -> { references: [{ path, sourceRevision }], projection, projection_sha256 } */
 const pending = new Map();
+
+function unitForPath(path) {
+  let id = unitsByPath.get(path);
+  if (!id) {
+    id = `u_${++unitSeq}`;
+    unitsByPath.set(path, id);
+    units.set(id, { id, path });
+  }
+  return units.get(id);
+}
 
 async function currentRevision(absPath) {
   const bytes = await readFile(absPath);
@@ -80,7 +92,8 @@ lines.on("line", async (line) => {
           return fail(id, "idempotency_conflict", "observe conflict");
         }
         observations.set(result_id, { path, revision, range: range ?? null, content });
-        return ok(id, { observed: true });
+        const unit = unitForPath(path);
+        return ok(id, { result_id, unit_id: unit.id, marker: `[${unit.id}]`, idempotent: false });
       }
       case "prepare": {
         const { request_id, result_ids, budget_bytes } = msg;
@@ -99,38 +112,34 @@ lines.on("line", async (line) => {
             unresolved.push({ result_id: resultId, reason: "unknown_result" });
             continue;
           }
-          let unit = [...units.values()].find((u) => u.path === obs.path);
-          if (!unit) {
-            unit = { id: `u_${++unitSeq}`, path: obs.path };
-            units.set(unit.id, unit);
-          }
+          const unit = unitForPath(obs.path);
           const absPath = join(root, obs.path);
           let current;
           try {
             current = await currentRevision(absPath);
           } catch {
             replacements.push({ result_id: resultId, expected_sha256: obs.revision, marker: `[${unit.id} deleted]` });
-            omitted.push({ result_id: resultId, reason: "deleted" });
+            omitted.push({ unitId: unit.id, reason: "deleted" });
             continue;
           }
           references.push({ path: obs.path, sourceRevision: current.revision });
           if (budget <= 0) {
             replacements.push({ result_id: resultId, expected_sha256: obs.revision, marker: `[${unit.id} budget]` });
-            omitted.push({ result_id: resultId, reason: "budget" });
+            omitted.push({ unitId: unit.id, reason: "budget" });
             continue;
           }
           replacements.push({ result_id: resultId, expected_sha256: obs.revision, marker: `[${unit.id}]` });
-          selected.push({ result_id: resultId, unit_id: unit.id, revision: current.revision });
+          selected.push(unit.id);
         }
         let projection = "";
         if (budget > 0) {
           const parts = [];
           let used = 0;
-          for (const sel of selected) {
-            const unit = units.get(sel.unit_id);
+          for (const unitId of selected) {
+            const unit = units.get(unitId);
             const { bytes } = await currentRevision(join(root, unit.path));
             if (used + bytes.length > budget) {
-              omitted.push({ result_id: sel.result_id, reason: "budget" });
+              omitted.push({ unitId, reason: "budget" });
               continue;
             }
             used += bytes.length;
