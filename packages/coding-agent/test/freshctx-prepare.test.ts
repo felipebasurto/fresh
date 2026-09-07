@@ -8,7 +8,12 @@ import {
 	type FreshCtxReadObservation,
 	sha256Hex,
 } from "../src/core/freshctx/observations.ts";
-import { FreshCtxRequestPreparer, revisionForText } from "../src/core/freshctx/prepare-context.ts";
+import {
+	classifyRevalidation,
+	FreshCtxRequestPreparer,
+	revisionForText,
+	splitProjectionSections,
+} from "../src/core/freshctx/prepare-context.ts";
 import type { FreshCtxClient } from "../src/core/freshctx/runtime.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 
@@ -74,7 +79,7 @@ class StubServer implements FreshCtxClient {
 	extraReplacements: Array<{ resultId: string; expectedSha256: string; marker: string }> = [];
 	wrongExpectationFor: string | null = null;
 
-	async request(op: string, fields: Record<string, unknown> = {}): Promise<unknown> {
+	async request(op: string, fields: Record<string, unknown> = {}, _signal?: AbortSignal): Promise<unknown> {
 		this.calls.push(op);
 		if (op === "observe") {
 			const content = Buffer.from(fields.content_utf8_base64 as string, "base64");
@@ -355,4 +360,104 @@ describe("FreshCtxRequestPreparer", () => {
 	function preparer(server: StubServer): FreshCtxRequestPreparer {
 		return new FreshCtxRequestPreparer(server);
 	}
+});
+
+describe("classifyRevalidation", () => {
+	function plan(projection: string, selected = ["u_1"], resultId = "read_1") {
+		return {
+			planId: "plan-1",
+			replacements: [{ resultId, expectedSha256: "sha256:x", marker: "[u_1]" }],
+			selected,
+			omitted: [],
+			projection,
+			selectionGranularity: "region" as const,
+			unitStates: {},
+			wholeFileEquivalent: null,
+		};
+	}
+
+	it("is STABLE when the projection carries the observed referent", () => {
+		const verdict = classifyRevalidation(plan("f.py:region:8\nRATE = 10\n"), [
+			{ resultId: "read_1", shownText: "RATE = 10", diskText: "RATE = 10\n" },
+		]);
+		expect(verdict).toEqual({ outcome: "STABLE", missingReferents: [] });
+	});
+
+	it("is WRONG when the referent survives on disk but the projection drops it", () => {
+		const verdict = classifyRevalidation(plan("f.py:region:8\n# prefix\n"), [
+			{ resultId: "read_1", shownText: "RATE = 10", diskText: "# prefix\nRATE = 10\n" },
+		]);
+		expect(verdict).toEqual({ outcome: "WRONG", missingReferents: ["read_1"] });
+	});
+
+	it("passes a faithful refresh when the referent changed on disk", () => {
+		const verdict = classifyRevalidation(plan("f.py:region:8\nRATE = 99\n"), [
+			{ resultId: "read_1", shownText: "RATE = 10", diskText: "RATE = 99\n" },
+		]);
+		expect(verdict.outcome).toBe("STABLE");
+	});
+
+	it("is UNCHECKED when disk text is unavailable and projection misses", () => {
+		const verdict = classifyRevalidation(plan("f.py:region:5\nOTHER\n"), [
+			{ resultId: "read_1", shownText: "RATE = 10", diskText: null },
+		]);
+		expect(verdict.outcome).toBe("UNCHECKED");
+	});
+
+	it("checks refresh per file section in multi-file projections", () => {
+		const projection = "a.py:region:7\nNEW_A = 1\nb.py:region:7\nNEW_B = 2\n";
+		const sections = splitProjectionSections(projection);
+		expect(sections.get("a.py")).toBe("NEW_A = 1");
+		// Referent from a.py changed on disk; the b.py section must not fail it.
+		const verdict = classifyRevalidation(
+			{
+				planId: "plan-1",
+				replacements: [{ resultId: "read_a", expectedSha256: "sha256:x", marker: "[u_a]" }],
+				selected: ["u_a"],
+				omitted: [],
+				projection,
+				selectionGranularity: "region" as const,
+				unitStates: {},
+				wholeFileEquivalent: null,
+			},
+			[
+				{
+					resultId: "read_a",
+					shownText: "OLD_A = 0",
+					diskText: "NEW_A = 1\n",
+					projectionSection: sections.get("a.py") ?? null,
+				},
+			],
+		);
+		expect(verdict.outcome).toBe("STABLE");
+	});
+
+	it("blocks WRONG plans before HTTP via drift-blocked", async () => {
+		const server = new StubServer();
+		server.disk.set("read_1.txt", "RATE = 10\n");
+		const preparer = new FreshCtxRequestPreparer(server, {
+			readDiskText: () => "# prefix\nRATE = 10\n",
+		});
+		// Fake projects current disk (full file) which still contains the
+		// referent here; force drift by projecting stale bytes instead.
+		const observing = server.request.bind(server);
+		server.request = async (op: string, fields: Record<string, unknown> = {}, signal?: AbortSignal) => {
+			const response = (await observing(op, fields, signal)) as Record<string, unknown>;
+			if (op === "prepare") {
+				const stale = "--- read_1.txt ---\n# prefix\n";
+				return {
+					...response,
+					projection_utf8_base64: Buffer.from(stale, "utf-8").toString("base64"),
+					projection_sha256: revisionForText(stale),
+				};
+			}
+			return response;
+		};
+		const original = toolPayload([{ id: "read_1", content: "RATE = 10\n" }]);
+		await expect(preparer.prepare(original, [textObs("read_1", "RATE = 10\n")])).rejects.toMatchObject({
+			code: "drift-blocked",
+		});
+		expect(preparer.revalidationStats()).toMatchObject({ total: 1, driftBlocked: 1 });
+		expect(preparer.lastRevalidation()?.outcome).toBe("WRONG");
+	});
 });

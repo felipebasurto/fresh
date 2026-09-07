@@ -33,7 +33,8 @@ export type FreshCtxBlockCode =
 	| "invalid-plan"
 	| "unexpected-replacement"
 	| "commit-failed"
-	| "transport";
+	| "transport"
+	| "drift-blocked";
 
 export class FreshCtxBlockedError extends Error {
 	readonly code: FreshCtxBlockCode;
@@ -47,6 +48,10 @@ export class FreshCtxBlockedError extends Error {
 export interface FreshCtxPrepareSettings {
 	/** Projection byte budget cap. Default: 131072. */
 	budgetBytes?: number;
+	/** Selection granularity sent to the engine. Default: region. */
+	selectionGranularity?: FreshCtxSelectionGranularity;
+	/** Disk-text reader for independent revalidation. Absent skips WRONG detection (fail-open, recorded). */
+	readDiskText?: (absolutePath: string) => string | null;
 	/** Optional cap on total serialized request bytes (checked after commit). */
 	maxRequestBytes?: number;
 	/**
@@ -164,7 +169,9 @@ function collectToolMessages(payload: unknown): { toolById: Map<string, Completi
 	return { toolById, allIds };
 }
 
-interface ValidatedPlan {
+export type FreshCtxSelectionGranularity = "region" | "file";
+
+export interface ValidatedPlan {
 	planId: string;
 	replacements: Array<{ resultId: string; expectedSha256: string; marker: string }>;
 	/** Unit IDs selected for the projection (opaque strings). */
@@ -172,6 +179,15 @@ interface ValidatedPlan {
 	/** Omitted units keyed by unit ID. */
 	omitted: Array<{ unitId: string; reason: string }>;
 	projection: string;
+	/** Engine-reported selection granularity. Defaults to region for legacy plans. */
+	selectionGranularity: FreshCtxSelectionGranularity;
+	/** Engine-reported per-unit relocation statuses, keyed by unit ID. */
+	unitStates: Record<string, { status: string; previousRange: unknown; currentRange: unknown }>;
+	/**
+	 * Structural counterfactual (region mode only): synchronized whole-file
+	 * bytes of every distinct selected file, measured but never injected.
+	 */
+	wholeFileEquivalent: { files: Array<{ path: string; bytes: number }>; whole_file_bytes: number } | null;
 }
 
 function validatePlan(plan: unknown, budgetBytes: number): ValidatedPlan {
@@ -221,21 +237,209 @@ function validatePlan(plan: unknown, budgetBytes: number): ValidatedPlan {
 		}
 		omitted.push({ unitId: entry.unitId, reason: entry.reason });
 	}
-	return { planId: plan.plan_id, replacements, selected, omitted, projection };
+	// Additive engine fields: absent on legacy servers/fakes means region mode
+	// with no per-unit states or counterfactual. selectionGranularity is
+	// authoritative when present — never infer strategy from payload shape.
+	const raw = plan as Record<string, unknown>;
+	const selectionGranularity: FreshCtxSelectionGranularity = raw.selection_granularity === "file" ? "file" : "region";
+	const unitStates: ValidatedPlan["unitStates"] =
+		isRecord(raw.unit_states) &&
+		Object.values(raw.unit_states).every(
+			(entry): entry is { status: string; previousRange: unknown; currentRange: unknown } =>
+				isRecord(entry) && typeof entry.status === "string",
+		)
+			? (raw.unit_states as ValidatedPlan["unitStates"])
+			: {};
+	const wholeFileEquivalent: ValidatedPlan["wholeFileEquivalent"] =
+		isRecord(raw.whole_file_equivalent) &&
+		typeof raw.whole_file_equivalent.whole_file_bytes === "number" &&
+		Array.isArray(raw.whole_file_equivalent.files) &&
+		(raw.whole_file_equivalent.files as unknown[]).every(
+			(entry): entry is { path: string; bytes: number } =>
+				isRecord(entry) && typeof entry.path === "string" && typeof entry.bytes === "number",
+		)
+			? (raw.whole_file_equivalent as ValidatedPlan["wholeFileEquivalent"])
+			: null;
+	return {
+		planId: plan.plan_id,
+		replacements,
+		selected,
+		omitted,
+		projection,
+		selectionGranularity,
+		unitStates,
+		wholeFileEquivalent,
+	};
+}
+
+export type FreshCtxRevalidationOutcome =
+	| "STABLE"
+	| "RELOCATED"
+	| "UPDATED"
+	| "AMBIGUOUS"
+	| "INVALIDATED"
+	| "WRONG"
+	| "UNCHECKED";
+
+export interface FreshCtxReferent {
+	resultId: string;
+	/** Exact bytes originally shown for this observation. */
+	shownText: string;
+	/** Current disk text of the observed file, when readable. Null skips WRONG detection for that referent. */
+	diskText: string | null;
+	/**
+	 * The engine-projected section for this referent's file, when the caller
+	 * can split the multi-file projection per path. When null, the whole
+	 * projection is used (single-file case). Prevents cross-file lines from
+	 * failing the refresh check for multi-file plans.
+	 */
+	projectionSection?: string | null;
+}
+
+export interface FreshCtxRevalidationVerdict {
+	outcome: FreshCtxRevalidationOutcome;
+	/** Observed referents missing from the projection although selected. */
+	missingReferents: string[];
+}
+
+/**
+ * Independent Fresh-side revalidation of a committed plan.
+ *
+ * Pure function: no I/O. Compares each verified observation's original shown
+ * bytes against the engine's projected text for the current disk state, and
+ * trusts the engine's own unit_states for RELOCATED/UPDATED classification.
+ * A missing referent whose disk text still contains it (or whose disk text
+ * is unavailable and the projection does not cover current disk) is WRONG:
+ * the engine claimed success but projects neither the referent nor a
+ * faithful refresh. diskText=null referents never trigger WRONG alone —
+ * they yield UNCHECKED when nothing else decides the outcome.
+ */
+export function classifyRevalidation(plan: ValidatedPlan, referents: FreshCtxReferent[]): FreshCtxRevalidationVerdict {
+	const selected = new Set(plan.selected);
+	const answered = new Set(plan.replacements.map((replacement) => replacement.resultId));
+	const missingReferents: string[] = [];
+	let judged = 0;
+	let unchecked = 0;
+	for (const referent of referents) {
+		if (!answered.has(referent.resultId) || selected.size === 0) {
+			continue;
+		}
+		judged += 1;
+		// The referent check runs against the whole projection (the model sees
+		// all of it); the refresh check runs against this referent's file
+		// section only (multi-file plans must not fail on sibling content).
+		const section = referent.projectionSection ?? plan.projection;
+		if (referent.shownText.length > 0 && plan.projection.includes(referent.shownText)) {
+			continue;
+		}
+		if (referent.shownText.length === 0) {
+			continue;
+		}
+		if (referent.diskText === null) {
+			unchecked += 1;
+			continue;
+		}
+		if (!referent.diskText.includes(referent.shownText) && projectionCoversDisk(section, referent.diskText)) {
+			continue;
+		}
+		missingReferents.push(referent.resultId);
+	}
+	if (missingReferents.length > 0) {
+		return { outcome: "WRONG", missingReferents };
+	}
+	if (judged === 0 || plan.omitted.length > 0) {
+		return { outcome: "INVALIDATED", missingReferents };
+	}
+	if (unchecked === judged) {
+		return { outcome: "UNCHECKED", missingReferents };
+	}
+	return { outcome: "STABLE", missingReferents };
+}
+
+/**
+ * Split a multi-file projection into per-path sections. Headers render as
+ * `path:bytes` (file) or `path:kind:bytes` (region/symbol) envelope lines;
+ * the section for a path is the text between its header and the next header
+ * (or end). Unknown shapes yield an empty map (callers fall back to the
+ * whole projection).
+ */
+export function splitProjectionSections(projection: string): Map<string, string> {
+	const sections = new Map<string, string>();
+	const lines = projection.split("\n");
+	let current: string | null = null;
+	let start = 0;
+	const flush = (end: number) => {
+		if (current !== null) {
+			sections.set(current, lines.slice(start, end).join("\n"));
+		}
+	};
+	for (let i = 0; i < lines.length; i++) {
+		// Engine envelope: `path:bytes` or `path:kind:bytes` where kind is
+		// file|symbol|region. Paths may contain colons, so anchor on the
+		// trailing :bytes / :kind:bytes suffix and strip the kind.
+		const fileMatch = /^(.+):(?:(?:file|symbol|region):)?\d+$/.exec(lines[i]);
+		if (fileMatch) {
+			flush(i);
+			current = fileMatch[1].replace(/:(?:file|symbol|region)$/, "");
+			start = i + 1;
+		}
+	}
+	flush(lines.length);
+	return sections;
+}
+
+/**
+ * True when every non-empty projected body line appears in the current disk
+ * text: the projection renders current bytes (refresh), not stale ones.
+ * Engine envelope headers (`path:bytes`, `path:kind:bytes`) are skipped along
+ * with blank lines.
+ */
+function projectionCoversDisk(projection: string, diskText: string): boolean {
+	const lines = projection.split("\n");
+	let bodyLines = 0;
+	for (const line of lines) {
+		if (/^(.+):(?:(?:file|symbol|region):)?\d+$/.test(line)) {
+			continue;
+		}
+		if (line.length === 0) {
+			continue;
+		}
+		bodyLines += 1;
+		if (!diskText.includes(line)) {
+			return false;
+		}
+	}
+	return bodyLines > 0;
 }
 
 export class FreshCtxRequestPreparer {
 	private readonly observed = new Set<string>();
 	private readonly runtime: FreshCtxClient;
 	private readonly budgetBytes: number;
+	private readonly selectionGranularity: FreshCtxSelectionGranularity;
 	private readonly maxRequestBytes: number | undefined;
 	private readonly maxRequestTokens: number | undefined;
 	private readonly reservedOutputTokens: number;
+	private readonly readDiskText: ((absolutePath: string) => string | null) | undefined;
 	private resolvedBuffer: FreshCtxResolvedUnit[] = [];
+	private lastPlan: ValidatedPlan | null = null;
+	private lastVerdict: FreshCtxRevalidationVerdict | null = null;
+	private readonly revalidationCounts = {
+		total: 0,
+		stable: 0,
+		relocated: 0,
+		updated: 0,
+		ambiguous: 0,
+		invalidated: 0,
+		unchecked: 0,
+		driftBlocked: 0,
+	};
 
 	constructor(runtime: FreshCtxClient, settings?: FreshCtxPrepareSettings) {
 		this.runtime = runtime;
 		this.budgetBytes = settings?.budgetBytes ?? FRESHCTX_DEFAULT_BUDGET_BYTES;
+		this.selectionGranularity = settings?.selectionGranularity ?? "region";
+		this.readDiskText = settings?.readDiskText;
 		this.maxRequestBytes = settings?.maxRequestBytes;
 		this.maxRequestTokens = settings?.maxRequestTokens;
 		this.reservedOutputTokens = settings?.reservedOutputTokens ?? 0;
@@ -349,10 +553,21 @@ export class FreshCtxRequestPreparer {
 		try {
 			const response = await this.runtime.request(
 				"prepare",
-				{ request_id: randomUUID(), result_ids: allIds, budget_bytes: budget },
+				{
+					request_id: randomUUID(),
+					result_ids: allIds,
+					budget_bytes: budget,
+					...(this.selectionGranularity === "file" ? { selection_granularity: "file" as const } : {}),
+				},
 				signal,
 			);
 			plan = validatePlan(response, budget);
+			if (plan.selectionGranularity !== this.selectionGranularity) {
+				throw new FreshCtxBlockedError(
+					"invalid-plan",
+					`engine granularity ${plan.selectionGranularity} differs from requested ${this.selectionGranularity}`,
+				);
+			}
 		} catch (error) {
 			if (error instanceof FreshCtxBlockedError) {
 				throw error;
@@ -426,7 +641,93 @@ export class FreshCtxRequestPreparer {
 		if (!isRecord(committed) || committed.applied !== true) {
 			throw new FreshCtxBlockedError("commit-failed", "commit rejected (stale or failed)");
 		}
+		this.recordRevalidation(plan, verified);
+		this.lastPlan = plan;
 		return copy;
+	}
+
+	/**
+	 * Independent Fresh-side revalidation after a successful commit. WRONG
+	 * blocks dispatch with drift-blocked (zero HTTP). Engine-reported
+	 * RELOCATED/UPDATED/AMBIGUOUS unit_states refine STABLE verdicts without
+	 * weakening WRONG detection. Emits counts for benchmark export.
+	 */
+	private recordRevalidation(plan: ValidatedPlan, verified: VerifiedObservation[]): void {
+		const sections = splitProjectionSections(plan.projection);
+		const referents: FreshCtxReferent[] = verified.map(({ obs, shownText }) => {
+			const relPath = obs.workspaceRelativePath ?? null;
+			return {
+				resultId: obs.obsId,
+				shownText,
+				diskText: this.readDiskText ? this.readDiskText(obs.absolutePath) : null,
+				projectionSection: relPath ? (sections.get(relPath) ?? null) : null,
+			};
+		});
+		const verdict = classifyRevalidation(plan, referents);
+		// Refine with engine-reported statuses: a Fresh-STABLE plan whose
+		// units all report relocated/updated is genuinely relocated/updated;
+		// any ambiguous unit makes the verdict ambiguous. WRONG is never
+		// refined away.
+		let outcome = verdict.outcome;
+		if (outcome === "STABLE" && Object.keys(plan.unitStates).length > 0) {
+			const statuses = new Set(Object.values(plan.unitStates).map((entry) => entry.status));
+			if (statuses.has("ambiguous")) {
+				outcome = "AMBIGUOUS";
+			} else if (statuses.size === 1 && statuses.has("relocated")) {
+				outcome = "RELOCATED";
+			} else if (statuses.size === 1 && statuses.has("updated")) {
+				outcome = "UPDATED";
+			} else if (statuses.has("relocated") || statuses.has("updated")) {
+				outcome = "UPDATED";
+			}
+		}
+		const refined: FreshCtxRevalidationVerdict = { outcome, missingReferents: verdict.missingReferents };
+		this.lastVerdict = refined;
+		this.revalidationCounts.total += 1;
+		if (outcome === "WRONG") {
+			this.revalidationCounts.driftBlocked += 1;
+			throw new FreshCtxBlockedError(
+				"drift-blocked",
+				`FreshCtx region drift blocked for ${verdict.missingReferents.join(", ")}: engine claimed success but the projection no longer carries the observed referent`,
+			);
+		}
+		if (outcome === "STABLE") {
+			this.revalidationCounts.stable += 1;
+		} else if (outcome === "RELOCATED") {
+			this.revalidationCounts.relocated += 1;
+		} else if (outcome === "UPDATED") {
+			this.revalidationCounts.updated += 1;
+		} else if (outcome === "AMBIGUOUS") {
+			this.revalidationCounts.ambiguous += 1;
+		} else if (outcome === "INVALIDATED") {
+			this.revalidationCounts.invalidated += 1;
+		} else if (outcome === "UNCHECKED") {
+			this.revalidationCounts.unchecked += 1;
+		}
+	}
+
+	/** Most recent revalidation verdict, if any preparation committed. */
+	lastRevalidation(): FreshCtxRevalidationVerdict | null {
+		return this.lastVerdict;
+	}
+
+	/** Cumulative revalidation counters for observatory/benchmark export. */
+	revalidationStats(): {
+		total: number;
+		stable: number;
+		relocated: number;
+		updated: number;
+		ambiguous: number;
+		invalidated: number;
+		unchecked: number;
+		driftBlocked: number;
+	} {
+		return { ...this.revalidationCounts };
+	}
+
+	/** Most recent committed plan, if any. Cleared only when the preparer is replaced. */
+	lastCommittedPlan(): ValidatedPlan | null {
+		return this.lastPlan;
 	}
 
 	/**

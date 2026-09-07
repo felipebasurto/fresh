@@ -96,7 +96,11 @@ lines.on("line", async (line) => {
         return ok(id, { result_id, unit_id: unit.id, marker: `[${unit.id}]`, idempotent: false });
       }
       case "prepare": {
-        const { request_id, result_ids, budget_bytes } = msg;
+        const { request_id, result_ids, budget_bytes, selection_granularity } = msg;
+        if (selection_granularity !== undefined && selection_granularity !== "region" && selection_granularity !== "file") {
+          return fail(id, "invalid_request", "bad selection_granularity");
+        }
+        const granularity = selection_granularity ?? "region";
         if (typeof request_id !== "string" || !Array.isArray(result_ids) || new Set(result_ids).size !== result_ids.length) {
           return fail(id, "invalid_request", "bad prepare");
         }
@@ -150,6 +154,10 @@ lines.on("line", async (line) => {
         const planId = `p_${++planSeq}`;
         const projection_sha256 = revisionFor(Buffer.from(projection, "utf-8"));
         pending.set(planId, { references, projection, projection_sha256 });
+        // The fake is file-grained by construction (whole current file per
+        // unit). Region mode on the fake therefore reports the same bytes as
+        // file mode; the granularity echo is what lets host tests assert
+        // strategy identity without inferring it from payload shape.
         return ok(id, {
           plan_id: planId,
           replacements,
@@ -158,6 +166,7 @@ lines.on("line", async (line) => {
           selected,
           omitted,
           unresolved,
+          selection_granularity: granularity,
         });
       }
       case "commit": {

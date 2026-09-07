@@ -107,6 +107,7 @@ import {
 import { FreshCtxRuntime } from "./freshctx/runtime.ts";
 import {
 	collectPersistedUnits,
+	FRESHCTX_REVALIDATION_CUSTOM_TYPE,
 	FRESHCTX_SESSION_STATE_VERSION,
 	FRESHCTX_UNITS_CUSTOM_TYPE,
 	type FreshCtxResolvedUnit,
@@ -176,6 +177,14 @@ export type AgentSessionEvent =
 	| { type: "entry_appended"; entry: SessionEntry }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| {
+			type: "freshctx_revalidation";
+			outcome: "STABLE" | "RELOCATED" | "UPDATED" | "AMBIGUOUS" | "INVALIDATED" | "WRONG" | "UNCHECKED";
+			missingReferents: string[];
+			planId: string | null;
+			blocked: boolean;
+			blockCode: string | null;
+	  }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -301,6 +310,17 @@ export interface ModelCycleResult {
 	thinkingLevel: ThinkingLevel;
 	/** Whether cycling through scoped models (--models flag) or all available */
 	isScoped: boolean;
+}
+
+/** Status counts of engine-reported unit states (metadata only, no source). */
+function summarizeUnitStates(
+	states: Record<string, { status: string; previousRange: unknown; currentRange: unknown }>,
+): Record<string, number> {
+	const counts: Record<string, number> = {};
+	for (const entry of Object.values(states)) {
+		counts[entry.status] = (counts[entry.status] ?? 0) + 1;
+	}
+	return counts;
 }
 
 /** Session statistics for /session command */
@@ -650,17 +670,89 @@ export class AgentSession {
 			const reservedOutput = model?.maxTokens && model.maxTokens > 0 ? model.maxTokens : undefined;
 			this._freshCtxPreparer = new FreshCtxRequestPreparer(runtime, {
 				budgetBytes: this.settingsManager.getFreshCtxBudgetBytes(),
+				selectionGranularity: this.settingsManager.getFreshCtxSelectionGranularity(),
 				maxRequestTokens: contextWindow,
 				reservedOutputTokens: reservedOutput,
+				readDiskText: (absolutePath) => {
+					try {
+						return readFileSync(absolutePath, "utf-8");
+					} catch {
+						return null;
+					}
+				},
 			});
 		}
-		const prepared = await this._freshCtxPreparer.prepare(
-			payload,
-			this._getFreshCtxObservations(),
-			this._payloadPreparationRef?.current?.signal,
-		);
+		let prepared: unknown;
+		try {
+			prepared = await this._freshCtxPreparer.prepare(
+				payload,
+				this._getFreshCtxObservations(),
+				this._payloadPreparationRef?.current?.signal,
+			);
+		} catch (error) {
+			this._emitFreshCtxRevalidation(this._freshCtxPreparer, error);
+			throw error;
+		}
+		this._emitFreshCtxRevalidation(this._freshCtxPreparer, null);
 		this._persistFreshCtxUnits();
 		return prepared;
+	}
+
+	/** Emit a generic context-engine revalidation event for observatory/benchmark consumers. */
+	private _emitFreshCtxRevalidation(preparer: FreshCtxRequestPreparer, error: unknown): void {
+		const verdict = preparer.lastRevalidation();
+		const blocked = error instanceof FreshCtxBlockedError && error.code === "drift-blocked";
+		if (!verdict && !blocked) {
+			return;
+		}
+		const outcome = blocked ? "WRONG" : (verdict?.outcome ?? "INVALIDATED");
+		this._emit({
+			type: "freshctx_revalidation",
+			outcome,
+			missingReferents: verdict?.missingReferents ?? [],
+			planId: preparer.lastCommittedPlan()?.planId ?? null,
+			blocked,
+			blockCode: error instanceof FreshCtxBlockedError ? error.code : null,
+		});
+		// Persist a metadata-only revalidation record so benchmark runners can
+		// reconstruct per-request outcomes from the session file afterwards.
+		const plan = preparer.lastCommittedPlan();
+		this.sessionManager.appendCustomEntry(FRESHCTX_REVALIDATION_CUSTOM_TYPE, {
+			version: FRESHCTX_SESSION_STATE_VERSION,
+			outcome,
+			blocked,
+			blockCode: error instanceof FreshCtxBlockedError ? error.code : null,
+			missingReferents: verdict?.missingReferents ?? [],
+			planId: plan?.planId ?? null,
+			selectionGranularity: plan?.selectionGranularity ?? null,
+			unitStates: plan ? summarizeUnitStates(plan.unitStates) : {},
+			timestamp: new Date().toISOString(),
+		});
+	}
+
+	/** Aggregate FreshCtx revalidation counters for benchmarks and inspect. */
+	getFreshCtxRevalidationStats(): {
+		total: number;
+		stable: number;
+		relocated: number;
+		updated: number;
+		ambiguous: number;
+		invalidated: number;
+		unchecked: number;
+		driftBlocked: number;
+	} {
+		return (
+			this._freshCtxPreparer?.revalidationStats() ?? {
+				total: 0,
+				stable: 0,
+				relocated: 0,
+				updated: 0,
+				ambiguous: 0,
+				invalidated: 0,
+				unchecked: 0,
+				driftBlocked: 0,
+			}
+		);
 	}
 
 	/** Active observations on the current branch; malformed entries are skipped. */

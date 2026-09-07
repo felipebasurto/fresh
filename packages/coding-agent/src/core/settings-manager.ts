@@ -36,8 +36,12 @@ export interface RetrySettings {
 
 export type FreshCtxMode = "native" | "off";
 
+export type FreshCtxSelectionGranularity = "region" | "file";
+
 export interface FreshCtxSettings {
 	mode?: FreshCtxMode; // default: "native" (strict verified preparation); "off" is ordinary Pi behavior
+	/** Selection granularity sent to the engine. Default: region. File widens the same selection to whole files. */
+	selectionGranularity?: FreshCtxSelectionGranularity;
 	serverCommand?: string[]; // full server argv; "{root}" tokens are replaced with the workspace root. Default: ["freshctx", "serve", "--stdio", "--root", "{root}"]
 	serverEnv?: Record<string, string>; // extra environment entries for the server child
 	timeoutMs?: number; // per-request server timeout in milliseconds; default: 10000
@@ -920,12 +924,17 @@ export class SettingsManager {
 		return this.settings.freshctx?.budgetBytes ?? 131072;
 	}
 
+	getFreshCtxSelectionGranularity(): FreshCtxSelectionGranularity {
+		return this.settings.freshctx?.selectionGranularity ?? "region";
+	}
+
 	getFreshCtxSettings(workspaceRoot: string): {
 		mode: FreshCtxMode;
 		serverCommand: string[];
 		serverEnv: Record<string, string>;
 		timeoutMs: number;
 		budgetBytes: number;
+		selectionGranularity: FreshCtxSelectionGranularity;
 	} {
 		return {
 			mode: this.getFreshCtxMode(),
@@ -933,6 +942,7 @@ export class SettingsManager {
 			serverEnv: this.getFreshCtxServerEnv(),
 			timeoutMs: this.getFreshCtxTimeoutMs(),
 			budgetBytes: this.getFreshCtxBudgetBytes(),
+			selectionGranularity: this.getFreshCtxSelectionGranularity(),
 		};
 	}
 
