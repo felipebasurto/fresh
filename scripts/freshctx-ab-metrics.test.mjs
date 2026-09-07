@@ -47,6 +47,8 @@ describe("aggregateRevalidationEntries", () => {
 			prepareRequestIndex: null,
 			planId: "p1",
 			selectionGranularity: "region",
+			requestedGranularity: null,
+			engineGranularity: null,
 			observedResultIds: [],
 			selectedUnits: ["u1"],
 			selectedFiles: ["a.py"],
@@ -57,6 +59,91 @@ describe("aggregateRevalidationEntries", () => {
 		});
 		assert.equal(aggregated.plans[1].blocked, true);
 		assert.equal(aggregated.plans[1].planId, "p2");
+	});
+
+	it("carries requested vs engine-echoed granularity per plan", () => {
+		const aggregated = aggregateRevalidationEntries([
+			{
+				type: "custom",
+				customType: "freshctx_revalidation",
+				data: {
+					outcome: "STABLE",
+					blocked: false,
+					planId: "p3",
+					selectionGranularity: "file",
+					requestedGranularity: "file",
+					engineGranularity: "file",
+					observedResultIds: ["r1"],
+					selectedUnits: ["u3"],
+					selectedFiles: ["a.py"],
+					regionBytes: 100,
+					wholeFileEquivalentBytes: null,
+					unitStates: {},
+				},
+			},
+		]);
+		assert.deepEqual(aggregated.plans[0]?.requestedGranularity, "file");
+		assert.deepEqual(aggregated.plans[0]?.engineGranularity, "file");
+	});
+
+	it("collects pre-commit rejections as prepare attempts with accepted=false", () => {
+		const aggregated = aggregateRevalidationEntries([
+			{
+				type: "custom",
+				customType: "freshctx_prepare_attempt",
+				data: {
+					requestedGranularity: "file",
+					engineGranularity: "region",
+					planId: "fp_mismatch",
+					prepareAttemptIndex: 1,
+					accepted: false,
+					blockCode: "invalid-plan",
+				},
+			},
+		]);
+		assert.equal(aggregated.prepareAttempts.length, 1);
+		assert.deepEqual(aggregated.prepareAttempts[0], {
+			requestedGranularity: "file",
+			engineGranularity: "region",
+			planId: "fp_mismatch",
+			prepareAttemptIndex: 1,
+			accepted: false,
+			blockCode: "invalid-plan",
+		});
+		assert.equal(aggregated.plans.length, 0);
+	});
+
+	it("collects attempts embedded in revalidation entries", () => {
+		const aggregated = aggregateRevalidationEntries([
+			{
+				type: "custom",
+				customType: "freshctx_revalidation",
+				data: {
+					outcome: "STABLE",
+					blocked: false,
+					planId: "p4",
+					selectionGranularity: "file",
+					observedResultIds: [],
+					selectedUnits: [],
+					selectedFiles: [],
+					regionBytes: 10,
+					wholeFileEquivalentBytes: null,
+					unitStates: {},
+					prepareAttempts: [
+						{
+							requestedGranularity: "file",
+							engineGranularity: "file",
+							planId: "p4",
+							prepareAttemptIndex: 1,
+							accepted: true,
+							blockCode: null,
+						},
+					],
+				},
+			},
+		]);
+		assert.equal(aggregated.prepareAttempts.length, 1);
+		assert.deepEqual(aggregated.prepareAttempts[0]?.accepted, true);
 	});
 });
 

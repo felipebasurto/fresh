@@ -571,6 +571,39 @@ export function planTraceFields(
 	};
 }
 
+export interface FreshCtxPrepareWireRecord {
+	/** Requested granularity: omitted for region, "file" for file mode. */
+	requestedGranularity: FreshCtxSelectionGranularity;
+	/** Engine-echoed granularity from the validated plan. */
+	engineGranularity: FreshCtxSelectionGranularity;
+	/** Validated plan ID. */
+	planId: string;
+	/** Monotonic prepare index for this committed plan. */
+	prepareRequestIndex: number;
+}
+
+/**
+ * One `prepare` engine round-trip, recorded BEFORE the commit gate. This is
+ * the record that diagnoses granularity mismatches: when the engine echoes a
+ * different mode than requested, the host rejects with invalid-plan and no
+ * commit ever happens — so a per-committed-plan log would miss exactly the
+ * failure under investigation.
+ */
+export interface FreshCtxPrepareAttemptRecord {
+	/** Granularity the host asked for on this attempt. */
+	requestedGranularity: FreshCtxSelectionGranularity;
+	/** Engine-echoed granularity, when a well-formed response arrived. Null on transport/validation failure. */
+	engineGranularity: FreshCtxSelectionGranularity | null;
+	/** Validated plan ID, when validation succeeded. Null when the response never validated. */
+	planId: string | null;
+	/** Monotonic attempt index (1-based, counts every prepare round-trip including retries). */
+	prepareAttemptIndex: number;
+	/** True when the response validated AND matched the requested granularity (survived the commit gate). */
+	accepted: boolean;
+	/** FreshCtxBlockedError code when rejected, null when accepted. */
+	blockCode: FreshCtxBlockCode | null;
+}
+
 export class FreshCtxRequestPreparer {
 	private readonly observed = new Set<string>();
 	private readonly runtime: FreshCtxClient;
@@ -587,6 +620,11 @@ export class FreshCtxRequestPreparer {
 	private recordedSelectedFiles: string[] = [];
 	private lastVerdict: FreshCtxRevalidationVerdict | null = null;
 	private prepareSeq = 0;
+	private recordedWire: FreshCtxPrepareWireRecord | null = null;
+	private wireLog: FreshCtxPrepareWireRecord[] = [];
+	private attemptSeq = 0;
+	private lastAttempt: FreshCtxPrepareAttemptRecord | null = null;
+	private attemptLog: FreshCtxPrepareAttemptRecord[] = [];
 	private readonly revalidationCounts = {
 		total: 0,
 		stable: 0,
@@ -615,12 +653,16 @@ export class FreshCtxRequestPreparer {
 	 */
 	async prepare(payload: unknown, observations: FreshCtxReadObservation[], signal?: AbortSignal): Promise<unknown> {
 		// Drop prior request metadata so a vacuous or failed prepare cannot
-		// re-emit a stale verdict through the session adapter.
+		// re-emit a stale verdict through the session adapter. Attempt
+		// metadata resets here too: the session adapter drains the attempt
+		// log on every emit, so anything left at this point belongs to the
+		// new request (or nothing, for vacuous prepares).
 		this.lastVerdict = null;
 		this.lastPlan = null;
 		this.recordedPrepareRequestIndex = 0;
 		this.recordedObservedResultIds = [];
 		this.recordedSelectedFiles = [];
+		this.lastAttempt = null;
 		const { toolById, allIds } = collectToolMessages(payload);
 		const verified = this.verifyObservations(toolById, observations);
 		if (verified.length === 0) {
@@ -720,6 +762,7 @@ export class FreshCtxRequestPreparer {
 	): Promise<unknown> {
 		const verifiedById = new Map(verified.map((entry) => [entry.obs.obsId, entry]));
 		let plan: ValidatedPlan;
+		let gateRecorded = false;
 		try {
 			const response = await this.runtime.request(
 				"prepare",
@@ -733,17 +776,49 @@ export class FreshCtxRequestPreparer {
 			);
 			plan = validatePlan(response, budget);
 			if (plan.selectionGranularity !== this.selectionGranularity) {
+				gateRecorded = true;
+				this.recordAttempt({
+					requestedGranularity: this.selectionGranularity,
+					engineGranularity: plan.selectionGranularity,
+					planId: plan.planId,
+					accepted: false,
+					blockCode: "invalid-plan",
+				});
 				throw new FreshCtxBlockedError(
 					"invalid-plan",
 					`engine granularity ${plan.selectionGranularity} differs from requested ${this.selectionGranularity}`,
 				);
 			}
 		} catch (error) {
-			if (error instanceof FreshCtxBlockedError) {
+			if (error instanceof FreshCtxBlockedError && gateRecorded) {
 				throw error;
 			}
+			if (error instanceof FreshCtxBlockedError) {
+				this.recordAttempt({
+					requestedGranularity: this.selectionGranularity,
+					engineGranularity: null,
+					planId: null,
+					accepted: false,
+					blockCode: error.code,
+				});
+				throw error;
+			}
+			this.recordAttempt({
+				requestedGranularity: this.selectionGranularity,
+				engineGranularity: null,
+				planId: null,
+				accepted: false,
+				blockCode: "transport",
+			});
 			throw new FreshCtxBlockedError("transport", `prepare failed${isRetry ? " on retry" : ""}`, { cause: error });
 		}
+		this.recordAttempt({
+			requestedGranularity: this.selectionGranularity,
+			engineGranularity: plan.selectionGranularity,
+			planId: plan.planId,
+			accepted: true,
+			blockCode: null,
+		});
 		const markers = new Map<string, string>();
 		const budgetOmitted = plan.omitted.filter((entry) => entry.reason === "budget");
 		if (budgetOmitted.length > 0) {
@@ -816,6 +891,13 @@ export class FreshCtxRequestPreparer {
 		this.recordedPrepareRequestIndex = ++this.prepareSeq;
 		this.recordedObservedResultIds = plan.replacements.map((replacement) => replacement.resultId);
 		this.recordedSelectedFiles = engineSelectedFiles(plan, this.resolvedBuffer);
+		this.recordedWire = {
+			requestedGranularity: this.selectionGranularity,
+			engineGranularity: plan.selectionGranularity,
+			planId: plan.planId,
+			prepareRequestIndex: this.recordedPrepareRequestIndex,
+		};
+		this.wireLog.push({ ...this.recordedWire });
 		this.recordRevalidation(plan, verified);
 		return copy;
 	}
@@ -917,6 +999,39 @@ export class FreshCtxRequestPreparer {
 	/** Engine-selected file paths for the last committed plan (not all observations). */
 	lastSelectedFiles(): string[] {
 		return [...this.recordedSelectedFiles];
+	}
+
+	/** Wire record for the last committed plan: requested vs echoed granularity + plan ID. */
+	lastWireRecord(): FreshCtxPrepareWireRecord | null {
+		return this.recordedWire ? { ...this.recordedWire } : null;
+	}
+
+	/** All committed-plan wire records in order (requested/echo/planId per prepare). */
+	drainWireLog(): FreshCtxPrepareWireRecord[] {
+		const records = this.wireLog.map((record) => ({ ...record }));
+		this.wireLog = [];
+		return records;
+	}
+
+	/** Latest prepare attempt (pre-commit gate), if any round-trip ran. Never cleared by vacuous prepares. */
+	lastPrepareAttempt(): FreshCtxPrepareAttemptRecord | null {
+		return this.lastAttempt ? { ...this.lastAttempt } : null;
+	}
+
+	/** All prepare attempts in order, including pre-commit rejections. Drains. */
+	drainPrepareAttempts(): FreshCtxPrepareAttemptRecord[] {
+		const records = this.attemptLog.map((record) => ({ ...record }));
+		this.attemptLog = [];
+		return records;
+	}
+
+	private recordAttempt(fields: Omit<FreshCtxPrepareAttemptRecord, "prepareAttemptIndex">): void {
+		const record: FreshCtxPrepareAttemptRecord = {
+			...fields,
+			prepareAttemptIndex: ++this.attemptSeq,
+		};
+		this.lastAttempt = { ...record };
+		this.attemptLog.push({ ...record });
 	}
 
 	/**

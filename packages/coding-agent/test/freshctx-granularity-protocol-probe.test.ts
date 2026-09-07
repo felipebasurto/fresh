@@ -160,6 +160,7 @@ type ArmRecord = {
 	prepareRequest: Record<string, unknown> | null;
 	prepareResponseGranularity: unknown;
 	persistedTraceGranularity: unknown;
+	persistedAttempts: Array<Record<string, unknown>>;
 	blockedCode: string | null;
 	sessionFile: string | null;
 	fingerprints: {
@@ -273,6 +274,7 @@ async function runArm(mode: "region" | "file", engineEntry: string): Promise<Arm
 
 	const lastPrepare = prepareWireLog.at(-1) ?? null;
 	let persistedTraceGranularity: unknown = null;
+	const persistedAttempts: Array<Record<string, unknown>> = [];
 	if (sessionFile && existsSync(sessionFile)) {
 		for (const line of readFileSync(sessionFile, "utf-8").split("\n").filter(Boolean)) {
 			let entry: Record<string, unknown>;
@@ -281,9 +283,19 @@ async function runArm(mode: "region" | "file", engineEntry: string): Promise<Arm
 			} catch {
 				continue;
 			}
-			if (entry.type === "custom" && entry.customType === "freshctx_revalidation") {
+			if (entry.type !== "custom") {
+				continue;
+			}
+			if (entry.customType === "freshctx_prepare_attempt") {
+				persistedAttempts.push((entry.data ?? {}) as Record<string, unknown>);
+				continue;
+			}
+			if (entry.customType === "freshctx_revalidation") {
 				const data = (entry.data ?? {}) as Record<string, unknown>;
 				persistedTraceGranularity = data.selectionGranularity ?? null;
+				for (const attempt of Array.isArray(data.prepareAttempts) ? data.prepareAttempts : []) {
+					persistedAttempts.push(attempt as Record<string, unknown>);
+				}
 			}
 		}
 	}
@@ -302,6 +314,7 @@ async function runArm(mode: "region" | "file", engineEntry: string): Promise<Arm
 		prepareRequest: lastPrepare?.requestFields ?? null,
 		prepareResponseGranularity: lastPrepare?.response.selection_granularity ?? null,
 		persistedTraceGranularity,
+		persistedAttempts,
 		blockedCode,
 		sessionFile,
 		fingerprints: {
@@ -364,6 +377,13 @@ describeReal("FreshCtx selection_granularity protocol probe (real engine)", () =
 		expect(region.prepareRequest?.selection_granularity).toBeUndefined();
 		expect(region.prepareResponseGranularity).toBe("region");
 		expect(region.persistedTraceGranularity).toBe("region");
+		expect(region.persistedAttempts.length).toBeGreaterThan(0);
+		expect(region.persistedAttempts.at(-1)).toMatchObject({
+			requestedGranularity: "region",
+			engineGranularity: "region",
+			accepted: true,
+			blockCode: null,
+		});
 		expect(region.sessionFile).toBeTruthy();
 		expect(region.fingerprints.fresh.head).toBeTruthy();
 		expect(region.fingerprints.engineEntrySha256).toBeTruthy();
@@ -371,13 +391,29 @@ describeReal("FreshCtx selection_granularity protocol probe (real engine)", () =
 		expect(file.activeSettingsGranularity).toBe("file");
 		if (file.blockedCode === "invalid-plan") {
 			// Fail-closed path: engine echo disagreed with requested file mode.
+			// The pre-commit attempt record is the diagnosis: file requested,
+			// region echoed, rejected before commit.
 			expect(file.prepareRequest?.selection_granularity).toBe("file");
 			expect(file.prepareResponseGranularity).not.toBe("file");
+			expect(file.persistedAttempts.length).toBeGreaterThan(0);
+			expect(file.persistedAttempts.at(-1)).toMatchObject({
+				requestedGranularity: "file",
+				engineGranularity: expect.not.stringMatching(/^file$/),
+				accepted: false,
+				blockCode: "invalid-plan",
+			});
 		} else {
 			expect(file.blockedCode).toBeNull();
 			expect(file.prepareRequest?.selection_granularity).toBe("file");
 			expect(file.prepareResponseGranularity).toBe("file");
 			expect(file.persistedTraceGranularity).toBe("file");
+			expect(file.persistedAttempts.length).toBeGreaterThan(0);
+			expect(file.persistedAttempts.at(-1)).toMatchObject({
+				requestedGranularity: "file",
+				engineGranularity: "file",
+				accepted: true,
+				blockCode: null,
+			});
 			expect(file.sessionFile).toBeTruthy();
 		}
 	}, 60000);

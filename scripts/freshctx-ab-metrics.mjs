@@ -21,8 +21,16 @@ export function aggregateRevalidationEntries(entries) {
 	const requestVerdictCounts = emptyVerdictCounts();
 	const unitStateCounts = {};
 	const plans = [];
+	const prepareAttempts = [];
 	for (const entry of entries) {
-		if (!entry || entry.type !== "custom" || entry.customType !== "freshctx_revalidation") {
+		if (!entry || entry.type !== "custom") {
+			continue;
+		}
+		if (entry.customType === "freshctx_prepare_attempt") {
+			prepareAttempts.push(normalizeAttempt(entry.data));
+			continue;
+		}
+		if (entry.customType !== "freshctx_revalidation") {
 			continue;
 		}
 		const d = entry.data ?? {};
@@ -48,6 +56,8 @@ export function aggregateRevalidationEntries(entries) {
 			prepareRequestIndex: typeof d.prepareRequestIndex === "number" ? d.prepareRequestIndex : null,
 			planId: d.planId ?? null,
 			selectionGranularity: d.selectionGranularity ?? null,
+			requestedGranularity: typeof d.requestedGranularity === "string" ? d.requestedGranularity : null,
+			engineGranularity: typeof d.engineGranularity === "string" ? d.engineGranularity : null,
 			observedResultIds: Array.isArray(d.observedResultIds) ? d.observedResultIds : [],
 			selectedUnits: Array.isArray(d.selectedUnits) ? d.selectedUnits : [],
 			selectedFiles: Array.isArray(d.selectedFiles) ? d.selectedFiles : [],
@@ -57,8 +67,26 @@ export function aggregateRevalidationEntries(entries) {
 			verdict: d.outcome ?? null,
 			blocked: Boolean(d.blocked),
 		});
+		for (const attempt of Array.isArray(d.prepareAttempts) ? d.prepareAttempts : []) {
+			prepareAttempts.push(normalizeAttempt(attempt));
+		}
 	}
-	return { requestVerdictCounts, unitStateCounts, plans };
+	return { requestVerdictCounts, unitStateCounts, plans, prepareAttempts };
+}
+
+/** Normalize one prepare-attempt record (standalone entry or embedded in a verdict). */
+function normalizeAttempt(d) {
+	const data = d ?? {};
+	return {
+		requestedGranularity:
+			typeof data.requestedGranularity === "string" ? data.requestedGranularity : null,
+		engineGranularity: typeof data.engineGranularity === "string" ? data.engineGranularity : null,
+		planId: typeof data.planId === "string" ? data.planId : null,
+		prepareAttemptIndex:
+			typeof data.prepareAttemptIndex === "number" ? data.prepareAttemptIndex : null,
+		accepted: data.accepted === true,
+		blockCode: typeof data.blockCode === "string" ? data.blockCode : null,
+	};
 }
 
 /** Success gate: verify pass, contract ok, no timeout, zero CLI exit. */

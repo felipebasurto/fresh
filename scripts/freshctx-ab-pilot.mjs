@@ -74,6 +74,7 @@ function collectSessionMetrics(sinceMs, agentDir) {
   const metrics = {
     turns: null, toolCalls: null, inputTokens: null, outputTokens: null, cacheRead: null, cacheWrite: null,
     cost: null, compactions: 0, requestVerdictCounts: null, unitStateCounts: null, plans: null,
+    prepareAttempts: null,
     selectedFiles: null, regions: null, structural: null,
     perTurn: [], sessionFile: null,
   };
@@ -111,7 +112,10 @@ function collectSessionMetrics(sinceMs, agentDir) {
         perTurn.push({ turn: turnN, providerInputTokensAfterResponse: turnInput || null, toolCalls: tc });
       }
       if (e.type === "compaction") compacted++;
-      if (e.type === "custom" && e.customType === "freshctx_revalidation") {
+      if (
+        e.type === "custom" &&
+        (e.customType === "freshctx_revalidation" || e.customType === "freshctx_prepare_attempt")
+      ) {
         revalidationEntries.push(e);
       }
     }
@@ -123,6 +127,7 @@ function collectSessionMetrics(sinceMs, agentDir) {
     metrics.requestVerdictCounts = aggregated.requestVerdictCounts;
     metrics.unitStateCounts = aggregated.unitStateCounts;
     metrics.plans = aggregated.plans;
+    metrics.prepareAttempts = aggregated.prepareAttempts;
     metrics.perTurn = perTurn;
     const obsFiles = collectObservedFiles(newest);
     metrics.selectedFiles = obsFiles;
@@ -281,7 +286,19 @@ function runOne(taskId, mode, seq) {
       trajectoryDiverged: null, // set by paired-run analysis, not per run
     },
     runOrder: { seq, seed },
-    settings: { selectionGranularity: mode, compaction: false },
+    settings: { selectionGranularity: mode, compaction: false, agentDirEnv: "FRESH_CODING_AGENT_DIR" },
+    // Attempt record: one entry per prepare round-trip, recorded BEFORE the
+    // commit gate. A file row is valid only if an attempt says
+    // requested=file, engine=file, accepted=true. A file-requested/region-
+    // echoed rejection lands here with accepted=false, blockCode=invalid-plan.
+    granularityWire: (sm.prepareAttempts ?? []).map((attempt) => ({
+      prepareAttemptIndex: attempt.prepareAttemptIndex ?? null,
+      planId: attempt.planId ?? null,
+      requestedGranularity: attempt.requestedGranularity ?? null,
+      engineGranularity: attempt.engineGranularity ?? null,
+      accepted: attempt.accepted === true,
+      blockCode: attempt.blockCode ?? null,
+    })),
     workDir: work,
     sessionFile: sm.sessionFile,
     perTurn: sm.perTurn,

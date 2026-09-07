@@ -26,6 +26,7 @@ import {
 
 export const FRESHCTX_UNITS_CUSTOM_TYPE = "freshctx_units";
 export const FRESHCTX_REVALIDATION_CUSTOM_TYPE = "freshctx_revalidation";
+export const FRESHCTX_PREPARE_ATTEMPT_CUSTOM_TYPE = "freshctx_prepare_attempt";
 export const FRESHCTX_SESSION_STATE_VERSION = 1;
 /** Marker on default-path compaction details: the input view was applied. */
 export const FRESHCTX_VIEW_MARKER = "freshctxView";

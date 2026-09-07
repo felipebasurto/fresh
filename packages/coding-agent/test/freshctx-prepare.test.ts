@@ -368,6 +368,99 @@ describe("FreshCtxRequestPreparer", () => {
 	function preparer(server: StubServer): FreshCtxRequestPreparer {
 		return new FreshCtxRequestPreparer(server);
 	}
+
+	it("records requested vs engine-echoed granularity per committed plan", async () => {
+		const server = new StubServer();
+		server.disk.set("read_1.txt", "RATE = 10\n");
+		const filePreparer = new FreshCtxRequestPreparer(server, {
+			selectionGranularity: "file",
+			readDiskText: () => "RATE = 10\n",
+		});
+		const wrapping: { op: string; fields: Record<string, unknown> }[] = [];
+		const observing = server.request.bind(server);
+		server.request = async (op: string, fields: Record<string, unknown> = {}, signal?: AbortSignal) => {
+			if (op === "prepare") {
+				wrapping.push({ op, fields: structuredClone(fields) });
+				const response = (await observing(op, fields, signal)) as Record<string, unknown>;
+				return { ...response, selection_granularity: "file" };
+			}
+			return observing(op, fields, signal);
+		};
+		await filePreparer.prepare(toolPayload([{ id: "read_1", content: "RATE = 10\n" }]), [
+			textObs("read_1", "RATE = 10\n"),
+		]);
+		expect(wrapping).toHaveLength(1);
+		expect(wrapping[0]?.fields.selection_granularity).toBe("file");
+		expect(filePreparer.lastWireRecord()).toMatchObject({
+			requestedGranularity: "file",
+			engineGranularity: "file",
+			prepareRequestIndex: 1,
+		});
+		expect(filePreparer.lastWireRecord()?.planId).toMatch(/^plan-/);
+		expect(filePreparer.drainWireLog()).toHaveLength(1);
+		expect(filePreparer.drainWireLog()).toHaveLength(0);
+		expect(filePreparer.lastPrepareAttempt()).toMatchObject({
+			requestedGranularity: "file",
+			engineGranularity: "file",
+			accepted: true,
+			blockCode: null,
+			prepareAttemptIndex: 1,
+		});
+		expect(filePreparer.lastPrepareAttempt()?.planId).toMatch(/^plan-/);
+	});
+
+	it("records a rejected pre-commit attempt when the engine echoes the wrong mode", async () => {
+		const server = new StubServer();
+		server.disk.set("read_1.txt", "RATE = 10\n");
+		const filePreparer = new FreshCtxRequestPreparer(server, {
+			selectionGranularity: "file",
+			readDiskText: () => "RATE = 10\n",
+		});
+		await expect(
+			filePreparer.prepare(toolPayload([{ id: "read_1", content: "RATE = 10\n" }]), [
+				textObs("read_1", "RATE = 10\n"),
+			]),
+		).rejects.toMatchObject({ code: "invalid-plan" });
+		expect(filePreparer.lastPrepareAttempt()).toMatchObject({
+			requestedGranularity: "file",
+			engineGranularity: "region",
+			planId: expect.stringMatching(/^plan-/),
+			accepted: false,
+			blockCode: "invalid-plan",
+			prepareAttemptIndex: 1,
+		});
+		expect(filePreparer.lastWireRecord()).toBeNull();
+		expect(filePreparer.drainPrepareAttempts()).toHaveLength(1);
+		expect(filePreparer.drainPrepareAttempts()).toHaveLength(0);
+	});
+
+	it("records a transport attempt with no engine echo when prepare never answers", async () => {
+		const server = new StubServer();
+		server.disk.set("read_1.txt", "RATE = 10\n");
+		const observing = server.request.bind(server);
+		server.request = async (op: string, fields: Record<string, unknown> = {}, signal?: AbortSignal) => {
+			if (op === "prepare") {
+				throw new Error("engine down");
+			}
+			return observing(op, fields, signal);
+		};
+		const filePreparer = new FreshCtxRequestPreparer(server, {
+			selectionGranularity: "file",
+			readDiskText: () => "RATE = 10\n",
+		});
+		await expect(
+			filePreparer.prepare(toolPayload([{ id: "read_1", content: "RATE = 10\n" }]), [
+				textObs("read_1", "RATE = 10\n"),
+			]),
+		).rejects.toMatchObject({ code: "transport" });
+		expect(filePreparer.lastPrepareAttempt()).toMatchObject({
+			requestedGranularity: "file",
+			engineGranularity: null,
+			planId: null,
+			accepted: false,
+			blockCode: "transport",
+		});
+	});
 });
 
 describe("classifyRevalidation", () => {

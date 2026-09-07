@@ -112,6 +112,7 @@ import {
 import { FreshCtxRuntime } from "./freshctx/runtime.ts";
 import {
 	collectPersistedUnits,
+	FRESHCTX_PREPARE_ATTEMPT_CUSTOM_TYPE,
 	FRESHCTX_REVALIDATION_CUSTOM_TYPE,
 	FRESHCTX_SESSION_STATE_VERSION,
 	FRESHCTX_UNITS_CUSTOM_TYPE,
@@ -696,7 +697,24 @@ export class AgentSession {
 	private _emitFreshCtxRevalidation(preparer: FreshCtxRequestPreparer, error: unknown): void {
 		const verdict = preparer.lastRevalidation();
 		const blocked = error instanceof FreshCtxBlockedError && error.code === "drift-blocked";
-		if (!verdict && !blocked) {
+		const attempt = preparer.lastPrepareAttempt();
+		if (!verdict && !blocked && !attempt) {
+			return;
+		}
+		// Pre-commit rejections (e.g. file requested, engine echoed region)
+		// never reach a verdict: persist the attempt record so the mismatch
+		// stays diagnosable offline, then return.
+		if (!verdict && !blocked && attempt) {
+			this.sessionManager.appendCustomEntry(FRESHCTX_PREPARE_ATTEMPT_CUSTOM_TYPE, {
+				version: FRESHCTX_SESSION_STATE_VERSION,
+				requestedGranularity: attempt.requestedGranularity,
+				engineGranularity: attempt.engineGranularity,
+				planId: attempt.planId,
+				prepareAttemptIndex: attempt.prepareAttemptIndex,
+				accepted: attempt.accepted,
+				blockCode: attempt.blockCode,
+				timestamp: new Date().toISOString(),
+			});
 			return;
 		}
 		const outcome = blocked ? "WRONG" : (verdict?.outcome ?? "INVALIDATED");
@@ -718,6 +736,11 @@ export class AgentSession {
 		});
 		// Persist plan-time structural fields with the verdict so runners never
 		// invent region/whole-file bytes post-hoc, including drift-blocked plans.
+		// The wire record pins requested vs engine-echoed granularity per plan.
+		// Attempt records pin the same pair for pre-commit rejections, so a
+		// file-requested/region-echoed mismatch stays diagnosable offline.
+		const wire = preparer.lastWireRecord();
+		const attempts = preparer.drainPrepareAttempts();
 		this.sessionManager.appendCustomEntry(FRESHCTX_REVALIDATION_CUSTOM_TYPE, {
 			version: FRESHCTX_SESSION_STATE_VERSION,
 			outcome,
@@ -727,6 +750,8 @@ export class AgentSession {
 			prepareRequestIndex: trace?.prepareRequestIndex ?? null,
 			planId: trace?.planId ?? null,
 			selectionGranularity: trace?.selectionGranularity ?? null,
+			requestedGranularity: wire?.requestedGranularity ?? null,
+			engineGranularity: wire?.engineGranularity ?? null,
 			observedResultIds: trace?.observedResultIds ?? [],
 			selectedUnits: trace?.selectedUnits ?? [],
 			selectedFiles: trace?.selectedFiles ?? [],
@@ -734,6 +759,7 @@ export class AgentSession {
 			wholeFileEquivalentBytes: trace?.wholeFileEquivalentBytes ?? null,
 			wholeFileEquivalentFiles: trace?.wholeFileEquivalentFiles ?? null,
 			unitStates: trace?.unitStates ?? {},
+			prepareAttempts: attempts,
 			timestamp: new Date().toISOString(),
 		});
 	}
