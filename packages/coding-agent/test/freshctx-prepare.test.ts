@@ -11,6 +11,7 @@ import {
 import {
 	classifyRevalidation,
 	FreshCtxRequestPreparer,
+	planTraceFields,
 	revisionForText,
 	splitProjectionSections,
 } from "../src/core/freshctx/prepare-context.ts";
@@ -119,6 +120,11 @@ class StubServer implements FreshCtxClient {
 			const sent = this.corruptProjection ? `${projection}\ncorrupted` : projection;
 			const planId = `plan-${++this.planSeq}`;
 			this.refs.set(planId, refs);
+			const files = [...new Set(refs.map((ref) => ref.path))].map((path) => ({
+				path,
+				bytes: Buffer.byteLength(this.disk.get(path) ?? "", "utf-8"),
+			}));
+			const whole_file_bytes = files.reduce((sum, file) => sum + file.bytes, 0);
 			return {
 				plan_id: planId,
 				replacements,
@@ -126,6 +132,8 @@ class StubServer implements FreshCtxClient {
 				omitted: [],
 				projection_utf8_base64: Buffer.from(sent, "utf-8").toString("base64"),
 				projection_sha256: revisionForText(projection),
+				selection_granularity: "region",
+				whole_file_equivalent: { files, whole_file_bytes },
 			};
 		}
 		if (op === "commit") {
@@ -397,6 +405,22 @@ describe("classifyRevalidation", () => {
 		expect(verdict.outcome).toBe("STABLE");
 	});
 
+	it("blocks an unrelated current region after the referent changed", () => {
+		const disk = "# prefix\nRATE = 99\nother\n";
+		const verdict = classifyRevalidation(plan("f.py:region:8\n# prefix\n"), [
+			{ resultId: "read_1", shownText: "RATE = 10", diskText: disk },
+		]);
+		expect(verdict).toEqual({ outcome: "WRONG", missingReferents: ["read_1"] });
+	});
+
+	it("blocks an unrelated refreshed region that only shares a generic return key", () => {
+		const disk = "def f():\n    return 1\ndef g():\n    return 2\n";
+		const verdict = classifyRevalidation(plan("f.py:region:12\n    return 2\n"), [
+			{ resultId: "read_1", shownText: "    return 1", diskText: disk },
+		]);
+		expect(verdict).toEqual({ outcome: "WRONG", missingReferents: ["read_1"] });
+	});
+
 	it("is UNCHECKED when disk text is unavailable and projection misses", () => {
 		const verdict = classifyRevalidation(plan("f.py:region:5\nOTHER\n"), [
 			{ resultId: "read_1", shownText: "RATE = 10", diskText: null },
@@ -459,5 +483,116 @@ describe("classifyRevalidation", () => {
 		});
 		expect(preparer.revalidationStats()).toMatchObject({ total: 1, driftBlocked: 1 });
 		expect(preparer.lastRevalidation()?.outcome).toBe("WRONG");
+		expect(preparer.lastCommittedPlan()?.planId).toMatch(/^plan-/);
+		expect(preparer.lastCommittedPlan()?.selectionGranularity).toBe("region");
+		expect(preparer.lastPrepareRequestIndex()).toBe(1);
+		expect(preparer.lastObservedResultIds()).toContain("read_1");
+		const trace = planTraceFields(preparer.lastCommittedPlan()!, {
+			prepareRequestIndex: preparer.lastPrepareRequestIndex(),
+			observedResultIds: preparer.lastObservedResultIds(),
+			selectedFiles: preparer.lastSelectedFiles(),
+		});
+		expect(trace.planId).toBe(preparer.lastCommittedPlan()!.planId);
+		expect(trace.prepareRequestIndex).toBe(1);
+		expect(trace.regionBytes).toBeGreaterThan(0);
+		expect(trace.selectionGranularity).toBe("region");
+		expect(trace.wholeFileEquivalentBytes).toBeGreaterThan(0);
+		expect(trace.selectedFiles.length).toBeGreaterThan(0);
+	});
+
+	it("rejects malformed whole_file_equivalent byte totals", async () => {
+		const server = new StubServer();
+		server.disk.set("read_1.txt", "RATE = 10\n");
+		const observing = server.request.bind(server);
+		server.request = async (op: string, fields: Record<string, unknown> = {}, signal?: AbortSignal) => {
+			const response = (await observing(op, fields, signal)) as Record<string, unknown>;
+			if (op === "prepare") {
+				return {
+					...response,
+					whole_file_equivalent: {
+						files: [{ path: "read_1.txt", bytes: 10 }],
+						whole_file_bytes: 99,
+					},
+				};
+			}
+			return response;
+		};
+		const preparer = new FreshCtxRequestPreparer(server, {
+			readDiskText: () => "RATE = 10\n",
+		});
+		await expect(
+			preparer.prepare(toolPayload([{ id: "read_1", content: "RATE = 10\n" }]), [textObs("read_1", "RATE = 10\n")]),
+		).rejects.toMatchObject({ code: "invalid-plan" });
+	});
+
+	it("rejects non-integer whole_file_equivalent bytes", async () => {
+		const server = new StubServer();
+		server.disk.set("read_1.txt", "RATE = 10\n");
+		const observing = server.request.bind(server);
+		server.request = async (op: string, fields: Record<string, unknown> = {}, signal?: AbortSignal) => {
+			const response = (await observing(op, fields, signal)) as Record<string, unknown>;
+			if (op === "prepare") {
+				return {
+					...response,
+					whole_file_equivalent: {
+						files: [{ path: "read_1.txt", bytes: 10.5 }],
+						whole_file_bytes: 10.5,
+					},
+				};
+			}
+			return response;
+		};
+		const preparer = new FreshCtxRequestPreparer(server, {
+			readDiskText: () => "RATE = 10\n",
+		});
+		await expect(
+			preparer.prepare(toolPayload([{ id: "read_1", content: "RATE = 10\n" }]), [textObs("read_1", "RATE = 10\n")]),
+		).rejects.toMatchObject({ code: "invalid-plan" });
+	});
+
+	it("clears prior verdict metadata at the start of prepare", async () => {
+		const server = new StubServer();
+		server.disk.set("read_1.txt", "RATE = 10\n");
+		const preparer = new FreshCtxRequestPreparer(server, {
+			readDiskText: () => "RATE = 10\n",
+		});
+		await preparer.prepare(toolPayload([{ id: "read_1", content: "RATE = 10\n" }]), [
+			textObs("read_1", "RATE = 10\n"),
+		]);
+		expect(preparer.lastRevalidation()?.outcome).toBe("STABLE");
+		expect(preparer.lastCommittedPlan()?.planId).toMatch(/^plan-/);
+		await preparer.prepare(toolPayload([]), []);
+		expect(preparer.lastRevalidation()).toBeNull();
+		expect(preparer.lastCommittedPlan()).toBeNull();
+	});
+});
+
+describe("planTraceFields", () => {
+	it("records region and whole-file bytes at plan time with prepare index", () => {
+		const projection = "f.py:region:8\nRATE = 10\n";
+		const trace = planTraceFields(
+			{
+				planId: "p_1",
+				replacements: [{ resultId: "read_1", expectedSha256: "sha256:x", marker: "[u_1]" }],
+				selected: ["u_1"],
+				omitted: [],
+				projection,
+				selectionGranularity: "region",
+				unitStates: { u_1: { status: "stable", previousRange: null, currentRange: null } },
+				wholeFileEquivalent: { files: [{ path: "f.py", bytes: 120 }], whole_file_bytes: 120 },
+			},
+			{ prepareRequestIndex: 3, observedResultIds: ["read_1"], selectedFiles: ["f.py"] },
+		);
+		expect(trace).toMatchObject({
+			prepareRequestIndex: 3,
+			planId: "p_1",
+			selectionGranularity: "region",
+			observedResultIds: ["read_1"],
+			selectedUnits: ["u_1"],
+			selectedFiles: ["f.py"],
+			regionBytes: Buffer.byteLength(projection, "utf-8"),
+			wholeFileEquivalentBytes: 120,
+			unitStates: { stable: 1 },
+		});
 	});
 });

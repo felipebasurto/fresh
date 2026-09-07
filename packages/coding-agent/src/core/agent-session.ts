@@ -98,7 +98,12 @@ import {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { buildRetainedRefsMessage, FRESHCTX_REFS_CUSTOM_TYPE, stripTrackedBodies } from "./freshctx/compaction-view.ts";
 import { FRESHCTX_OBSERVATION_CUSTOM_TYPE, type FreshCtxReadObservation } from "./freshctx/observations.ts";
-import { FRESHCTX_PREPARE_ADAPTER, FreshCtxBlockedError, FreshCtxRequestPreparer } from "./freshctx/prepare-context.ts";
+import {
+	FRESHCTX_PREPARE_ADAPTER,
+	FreshCtxBlockedError,
+	FreshCtxRequestPreparer,
+	planTraceFields,
+} from "./freshctx/prepare-context.ts";
 import {
 	createFreshCtxInspectToolDefinition,
 	createFreshCtxRecoverToolDefinition,
@@ -310,17 +315,6 @@ export interface ModelCycleResult {
 	thinkingLevel: ThinkingLevel;
 	/** Whether cycling through scoped models (--models flag) or all available */
 	isScoped: boolean;
-}
-
-/** Status counts of engine-reported unit states (metadata only, no source). */
-function summarizeUnitStates(
-	states: Record<string, { status: string; previousRange: unknown; currentRange: unknown }>,
-): Record<string, number> {
-	const counts: Record<string, number> = {};
-	for (const entry of Object.values(states)) {
-		counts[entry.status] = (counts[entry.status] ?? 0) + 1;
-	}
-	return counts;
 }
 
 /** Session statistics for /session command */
@@ -706,26 +700,40 @@ export class AgentSession {
 			return;
 		}
 		const outcome = blocked ? "WRONG" : (verdict?.outcome ?? "INVALIDATED");
+		const plan = preparer.lastCommittedPlan();
+		const trace = plan
+			? planTraceFields(plan, {
+					prepareRequestIndex: preparer.lastPrepareRequestIndex(),
+					observedResultIds: preparer.lastObservedResultIds(),
+					selectedFiles: preparer.lastSelectedFiles(),
+				})
+			: null;
 		this._emit({
 			type: "freshctx_revalidation",
 			outcome,
 			missingReferents: verdict?.missingReferents ?? [],
-			planId: preparer.lastCommittedPlan()?.planId ?? null,
+			planId: trace?.planId ?? null,
 			blocked,
 			blockCode: error instanceof FreshCtxBlockedError ? error.code : null,
 		});
-		// Persist a metadata-only revalidation record so benchmark runners can
-		// reconstruct per-request outcomes from the session file afterwards.
-		const plan = preparer.lastCommittedPlan();
+		// Persist plan-time structural fields with the verdict so runners never
+		// invent region/whole-file bytes post-hoc, including drift-blocked plans.
 		this.sessionManager.appendCustomEntry(FRESHCTX_REVALIDATION_CUSTOM_TYPE, {
 			version: FRESHCTX_SESSION_STATE_VERSION,
 			outcome,
 			blocked,
 			blockCode: error instanceof FreshCtxBlockedError ? error.code : null,
 			missingReferents: verdict?.missingReferents ?? [],
-			planId: plan?.planId ?? null,
-			selectionGranularity: plan?.selectionGranularity ?? null,
-			unitStates: plan ? summarizeUnitStates(plan.unitStates) : {},
+			prepareRequestIndex: trace?.prepareRequestIndex ?? null,
+			planId: trace?.planId ?? null,
+			selectionGranularity: trace?.selectionGranularity ?? null,
+			observedResultIds: trace?.observedResultIds ?? [],
+			selectedUnits: trace?.selectedUnits ?? [],
+			selectedFiles: trace?.selectedFiles ?? [],
+			regionBytes: trace?.regionBytes ?? null,
+			wholeFileEquivalentBytes: trace?.wholeFileEquivalentBytes ?? null,
+			wholeFileEquivalentFiles: trace?.wholeFileEquivalentFiles ?? null,
+			unitStates: trace?.unitStates ?? {},
 			timestamp: new Date().toISOString(),
 		});
 	}

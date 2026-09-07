@@ -250,16 +250,7 @@ function validatePlan(plan: unknown, budgetBytes: number): ValidatedPlan {
 		)
 			? (raw.unit_states as ValidatedPlan["unitStates"])
 			: {};
-	const wholeFileEquivalent: ValidatedPlan["wholeFileEquivalent"] =
-		isRecord(raw.whole_file_equivalent) &&
-		typeof raw.whole_file_equivalent.whole_file_bytes === "number" &&
-		Array.isArray(raw.whole_file_equivalent.files) &&
-		(raw.whole_file_equivalent.files as unknown[]).every(
-			(entry): entry is { path: string; bytes: number } =>
-				isRecord(entry) && typeof entry.path === "string" && typeof entry.bytes === "number",
-		)
-			? (raw.whole_file_equivalent as ValidatedPlan["wholeFileEquivalent"])
-			: null;
+	const wholeFileEquivalent = parseWholeFileEquivalent(raw.whole_file_equivalent);
 	return {
 		planId: plan.plan_id,
 		replacements,
@@ -270,6 +261,43 @@ function validatePlan(plan: unknown, budgetBytes: number): ValidatedPlan {
 		unitStates,
 		wholeFileEquivalent,
 	};
+}
+
+/** Absent → null (legacy). Present → finite non-negative ints whose sum equals whole_file_bytes. */
+function parseWholeFileEquivalent(value: unknown): ValidatedPlan["wholeFileEquivalent"] {
+	if (value === undefined || value === null) {
+		return null;
+	}
+	if (!isRecord(value) || !Array.isArray(value.files)) {
+		throw new FreshCtxBlockedError("invalid-plan", "malformed whole_file_equivalent");
+	}
+	if (
+		typeof value.whole_file_bytes !== "number" ||
+		!Number.isFinite(value.whole_file_bytes) ||
+		value.whole_file_bytes < 0 ||
+		!Number.isInteger(value.whole_file_bytes)
+	) {
+		throw new FreshCtxBlockedError("invalid-plan", "malformed whole_file_equivalent bytes");
+	}
+	const files: Array<{ path: string; bytes: number }> = [];
+	for (const entry of value.files) {
+		if (
+			!isRecord(entry) ||
+			typeof entry.path !== "string" ||
+			typeof entry.bytes !== "number" ||
+			!Number.isFinite(entry.bytes) ||
+			entry.bytes < 0 ||
+			!Number.isInteger(entry.bytes)
+		) {
+			throw new FreshCtxBlockedError("invalid-plan", "malformed whole_file_equivalent file entry");
+		}
+		files.push({ path: entry.path, bytes: entry.bytes });
+	}
+	const sum = files.reduce((total, file) => total + file.bytes, 0);
+	if (sum !== value.whole_file_bytes) {
+		throw new FreshCtxBlockedError("invalid-plan", "whole_file_equivalent bytes mismatch");
+	}
+	return { files, whole_file_bytes: value.whole_file_bytes };
 }
 
 export type FreshCtxRevalidationOutcome =
@@ -308,11 +336,12 @@ export interface FreshCtxRevalidationVerdict {
  * Pure function: no I/O. Compares each verified observation's original shown
  * bytes against the engine's projected text for the current disk state, and
  * trusts the engine's own unit_states for RELOCATED/UPDATED classification.
- * A missing referent whose disk text still contains it (or whose disk text
- * is unavailable and the projection does not cover current disk) is WRONG:
- * the engine claimed success but projects neither the referent nor a
- * faithful refresh. diskText=null referents never trigger WRONG alone —
- * they yield UNCHECKED when nothing else decides the outcome.
+ * A missing referent whose disk text still contains it is WRONG. When the
+ * referent left disk, only a faithful refresh is STABLE: projected body ⊆ disk
+ * and either a shown identity key reappears in the projection or the
+ * projection covers every non-empty disk line. An unrelated current region
+ * from the same file is WRONG. diskText=null referents never trigger WRONG
+ * alone — they yield UNCHECKED when nothing else decides the outcome.
  */
 export function classifyRevalidation(plan: ValidatedPlan, referents: FreshCtxReferent[]): FreshCtxRevalidationVerdict {
 	const selected = new Set(plan.selected);
@@ -339,7 +368,10 @@ export function classifyRevalidation(plan: ValidatedPlan, referents: FreshCtxRef
 			unchecked += 1;
 			continue;
 		}
-		if (!referent.diskText.includes(referent.shownText) && projectionCoversDisk(section, referent.diskText)) {
+		if (
+			!referent.diskText.includes(referent.shownText) &&
+			isFaithfulRefresh(referent.shownText, referent.diskText, section)
+		) {
 			continue;
 		}
 		missingReferents.push(referent.resultId);
@@ -354,6 +386,65 @@ export function classifyRevalidation(plan: ValidatedPlan, referents: FreshCtxRef
 		return { outcome: "UNCHECKED", missingReferents };
 	}
 	return { outcome: "STABLE", missingReferents };
+}
+
+/** Binding / declaration LHS used to tie a shown line to its refreshed form.
+ * Generic statement keywords (return/pass/…) are not identity keys: sharing
+ * them across unrelated regions must not count as a faithful refresh.
+ */
+export function referentIdentityKey(line: string): string {
+	const trimmed = line.trim();
+	if (trimmed.length === 0) {
+		return "";
+	}
+	const assignment = /^([A-Za-z_][\w.]*)\s*=/.exec(trimmed);
+	if (assignment) {
+		return assignment[1];
+	}
+	const declaration = /^(?:async\s+)?(?:def|class|function|const|let|var|type|interface)\s+([A-Za-z_][\w]*)/.exec(
+		trimmed,
+	);
+	if (declaration) {
+		return declaration[1];
+	}
+	return "";
+}
+
+/**
+ * True when the projection is a current refresh of shownText: projected body
+ * lines appear on disk, and either a shown identity key reappears in the
+ * projection (slot continuity) or the projection covers every non-empty disk
+ * line (full-section refresh). An unrelated current region fails both checks
+ * when the edited referent's new lines also live on disk.
+ */
+export function isFaithfulRefresh(shownText: string, diskText: string, projection: string): boolean {
+	if (!projectionCoversDisk(projection, diskText)) {
+		return false;
+	}
+	const shownKeys = new Set(
+		shownText
+			.split("\n")
+			.map(referentIdentityKey)
+			.filter((key) => key.length > 0),
+	);
+	const body = projectionBodyLines(projection);
+	if (shownKeys.size > 0) {
+		for (const line of body) {
+			const key = referentIdentityKey(line);
+			if (key.length > 0 && shownKeys.has(key)) {
+				return true;
+			}
+		}
+	}
+	return diskCoveredByProjection(diskText, projection);
+}
+
+function diskCoveredByProjection(diskText: string, projection: string): boolean {
+	const diskLines = diskText.split("\n").filter((line) => line.length > 0);
+	if (diskLines.length === 0) {
+		return false;
+	}
+	return diskLines.every((line) => projection.includes(line));
 }
 
 /**
@@ -395,21 +486,87 @@ export function splitProjectionSections(projection: string): Map<string, string>
  * with blank lines.
  */
 function projectionCoversDisk(projection: string, diskText: string): boolean {
-	const lines = projection.split("\n");
-	let bodyLines = 0;
-	for (const line of lines) {
+	const body = projectionBodyLines(projection);
+	if (body.length === 0) {
+		return false;
+	}
+	return body.every((line) => diskText.includes(line));
+}
+
+function projectionBodyLines(projection: string): string[] {
+	const body: string[] = [];
+	for (const line of projection.split("\n")) {
+		// Engine envelope: `path:bytes` / `path:kind:bytes`.
 		if (/^(.+):(?:(?:file|symbol|region):)?\d+$/.test(line)) {
+			continue;
+		}
+		// Fake/host fixture envelope: `--- relative/path ---`.
+		if (/^--- .+ ---$/.test(line)) {
 			continue;
 		}
 		if (line.length === 0) {
 			continue;
 		}
-		bodyLines += 1;
-		if (!diskText.includes(line)) {
-			return false;
+		body.push(line);
+	}
+	return body;
+}
+
+/** Engine-selected file paths: prefer whole_file_equivalent, else units in plan.selected. */
+export function engineSelectedFiles(
+	plan: ValidatedPlan,
+	resolvedUnits: Array<{ unitId: string; path: string }>,
+): string[] {
+	if (plan.wholeFileEquivalent?.files && plan.wholeFileEquivalent.files.length > 0) {
+		return [...new Set(plan.wholeFileEquivalent.files.map((file) => file.path))].sort();
+	}
+	const selected = new Set(plan.selected);
+	const files = new Set<string>();
+	for (const unit of resolvedUnits) {
+		if (selected.has(unit.unitId) && unit.path.length > 0) {
+			files.add(unit.path);
 		}
 	}
-	return bodyLines > 0;
+	return [...files].sort();
+}
+
+/** Plan-time structural and selection fields for session/runner telemetry. */
+export function planTraceFields(
+	plan: ValidatedPlan,
+	options: {
+		prepareRequestIndex: number;
+		observedResultIds: string[];
+		selectedFiles: string[];
+	},
+): {
+	prepareRequestIndex: number;
+	planId: string;
+	selectionGranularity: FreshCtxSelectionGranularity;
+	observedResultIds: string[];
+	selectedUnits: string[];
+	selectedFiles: string[];
+	regionBytes: number;
+	wholeFileEquivalentBytes: number | null;
+	wholeFileEquivalentFiles: Array<{ path: string; bytes: number }> | null;
+	unitStates: Record<string, number>;
+} {
+	const equivalentFiles = plan.wholeFileEquivalent?.files ?? null;
+	const unitStates: Record<string, number> = {};
+	for (const entry of Object.values(plan.unitStates)) {
+		unitStates[entry.status] = (unitStates[entry.status] ?? 0) + 1;
+	}
+	return {
+		prepareRequestIndex: options.prepareRequestIndex,
+		planId: plan.planId,
+		selectionGranularity: plan.selectionGranularity,
+		observedResultIds: [...options.observedResultIds],
+		selectedUnits: [...plan.selected],
+		selectedFiles: [...options.selectedFiles],
+		regionBytes: Buffer.byteLength(plan.projection, "utf-8"),
+		wholeFileEquivalentBytes: plan.wholeFileEquivalent?.whole_file_bytes ?? null,
+		wholeFileEquivalentFiles: equivalentFiles,
+		unitStates,
+	};
 }
 
 export class FreshCtxRequestPreparer {
@@ -423,7 +580,11 @@ export class FreshCtxRequestPreparer {
 	private readonly readDiskText: ((absolutePath: string) => string | null) | undefined;
 	private resolvedBuffer: FreshCtxResolvedUnit[] = [];
 	private lastPlan: ValidatedPlan | null = null;
+	private recordedPrepareRequestIndex = 0;
+	private recordedObservedResultIds: string[] = [];
+	private recordedSelectedFiles: string[] = [];
 	private lastVerdict: FreshCtxRevalidationVerdict | null = null;
+	private prepareSeq = 0;
 	private readonly revalidationCounts = {
 		total: 0,
 		stable: 0,
@@ -451,6 +612,13 @@ export class FreshCtxRequestPreparer {
 	 * any verification, budget, or commit failure.
 	 */
 	async prepare(payload: unknown, observations: FreshCtxReadObservation[], signal?: AbortSignal): Promise<unknown> {
+		// Drop prior request metadata so a vacuous or failed prepare cannot
+		// re-emit a stale verdict through the session adapter.
+		this.lastVerdict = null;
+		this.lastPlan = null;
+		this.recordedPrepareRequestIndex = 0;
+		this.recordedObservedResultIds = [];
+		this.recordedSelectedFiles = [];
 		const { toolById, allIds } = collectToolMessages(payload);
 		const verified = this.verifyObservations(toolById, observations);
 		if (verified.length === 0) {
@@ -641,8 +809,12 @@ export class FreshCtxRequestPreparer {
 		if (!isRecord(committed) || committed.applied !== true) {
 			throw new FreshCtxBlockedError("commit-failed", "commit rejected (stale or failed)");
 		}
-		this.recordRevalidation(plan, verified);
+		// Persist before revalidation so drift-blocked still exposes plan metadata.
 		this.lastPlan = plan;
+		this.recordedPrepareRequestIndex = ++this.prepareSeq;
+		this.recordedObservedResultIds = plan.replacements.map((replacement) => replacement.resultId);
+		this.recordedSelectedFiles = engineSelectedFiles(plan, this.resolvedBuffer);
+		this.recordRevalidation(plan, verified);
 		return copy;
 	}
 
@@ -728,6 +900,21 @@ export class FreshCtxRequestPreparer {
 	/** Most recent committed plan, if any. Cleared only when the preparer is replaced. */
 	lastCommittedPlan(): ValidatedPlan | null {
 		return this.lastPlan;
+	}
+
+	/** Monotonic prepare index for the last committed plan (0 if none). */
+	lastPrepareRequestIndex(): number {
+		return this.recordedPrepareRequestIndex;
+	}
+
+	/** Result IDs answered by the last committed plan's replacements. */
+	lastObservedResultIds(): string[] {
+		return [...this.recordedObservedResultIds];
+	}
+
+	/** Engine-selected file paths for the last committed plan (not all observations). */
+	lastSelectedFiles(): string[] {
+		return [...this.recordedSelectedFiles];
 	}
 
 	/**

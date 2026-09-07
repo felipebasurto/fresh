@@ -136,6 +136,7 @@ lines.on("line", async (line) => {
           selected.push(unit.id);
         }
         let projection = "";
+        const wholeFiles = [];
         if (budget > 0) {
           const parts = [];
           let used = 0;
@@ -147,6 +148,7 @@ lines.on("line", async (line) => {
               continue;
             }
             used += bytes.length;
+            wholeFiles.push({ path: unit.path, bytes: bytes.length });
             parts.push(`--- ${unit.path} ---\n${bytes.toString("utf-8")}`);
           }
           projection = parts.join("\n");
@@ -158,6 +160,7 @@ lines.on("line", async (line) => {
         // unit). Region mode on the fake therefore reports the same bytes as
         // file mode; the granularity echo is what lets host tests assert
         // strategy identity without inferring it from payload shape.
+        const whole_file_bytes = wholeFiles.reduce((sum, file) => sum + file.bytes, 0);
         return ok(id, {
           plan_id: planId,
           replacements,
@@ -167,6 +170,7 @@ lines.on("line", async (line) => {
           omitted,
           unresolved,
           selection_granularity: granularity,
+          whole_file_equivalent: { files: wholeFiles, whole_file_bytes },
         });
       }
       case "commit": {

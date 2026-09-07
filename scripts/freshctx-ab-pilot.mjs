@@ -5,13 +5,15 @@
 // Not a dashboard. Not a benchmark platform. Pilot only.
 //
 // Usage:
-//   DEEPSEEK_API_KEY=... node scripts/freshctx-ab-pilot.mjs --tasks tasks/ --out runs.jsonl [--modes region,file] [--model deepseek/deepseek-v4-flash] [--timeout-ms 600000]
+//   DEEPSEEK_API_KEY=... node scripts/freshctx-ab-pilot.mjs --tasks tasks/ --out runs.jsonl [--task t9-frozen-region-file] [--modes region,file] [--model deepseek/deepseek-v4-flash] [--timeout-ms 600000]
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { aggregateRevalidationEntries, runSucceeded } from "./freshctx-ab-metrics.mjs";
+import { evaluateTaskContract, loadTaskContract, selectTaskIds } from "./freshctx-ab-contract.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
@@ -28,6 +30,7 @@ const modes = arg("modes", "region,file").split(",").map((s) => s.trim()).filter
 const model = arg("model", "deepseek/deepseek-v4-flash");
 const timeoutMs = Number(arg("timeout-ms", "600000"));
 const order = arg("order", "alternate"); // alternate | region-first
+const taskFilter = arg("task", "");
 
 function sha256File(p) {
   return createHash("sha256").update(readFileSync(p)).digest("hex");
@@ -56,7 +59,7 @@ function treeFingerprint(root, name, paths) {
 
 function buildIdentities() {
   return {
-    fresh: treeFingerprint(repoRoot, "fresh", "packages/coding-agent/src,packages/ai/src,packages/agent/src,scripts/freshctx-ab-pilot.mjs,scripts/build-fingerprint.mjs"),
+    fresh: treeFingerprint(repoRoot, "fresh", "packages/coding-agent/src,packages/ai/src,packages/agent/src,scripts/freshctx-ab-pilot.mjs,scripts/freshctx-ab-metrics.mjs,scripts/freshctx-ab-contract.mjs,scripts/build-fingerprint.mjs"),
     freshctx: treeFingerprint("", "freshctx", "src,bin,package.json,schema"),
   };
 }
@@ -70,7 +73,8 @@ function collectSessionMetrics(sinceMs) {
   const sessionsRoot = join(process.env.HOME ?? os_homedir(), ".pi", "agent", "sessions");
   const metrics = {
     turns: null, toolCalls: null, inputTokens: null, outputTokens: null, cacheRead: null, cacheWrite: null,
-    cost: null, compactions: 0, revalidation: null, selectedFiles: null, regions: null, structural: null,
+    cost: null, compactions: 0, requestVerdictCounts: null, unitStateCounts: null, plans: null,
+    selectedFiles: null, regions: null, structural: null,
     perTurn: [], sessionFile: null,
   };
   try {
@@ -88,11 +92,10 @@ function collectSessionMetrics(sinceMs) {
     const newest = fresh[0].p;
     metrics.sessionFile = newest;
     const lines = readFileSync(newest, "utf8").split("\n").filter(Boolean);
-    let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, toolCalls = 0, turns = 0, compactions = 0, cost = 0;
-    let revalidation = { total: 0, stable: 0, relocated: 0, updated: 0, ambiguous: 0, invalidated: 0, unchecked: 0, driftBlocked: 0 };
-    let units = [];
+    let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, toolCalls = 0, turns = 0, compacted = 0, cost = 0;
+    const revalidationEntries = [];
     let perTurn = [];
-    let turnInput = 0, turnTools = 0, turnN = 0;
+    let turnInput = 0, turnN = 0;
     for (const line of lines) {
       let e; try { e = JSON.parse(line); } catch { continue; }
       const m = e.message;
@@ -104,54 +107,53 @@ function collectSessionMetrics(sinceMs) {
         turnInput = (u.input ?? 0) + (u.cacheRead ?? 0);
         let tc = 0;
         for (const c of m.content ?? []) if (c.type === "toolCall") { toolCalls++; tc++; }
-        turnTools = tc;
         perTurn.push({ turn: turnN, providerInputTokensAfterResponse: turnInput || null, toolCalls: tc });
       }
-      if (e.type === "compaction") compactions++;
-      // Revalidation records: persisted per-request metadata entries.
+      if (e.type === "compaction") compacted++;
       if (e.type === "custom" && e.customType === "freshctx_revalidation") {
-        const d = e.data ?? {};
-        revalidation.total++;
-        const key = typeof d.outcome === "string" ? d.outcome.toLowerCase() : "";
-        if (key in revalidation) revalidation[key]++;
-        if (d.blocked) revalidation.driftBlocked++;
-        const states = d.unitStates ?? {};
-        for (const [status, count] of Object.entries(states)) {
-          const k = String(status).toLowerCase();
-          if (k in revalidation && typeof count === "number") revalidation[k] += count;
-        }
-      }
-      if (e.type === "custom" && (e.customType === "freshctx_units" || e.customType === "freshctx_revalidation_summary")) {
-        const list = e.data?.units ?? e.data?.revalidation ?? null;
-        if (Array.isArray(list)) units = list;
-        if (e.data && typeof e.data === "object" && !Array.isArray(list)) {
-          const d = e.data;
-          if (typeof d.total === "number") revalidation = { ...revalidation, ...d };
-          if (Array.isArray(d.units)) units = d.units;
-        }
+        revalidationEntries.push(e);
       }
     }
+    const aggregated = aggregateRevalidationEntries(revalidationEntries);
     metrics.turns = turns; metrics.toolCalls = toolCalls;
     metrics.inputTokens = input; metrics.outputTokens = output;
     metrics.cacheRead = cacheRead; metrics.cacheWrite = cacheWrite;
-    metrics.cost = cost; metrics.compactions = compactions;
-    metrics.revalidation = revalidation;
+    metrics.cost = cost; metrics.compactions = compacted;
+    metrics.requestVerdictCounts = aggregated.requestVerdictCounts;
+    metrics.unitStateCounts = aggregated.unitStateCounts;
+    metrics.plans = aggregated.plans;
     metrics.perTurn = perTurn;
-    // Structural source context (region mode, engine-measured): selected file
-    // set from observations + whole-file-equivalent bytes are NOT in session
-    // entries, so measure post-hoc from the final workdir files named by
-    // observations. Labs chars/4 token estimates, labeled estimate-only.
-    // Whole-file-equivalent for the run = sum of final bytes of observed files
-    // (an upper bound when trajectories selected subsets per request).
-    // Region source bytes cannot be recovered post-hoc (no raw bodies stored);
-    // report null rather than inventing it. Per-request structural fields live
-    // in engine plans, not session files.
     const obsFiles = collectObservedFiles(newest);
     metrics.selectedFiles = obsFiles;
     metrics.regions = null;
-    metrics.structural = obsFiles ? wholeFileEquivalentFor(newest, obsFiles) : null;
+    metrics.structural = {
+      fromPlans: structuralFromPlans(aggregated.plans),
+      observedFiles: obsFiles,
+      note: "regionBytes and wholeFileEquivalentBytes are plan-time only",
+    };
   } catch { /* metrics stay null */ }
   return metrics;
+}
+
+function structuralFromPlans(plans) {
+  if (!Array.isArray(plans) || plans.length === 0) {
+    return { requests: 0, regionBytes: null, wholeFileEquivalentBytes: null };
+  }
+  let regionBytes = 0;
+  let whole = 0;
+  let wholeKnown = 0;
+  for (const plan of plans) {
+    if (typeof plan.regionBytes === "number") regionBytes += plan.regionBytes;
+    if (typeof plan.wholeFileEquivalentBytes === "number") {
+      whole += plan.wholeFileEquivalentBytes;
+      wholeKnown += 1;
+    }
+  }
+  return {
+    requests: plans.length,
+    regionBytes,
+    wholeFileEquivalentBytes: wholeKnown === plans.length ? whole : null,
+  };
 }
 
 function collectObservedFiles(sessionFile) {
@@ -166,41 +168,6 @@ function collectObservedFiles(sessionFile) {
     }
     return [...files].sort();
   } catch { return null; }
-}
-
-function wholeFileEquivalentFor(sessionFile, obsFiles) {
-  void sessionFile;
-  return { observedFiles: obsFiles, note: "per-request whole_file_equivalent lives in engine plans; run-level equivalent computed by analyzer from workDir" };
-}
-
-/**
- * Post-hoc structural measurement for a run. Sums final bytes of observed
- * files in the run workdir (whole-file equivalent). Region source bytes are
- * unknowable post-hoc — always null, never estimated from provider tokens.
- * Token figures are chars/4 with provenance "estimate".
- */
-function measureStructural(work, sm) {
-  const files = sm.selectedFiles ?? [];
-  let wholeFileBytes = 0;
-  const perFile = [];
-  for (const rel of files) {
-    try {
-      const bytes = readFileSync(join(work, "repo", rel)).length;
-      wholeFileBytes += bytes;
-      perFile.push({ path: rel, bytes });
-    } catch { /* file deleted: contributes 0 */ perFile.push({ path: rel, bytes: 0 }); }
-  }
-  const est = (bytes) => Math.ceil(bytes / 4);
-  return {
-    selectedFiles: files,
-    regionSourceBytes: null,
-    regionSourceTokensEstimate: null,
-    regionSourceProvenance: "unavailable-post-hoc",
-    wholeFileBytes,
-    wholeFileTokensEstimate: est(wholeFileBytes),
-    wholeFileProvenance: "estimate",
-    avoidedNote: "region source bytes not stored; avoided computable only from engine per-request plans",
-  };
 }
 
 function os_homedir() {
@@ -256,23 +223,43 @@ function runOne(taskId, mode, seq) {
   }
   // Session artifacts: newest session jsonl written during this run.
   const sm = collectSessionMetrics(started);
-  const driftBlocked = sm.revalidation?.driftBlocked ?? 0;
-  // Structural source-context savings (region runs): whole-file-equivalent
-  // bytes measured post-hoc from final workdir files named by observations.
-  // chars/4 token estimates, provenance labeled estimate. Region source bytes
-  // are NOT recoverable post-hoc (raw bodies never stored) — left null.
-  const structural = measureStructural(work, sm);
+  const driftBlocked = sm.requestVerdictCounts?.driftBlocked ?? 0;
+  const contract = loadTaskContract(taskDir, readFileSync, existsSync);
+  let contractResult = { ok: true, failures: [] };
+  if (contract) {
+    const sessionEntries = sm.sessionFile
+      ? readFileSync(sm.sessionFile, "utf8").split("\n").filter(Boolean).map((line) => {
+          try { return JSON.parse(line); } catch { return null; }
+        }).filter(Boolean)
+      : [];
+    contractResult = evaluateTaskContract(contract, sessionEntries, verify.status);
+  }
+  const success = runSucceeded({
+    verifyStatus: verify.status,
+    timedOut,
+    exitCode,
+    driftBlocked,
+    contractOk: contractResult.ok,
+  });
   return {
-    schema: "freshctx-ab-pilot/2",
+    schema: "freshctx-ab-pilot/4",
     task: taskId,
     mode,
     model,
-    success: verify.status === "PASS" && driftBlocked === 0 && !timedOut && exitCode !== null,
+    success,
     verifyStatus: verify.status,
     verifyCode: verify.code,
-    // Infrastructure/correctness gate: WRONG blocked, timeout, or nonzero CLI
-    // exit marks the run, never a silent model failure.
-    infraError: driftBlocked > 0 || timedOut ? "correctness-or-timeout" : null,
+    contract: contract
+      ? { id: contract.id ?? null, ok: contractResult.ok, failures: contractResult.failures }
+      : null,
+    // Infrastructure/correctness gate: WRONG blocked, timeout, nonzero CLI,
+    // or contract failure marks the run.
+    infraError:
+      !contractResult.ok
+        ? "contract-failed"
+        : driftBlocked > 0 || timedOut || exitCode !== 0
+          ? (timedOut ? "timeout" : driftBlocked > 0 ? "drift-blocked" : "nonzero-exit")
+          : null,
     turns: sm.turns,
     toolCalls: sm.toolCalls,
     inputTokens: sm.inputTokens,
@@ -288,9 +275,11 @@ function runOne(taskId, mode, seq) {
     engine: engineIdentity(),
     builds: buildIdentities(),
     freshness: {
-      revalidation: sm.revalidation,
+      requestVerdictCounts: sm.requestVerdictCounts,
+      unitStateCounts: sm.unitStateCounts,
+      plans: sm.plans,
       selectedFiles: sm.selectedFiles,
-      structural,
+      structural: sm.structural,
       trajectoryDiverged: null, // set by paired-run analysis, not per run
     },
     runOrder: { seq, seed },
@@ -316,7 +305,7 @@ function mulberry32(seed) {
 }
 const seed = orderSeed;
 
-const tasks = listTasks();
+const tasks = selectTaskIds(listTasks(), taskFilter);
 if (tasks.length === 0) throw new Error("no tasks found");
 const reps = Number(arg("reps", "1"));
 mkdirSync(dirname(outPath), { recursive: true });
@@ -325,7 +314,7 @@ const builds = buildIdentities();
 console.log(`engine: ${engine.bin} sha=${(engine.sha256 ?? "?").slice(0, 12)} version=${engine.version ?? "?"}`);
 console.log(`fresh: head=${builds.fresh.head} dirty=${builds.fresh.dirty} fp=${(builds.fresh.fingerprint ?? "?").slice(0, 12)}`);
 console.log(`freshctx: head=${builds.freshctx.head} dirty=${builds.freshctx.dirty} fp=${(builds.freshctx.fingerprint ?? "?").slice(0, 12)}`);
-console.log(`model=${model} modes=${modes.join(",")} tasks=${tasks.length} seed=${seed} reps=${reps}`);
+console.log(`model=${model} modes=${modes.join(",")} tasks=${tasks.join(",")} seed=${seed} reps=${reps}`);
 let seq = 0;
 const rng = mulberry32(seed);
 const orderModes = (i) => {
