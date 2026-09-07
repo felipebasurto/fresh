@@ -385,29 +385,72 @@ describe("classifyRevalidation", () => {
 	}
 
 	it("is STABLE when the projection carries the observed referent", () => {
-		const verdict = classifyRevalidation(plan("f.py:region:8\nRATE = 10\n"), [
+		const verdict = classifyRevalidation(plan("f.py:region:8bytes\nRATE = 10\n"), [
 			{ resultId: "read_1", shownText: "RATE = 10", diskText: "RATE = 10\n" },
 		]);
 		expect(verdict).toEqual({ outcome: "STABLE", missingReferents: [] });
 	});
 
 	it("is WRONG when the referent survives on disk but the projection drops it", () => {
-		const verdict = classifyRevalidation(plan("f.py:region:8\n# prefix\n"), [
+		const verdict = classifyRevalidation(plan("f.py:region:8bytes\n# prefix\n"), [
 			{ resultId: "read_1", shownText: "RATE = 10", diskText: "# prefix\nRATE = 10\n" },
 		]);
 		expect(verdict).toEqual({ outcome: "WRONG", missingReferents: ["read_1"] });
 	});
 
 	it("passes a faithful refresh when the referent changed on disk", () => {
-		const verdict = classifyRevalidation(plan("f.py:region:8\nRATE = 99\n"), [
+		const verdict = classifyRevalidation(plan("f.py:region:8bytes\nRATE = 99\n"), [
 			{ resultId: "read_1", shownText: "RATE = 10", diskText: "RATE = 99\n" },
 		]);
 		expect(verdict.outcome).toBe("STABLE");
 	});
 
+	it("accepts real-engine envelopes that suffix the byte count with 'bytes'", () => {
+		const projection = "config.py:region:26bytes\nTARGET_RATE = 12\nOTHER = 1\n";
+		const sections = splitProjectionSections(projection);
+		expect(sections.get("config.py")).toBe("TARGET_RATE = 12\nOTHER = 1\n");
+		const verdict = classifyRevalidation(
+			{
+				planId: "plan-1",
+				replacements: [{ resultId: "read_1", expectedSha256: "sha256:x", marker: "[u_1]" }],
+				selected: ["u_1"],
+				omitted: [],
+				projection,
+				selectionGranularity: "region" as const,
+				unitStates: {},
+				wholeFileEquivalent: null,
+			},
+			[
+				{
+					resultId: "read_1",
+					shownText: "TARGET_RATE = 10\nOTHER = 1",
+					diskText: "TARGET_RATE = 12\nOTHER = 1\n",
+					projectionSection: sections.get("config.py") ?? null,
+				},
+			],
+		);
+		expect(verdict.outcome).toBe("STABLE");
+	});
+
+	it("does not treat bare count headers as envelopes (fail-closed)", () => {
+		// Real freshctx rejects `path:kind:N` without the literal `bytes` suffix.
+		expect(splitProjectionSections("config.py:region:26\nTARGET_RATE = 12\n").size).toBe(0);
+		expect(splitProjectionSections("config.py:region:26byte\nTARGET_RATE = 12\n").size).toBe(0);
+		expect(splitProjectionSections("config.py:region:26BYTES\nTARGET_RATE = 12\n").size).toBe(0);
+		const verdict = classifyRevalidation(plan("config.py:region:26\nTARGET_RATE = 12\n"), [
+			{
+				resultId: "read_1",
+				shownText: "TARGET_RATE = 10",
+				diskText: "TARGET_RATE = 12\n",
+			},
+		]);
+		// Bare header line is body text not present on disk → refresh check fails closed.
+		expect(verdict.outcome).toBe("WRONG");
+	});
+
 	it("blocks an unrelated current region after the referent changed", () => {
 		const disk = "# prefix\nRATE = 99\nother\n";
-		const verdict = classifyRevalidation(plan("f.py:region:8\n# prefix\n"), [
+		const verdict = classifyRevalidation(plan("f.py:region:8bytes\n# prefix\n"), [
 			{ resultId: "read_1", shownText: "RATE = 10", diskText: disk },
 		]);
 		expect(verdict).toEqual({ outcome: "WRONG", missingReferents: ["read_1"] });
@@ -415,21 +458,21 @@ describe("classifyRevalidation", () => {
 
 	it("blocks an unrelated refreshed region that only shares a generic return key", () => {
 		const disk = "def f():\n    return 1\ndef g():\n    return 2\n";
-		const verdict = classifyRevalidation(plan("f.py:region:12\n    return 2\n"), [
+		const verdict = classifyRevalidation(plan("f.py:region:12bytes\n    return 2\n"), [
 			{ resultId: "read_1", shownText: "    return 1", diskText: disk },
 		]);
 		expect(verdict).toEqual({ outcome: "WRONG", missingReferents: ["read_1"] });
 	});
 
 	it("is UNCHECKED when disk text is unavailable and projection misses", () => {
-		const verdict = classifyRevalidation(plan("f.py:region:5\nOTHER\n"), [
+		const verdict = classifyRevalidation(plan("f.py:region:5bytes\nOTHER\n"), [
 			{ resultId: "read_1", shownText: "RATE = 10", diskText: null },
 		]);
 		expect(verdict.outcome).toBe("UNCHECKED");
 	});
 
 	it("checks refresh per file section in multi-file projections", () => {
-		const projection = "a.py:region:7\nNEW_A = 1\nb.py:region:7\nNEW_B = 2\n";
+		const projection = "a.py:region:7bytes\nNEW_A = 1\nb.py:region:7bytes\nNEW_B = 2\n";
 		const sections = splitProjectionSections(projection);
 		expect(sections.get("a.py")).toBe("NEW_A = 1");
 		// Referent from a.py changed on disk; the b.py section must not fail it.
@@ -569,7 +612,7 @@ describe("classifyRevalidation", () => {
 
 describe("planTraceFields", () => {
 	it("records region and whole-file bytes at plan time with prepare index", () => {
-		const projection = "f.py:region:8\nRATE = 10\n";
+		const projection = "f.py:region:8bytes\nRATE = 10\n";
 		const trace = planTraceFields(
 			{
 				planId: "p_1",

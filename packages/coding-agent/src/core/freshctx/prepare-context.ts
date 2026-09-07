@@ -448,11 +448,13 @@ function diskCoveredByProjection(diskText: string, projection: string): boolean 
 }
 
 /**
- * Split a multi-file projection into per-path sections. Headers render as
- * `path:bytes` (file) or `path:kind:bytes` (region/symbol) envelope lines;
- * the section for a path is the text between its header and the next header
- * (or end). Unknown shapes yield an empty map (callers fall back to the
- * whole projection).
+ * Split a multi-file projection into per-path sections. Real freshctx headers
+ * are length-prefixed with a literal `bytes` suffix (`path:Nbytes` for files,
+ * `path:kind:Nbytes` for region/symbol) — same shape as
+ * `freshctx/src/projection.mjs` `formatContentBytes`. The section for a path is
+ * the text between its header and the next header (or end). Bare counts
+ * (`path:N` / `path:kind:N`) and other unknown shapes are not headers (empty
+ * map; callers fall back to the whole projection).
  */
 export function splitProjectionSections(projection: string): Map<string, string> {
 	const sections = new Map<string, string>();
@@ -465,10 +467,10 @@ export function splitProjectionSections(projection: string): Map<string, string>
 		}
 	};
 	for (let i = 0; i < lines.length; i++) {
-		// Engine envelope: `path:bytes` or `path:kind:bytes` where kind is
-		// file|symbol|region. Paths may contain colons, so anchor on the
-		// trailing :bytes / :kind:bytes suffix and strip the kind.
-		const fileMatch = /^(.+):(?:(?:file|symbol|region):)?\d+$/.exec(lines[i]);
+		// Engine envelope only: trailing `\d+bytes` (never a bare integer).
+		// Optional kind is file|symbol|region. Paths may contain colons, so
+		// anchor on the trailing count field and strip a trailing kind label.
+		const fileMatch = /^(.+):(?:(?:file|symbol|region):)?\d+bytes$/.exec(lines[i]);
 		if (fileMatch) {
 			flush(i);
 			current = fileMatch[1].replace(/:(?:file|symbol|region)$/, "");
@@ -482,7 +484,7 @@ export function splitProjectionSections(projection: string): Map<string, string>
 /**
  * True when every non-empty projected body line appears in the current disk
  * text: the projection renders current bytes (refresh), not stale ones.
- * Engine envelope headers (`path:bytes`, `path:kind:bytes`) are skipped along
+ * Engine envelope headers (`path:Nbytes`, `path:kind:Nbytes`) are skipped along
  * with blank lines.
  */
 function projectionCoversDisk(projection: string, diskText: string): boolean {
@@ -496,8 +498,8 @@ function projectionCoversDisk(projection: string, diskText: string): boolean {
 function projectionBodyLines(projection: string): string[] {
 	const body: string[] = [];
 	for (const line of projection.split("\n")) {
-		// Engine envelope: `path:bytes` / `path:kind:bytes`.
-		if (/^(.+):(?:(?:file|symbol|region):)?\d+$/.test(line)) {
+		// Engine envelope: `path:Nbytes` / `path:kind:Nbytes` only.
+		if (/^(.+):(?:(?:file|symbol|region):)?\d+bytes$/.test(line)) {
 			continue;
 		}
 		// Fake/host fixture envelope: `--- relative/path ---`.
