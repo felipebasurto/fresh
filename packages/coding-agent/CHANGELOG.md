@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed premature missing-model errors after login by waiting for catalog discovery. Radius now defaults to `balanced`, falling back to the first available Radius model when needed.
+- Fixed FreshCtx A/B pilot isolation to use `FRESH_CODING_AGENT_DIR` (and collect sessions from that per-run agent dir) so `selectionGranularity: "file"` actually reaches the preparer.
 
 ## [0.85.1] - 2026-09-05
 

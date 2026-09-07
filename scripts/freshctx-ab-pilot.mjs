@@ -69,8 +69,8 @@ function listTasks() {
   return readdirSync(tasksDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
 }
 
-function collectSessionMetrics(sinceMs) {
-  const sessionsRoot = join(process.env.HOME ?? os_homedir(), ".pi", "agent", "sessions");
+function collectSessionMetrics(sinceMs, agentDir) {
+  const sessionsRoot = join(agentDir, "sessions");
   const metrics = {
     turns: null, toolCalls: null, inputTokens: null, outputTokens: null, cacheRead: null, cacheWrite: null,
     cost: null, compactions: 0, requestVerdictCounts: null, unitStateCounts: null, plans: null,
@@ -78,6 +78,7 @@ function collectSessionMetrics(sinceMs) {
     perTurn: [], sessionFile: null,
   };
   try {
+    if (!existsSync(sessionsRoot)) return metrics;
     const all = [];
     const walk = (d) => {
       for (const e of readdirSync(d, { withFileTypes: true })) {
@@ -170,10 +171,6 @@ function collectObservedFiles(sessionFile) {
   } catch { return null; }
 }
 
-function os_homedir() {
-  return process.env.HOME ?? "~";
-}
-
 function runOne(taskId, mode, seq) {
   const taskDir = join(tasksDir, taskId);
   const prompt = readFileSync(join(taskDir, "prompt.md"), "utf8");
@@ -184,7 +181,8 @@ function runOne(taskId, mode, seq) {
   cpSync(join(taskDir, "repo"), join(work, "repo"), { recursive: true });
   const started = Date.now();
   // Per-run agent dir: isolated auth (copied from real ~/.pi/agent auth so the
-  // provider key works) + settings pinning granularity. Uses PI_CODING_AGENT_DIR.
+  // provider key works) + settings pinning granularity. Fresh reads
+  // FRESH_CODING_AGENT_DIR (APP_NAME=fresh), not PI_CODING_AGENT_DIR.
   const agentDir = join(work, "agent");
   mkdirSync(agentDir, { recursive: true });
   const realAgentDir = join(process.env.HOME ?? "~", ".pi", "agent");
@@ -199,7 +197,7 @@ function runOne(taskId, mode, seq) {
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify(settings));
   const cli = join(repoRoot, "fresh-test.sh");
   const args = ["-p", prompt, "--model", model];
-  const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir };
+  const env = { ...process.env, FRESH_CODING_AGENT_DIR: agentDir };
   let stdout = "", stderr = "", exitCode = null, timedOut = false;
   try {
     const r = spawnSync("bash", [cli, ...args], { cwd: join(work, "repo"), env, timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
@@ -221,8 +219,8 @@ function runOne(taskId, mode, seq) {
       verify = { status: "ERROR", code: null, output: String(e).slice(-1000) };
     }
   }
-  // Session artifacts: newest session jsonl written during this run.
-  const sm = collectSessionMetrics(started);
+  // Session artifacts: newest session jsonl under this run's agent dir.
+  const sm = collectSessionMetrics(started, agentDir);
   const driftBlocked = sm.requestVerdictCounts?.driftBlocked ?? 0;
   const contract = loadTaskContract(taskDir, readFileSync, existsSync);
   let contractResult = { ok: true, failures: [] };
