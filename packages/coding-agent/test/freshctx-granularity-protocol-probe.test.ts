@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR, getAgentDir } from "../src/config.ts";
 import { FreshCtxRuntime } from "../src/core/freshctx/runtime.ts";
@@ -55,15 +55,21 @@ function createTempDir(prefix: string): string {
 }
 
 function resolveRealFreshCtxEntry(): string | null {
-	const candidates = [
-		process.env.FRESHCTX_BIN,
-		resolve("/bin/freshctx.mjs"),
-		resolve(process.cwd(), "../../../freshctx/official/bin/freshctx.mjs"),
-		resolve(process.cwd(), "../../freshctx/official/bin/freshctx.mjs"),
-	].filter((value): value is string => typeof value === "string" && value.length > 0);
+	const candidates: string[] = [];
+	if (process.env.FRESHCTX_BIN) candidates.push(process.env.FRESHCTX_BIN);
+	for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+		if (dir) candidates.push(join(dir, "freshctx"));
+	}
 	for (const candidate of candidates) {
 		if (existsSync(candidate)) return candidate;
 	}
+	return null;
+}
+
+function resolveFreshCtxRoot(engineEntry: string): string | null {
+	if (process.env.FRESHCTX_ROOT) return process.env.FRESHCTX_ROOT;
+	const marker = `${sep}bin${sep}freshctx.mjs`;
+	if (engineEntry.endsWith(marker)) return dirname(dirname(engineEntry));
 	return null;
 }
 
@@ -323,7 +329,11 @@ async function runArm(mode: "region" | "file", engineEntry: string): Promise<Arm
 				"fresh",
 				"packages/coding-agent/src,packages/ai/src,packages/agent/src,scripts/freshctx-ab-pilot.mjs",
 			),
-			freshctx: fingerprint("", "freshctx", "src,bin,package.json,schema"),
+			freshctx: fingerprint(
+				resolveFreshCtxRoot(engineEntry) ?? engineEntry,
+				"freshctx",
+				"src,bin,package.json,schema",
+			),
 			engineEntrySha256,
 		},
 	};

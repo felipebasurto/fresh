@@ -37,7 +37,8 @@ function sha256File(p) {
 }
 
 function engineIdentity() {
-  const bin = execSync("command -v freshctx || echo ", { encoding: "utf8" }).trim().split("\n")[0];
+  const bin = process.env.FRESHCTX_BIN || execSync("command -v freshctx", { encoding: "utf8" }).trim().split("\n")[0];
+  if (!bin) throw new Error("freshctx not found; set FRESHCTX_BIN or install freshctx on PATH");
   let resolved = bin, sha = null, version = null;
   try {
     const out = execSync(`node ${bin} --version 2>&1 || ${bin} --version 2>&1 || true`, { encoding: "utf8" });
@@ -60,7 +61,9 @@ function treeFingerprint(root, name, paths) {
 function buildIdentities() {
   return {
     fresh: treeFingerprint(repoRoot, "fresh", "packages/coding-agent/src,packages/ai/src,packages/agent/src,scripts/freshctx-ab-pilot.mjs,scripts/freshctx-ab-metrics.mjs,scripts/freshctx-ab-contract.mjs,scripts/build-fingerprint.mjs"),
-    freshctx: treeFingerprint("", "freshctx", "src,bin,package.json,schema"),
+    freshctx: process.env.FRESHCTX_ROOT
+      ? treeFingerprint(process.env.FRESHCTX_ROOT, "freshctx", "src,bin,package.json,schema")
+      : { name: "freshctx", head: null, dirty: null, fingerprint: null },
   };
 }
 

@@ -11,7 +11,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	createAgentSession,
@@ -35,18 +35,15 @@ function createTempDir(prefix: string): string {
 	return dir;
 }
 
-/** Prefer FRESHCTX_BIN, then sibling checkout, then PATH-installed entry. */
+/** Prefer FRESHCTX_BIN, then `freshctx` on PATH. */
 function resolveRealFreshCtxEntry(): string | null {
-	const candidates = [
-		process.env.FRESHCTX_BIN,
-		resolve("/bin/freshctx.mjs"),
-		resolve(process.cwd(), "../../../freshctx/official/bin/freshctx.mjs"),
-		resolve(process.cwd(), "../../freshctx/official/bin/freshctx.mjs"),
-	].filter((value): value is string => typeof value === "string" && value.length > 0);
+	const candidates: string[] = [];
+	if (process.env.FRESHCTX_BIN) candidates.push(process.env.FRESHCTX_BIN);
+	for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+		if (dir) candidates.push(join(dir, "freshctx"));
+	}
 	for (const candidate of candidates) {
-		if (existsSync(candidate)) {
-			return candidate;
-		}
+		if (existsSync(candidate)) return candidate;
 	}
 	return null;
 }

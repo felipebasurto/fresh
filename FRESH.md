@@ -6,20 +6,33 @@ through verified prepare → commit against current workspace bytes, and any
 verification failure blocks dispatch (zero HTTP sent) instead of falling back
 to potentially stale context.
 
+This fork is source-only. Do not `npm publish` it. Package names stay
+`@earendil-works/*` for merge compatibility with upstream Pi; they are not
+an Earendil release.
+
 ## Prerequisites
 
 - Node.js `>=22.19.0` and npm.
 - A `freshctx` server on `PATH` speaking protocol `freshctx/1`
-  (v0.1.0). Verify with:
+  (v0.1.0), unless you set `freshctx.mode` to `"off"`. Install from
+  https://github.com/felipebasurto/freshctx :
+
   ```bash
-  freshctx serve --help
+  git clone https://github.com/felipebasurto/freshctx.git
+  cd freshctx
+  npm install
+  npm install -g .
+  freshctx doctor
   ```
+
 - A configured model provider (same auth as Pi: `fresh auth`, API keys, etc.).
+  Native mode only accepts `openai-completions`. The CLI default provider is
+  still Google; pick a completions model, or set `freshctx.mode` to `"off"`.
 
 ## Install
 
 ```bash
-git clone <this-private-repo> fresh
+git clone https://github.com/felipebasurto/fresh.git
 cd fresh
 npm install --ignore-scripts
 npm run build
@@ -42,6 +55,9 @@ node packages/coding-agent/dist/bundle/cli.js -p "Say exactly: ok"
 node packages/coding-agent/dist/bundle/cli.js            # interactive TUI
 node packages/coding-agent/dist/bundle/cli.js -p --provider openai --model gpt-4o-mini "Refactor ..."
 ```
+
+From a source checkout, `./fresh-test.sh` runs the TypeScript CLI via tsx
+without requiring a dist bundle.
 
 `fresh` keeps the user-facing identity (binary, help, docs, user agent) while
 sharing Pi's data plane, so existing provider auth and sessions carry over:
@@ -103,5 +119,5 @@ sent for that attempt. Common codes: `tampered-result`, `transport`,
 
 npm package names (`@earendil-works/*`), the TypeScript import graph, and
 session-file formats are byte-compatible with upstream Pi for merge
-friendliness. Only the user-facing identity changed: repo, binary, config
-scope, user agent, docs.
+friendliness. Only the user-facing identity changed: repo, binary, user
+agent, docs. Config directories remain `~/.pi/agent/` and `.pi/`.

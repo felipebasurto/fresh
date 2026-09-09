@@ -1,15 +1,28 @@
 # fresh
 
 `fresh` is a standalone coding-agent harness based on the Pi agent harness,
-with native FreshCtx context freshness built in. It is developed privately;
-it shares Pi's architecture and most of its code, but it is its own thing:
-own repo, own binary (`fresh`), own config scope (`.fresh/`, `~/.fresh/`,
-`FRESH_*` env vars), and strict verified context preparation on every model
-request. See [FRESH.md](FRESH.md) for install, run, and configuration.
+with native FreshCtx context freshness built in. It shares Pi's architecture
+and most of its code, but it is its own thing: own repo, own binary
+(`fresh`), `FRESH_*` env vars, and strict verified context preparation on
+`openai-completions` requests. See [FRESH.md](FRESH.md) for install, run,
+and configuration.
+
+This is a personal public fork. It is not the Earendil Pi project and does
+not publish npm packages. Install from this repository.
 
 Upstream: https://github.com/earendil-works/pi, pinned at
-`9767ba275f3e9a5ee0f5c5342249b629ab1b2282` for this fork. Internal npm package
-names (`@earendil-works/*`) are intentionally unchanged for merge compatibility.
+`9767ba275f3e9a5ee0f5c5342249b629ab1b2282`. Internal npm package names
+(`@earendil-works/*`) are unchanged for merge compatibility.
+
+On disk, config still uses Pi's data plane:
+
+- global: `~/.pi/agent/` (`settings.json`, `auth.json`, sessions)
+- project: `.pi/`
+- env overrides: `FRESH_CODING_AGENT_DIR`, `FRESH_CODING_AGENT_SESSION_DIR`
+
+Native FreshCtx needs [`freshctx`](https://github.com/felipebasurto/freshctx)
+on `PATH` and an `openai-completions` model. Other providers need
+`freshctx.mode: "off"`. The CLI default provider is still Google.
 
 * **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI (ships as `fresh`)
 * **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
@@ -56,6 +69,9 @@ npm run build:offline # Rebuild using existing model data without network access
 npm run check         # Lint, format, and type check
 ./test.sh            # Run tests (skips LLM-dependent tests without API keys)
 ```
+
+A first `npm run build` needs network to hydrate `packages/ai/src/providers/data/`
+(gitignored). `npm run build:offline` only works after that data exists.
 
 ## License
 

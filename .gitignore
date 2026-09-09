@@ -14,6 +14,13 @@ packages/ai/src/providers/.model-generation-*/
 
 # Environment
 .env
+.env.*
+*.pem
+
+# Local agent / taste / FreshCtx runtime (never publish)
+.commandcode/
+.freshctx-pilot/
+.freshctx/
 
 # Editor files
 .vscode/
