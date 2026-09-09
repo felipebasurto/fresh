@@ -1,14 +1,7 @@
 # fresh (archived)
 
-This Pi fork is **archived**. It did not add enough over
-[FreshCtx](https://github.com/felipebasurto/freshctx) plus Pi's extension
-hook.
-
-Use FreshCtx with upstream Pi:
-
-```sh
-pi -e /path/to/freshctx/bridges/pi/extension.js
-```
+Archived Pi fork. The context engine is
+[FreshCtx](https://github.com/felipebasurto/freshctx).
 
 Upstream: https://github.com/earendil-works/pi
 
