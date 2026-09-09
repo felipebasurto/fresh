@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Documented this fork as a public source checkout: clone URL, `freshctx` install, real `.pi` / `~/.pi/agent` config paths, and native-mode `openai-completions` limits. This repository does not publish npm packages.
+- Documented this repository as archived. Use FreshCtx with upstream Pi instead of this fork.
 - Enabled strict-prefer JSON-schema sampling by default for built-in `read`, `bash`, `powershell`, `edit`, and `write` tools, without requiring `PI_EXPERIMENTAL`. Extensions can re-register tool definitions with `constrainedSampling: false`.
 
 ### Fixed
